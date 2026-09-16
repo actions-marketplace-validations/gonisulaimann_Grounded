@@ -24,4 +24,4 @@ jobs:
       - name: Dogfood gate (self-scan must stay clean)
         run: grounded scan src --no-color
       - name: Demo fixtures still diagnosed
-        run: test "$(grounded scan examples/v2demo --format json | python -c 'import json,sys; print(len(json.load(sys.stdin)))')" = "8"
+        run: test "$(grounded scan examples/v2demo --format json | python -c 'import json,sys; print(len(json.load(sys.stdin)))')" = "10"
