@@ -42,7 +42,10 @@ pip install -e .
 grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
               [--fail-on lie|drift|smell|never]
               [--enable CHECKER,...] [--disable CHECKER,...]
+              [--baseline FILE] [--show-baselined]
+              [--changed [BASE]]
               [--config grounded.toml] [--no-color] [--quiet]
+grounded baseline [PATH] [--output FILE]  # record findings for delta gating
 grounded list [PATH]       # show files that would be scanned
 grounded explain CHECKER   # describe a checker (including removed ones)
 grounded init [--force]    # write a starter grounded.toml
@@ -54,6 +57,34 @@ grounded init [--force]    # write a starter grounded.toml
 Example output formats for tooling: `--format json` for scripts,
 `--format sarif` for GitHub code scanning, `--format html` for a
 self-contained report page (no external assets, works opened from disk).
+
+## Adopting on an existing codebase
+
+Two mechanisms, composable. Both keep the full-tree scan and filter
+reporting only.
+
+Record a baseline once, commit it, gate on the delta:
+
+```console
+grounded baseline . --output .grounded-baseline.json   # record today
+git add .grounded-baseline.json
+grounded scan . --baseline .grounded-baseline.json     # new findings only
+```
+
+Fingerprints cover checker, path, and claim text, not line numbers, so
+unrelated edits do not churn the file. Editing the offending line itself
+re-triggers the gate. `--show-baselined` lists suppressed findings.
+
+Gate pull requests on changed lines only:
+
+```console
+grounded scan . --changed                # uncommitted work vs HEAD
+grounded scan . --changed origin/main    # branch vs base (CI)
+```
+
+Untracked files are fully reported. Outside a git repo, or with an
+unresolvable base, `--changed` exits `2` with the git error instead of
+silently scanning everything.
 
 ## Rules
 

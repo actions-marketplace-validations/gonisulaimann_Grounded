@@ -8,6 +8,7 @@ Tests pin suppression rules, not just detections.
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -321,6 +322,143 @@ class TestExitCodes(unittest.TestCase):
             (root / "a.py").write_text("# Calls `ghost_fn_xyz()`.\nX = 1\n", encoding="utf-8")
             from grounded.cli import main
             self.assertEqual(main(["scan", str(root), "--no-color", "--fail-on", "lie"]), 1)
+
+
+class TestBaseline(unittest.TestCase):
+    def _write(self, root: Path, files: dict[str, str]) -> None:
+        for rel, text in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+
+    def test_write_then_suppress(self):
+        from grounded.cli import main
+        from grounded.delta import load_baseline
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "# Calls `ghost_fn()`.\nX = 1\n"})
+            base = root / ".grounded-baseline.json"
+            self.assertEqual(main(["baseline", str(root), "--output", str(base)]), 0)
+            self.assertTrue(load_baseline(base))
+            # same tree: everything baselined, exit 0
+            self.assertEqual(
+                main(["scan", str(root), "--no-color", "--baseline", str(base)]), 0)
+
+    def test_new_finding_fails_new_only(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "# Calls `ghost_fn()`.\nX = 1\n"})
+            base = root / "base.json"
+            self.assertEqual(main(["baseline", str(root), "--output", str(base)]), 0)
+            self._write(root, {"b.py": "# Calls `other_ghost()`.\nY = 2\n"})
+            # without baseline: 2 findings; with: only the new one gates
+            self.assertEqual(
+                main(["scan", str(root), "--no-color", "--baseline", str(base),
+                      "--format", "json"]),
+                1)
+
+    def test_line_shift_does_not_churn(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "# Calls `ghost_fn()`.\nX = 1\n"})
+            base = root / "base.json"
+            self.assertEqual(main(["baseline", str(root), "--output", str(base)]), 0)
+            # insert 20 blank lines above: line numbers move, claim identical
+            self._write(root, {"a.py": "\n" * 20 + "# Calls `ghost_fn()`.\nX = 1\n"})
+            self.assertEqual(
+                main(["scan", str(root), "--no-color", "--baseline", str(base)]), 0)
+
+    def test_edited_claim_retriggers(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "# Calls `ghost_fn()`.\nX = 1\n"})
+            base = root / "base.json"
+            self.assertEqual(main(["baseline", str(root), "--output", str(base)]), 0)
+            self._write(root, {"a.py": "# Calls `ghost_fn_v2()`.\nX = 1\n"})
+            self.assertEqual(
+                main(["scan", str(root), "--no-color", "--baseline", str(base)]), 1)
+
+    def test_missing_baseline_is_error(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "X = 1\n"})
+            self.assertEqual(
+                main(["scan", str(root), "--no-color", "--baseline", str(root / "nope.json")]), 2)
+
+    def test_rewrite_reports_delta_counts(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "# Calls `ghost_fn()`.\nX = 1\n"})
+            base = root / "base.json"
+            self.assertEqual(main(["baseline", str(root), "--output", str(base)]), 0)
+            (root / "a.py").write_text("X = 1\n", encoding="utf-8")
+            self.assertEqual(main(["baseline", str(root), "--output", str(base)]), 0)
+            from grounded.delta import load_baseline
+            self.assertEqual(load_baseline(base), set())
+
+
+@unittest.skipUnless(shutil.which("git"), "git not available")
+class TestChangedLines(unittest.TestCase):
+    def _git(self, root: Path, *args: str) -> None:
+        import subprocess
+        subprocess.run(["git", *args], cwd=root, check=True,
+                       capture_output=True, timeout=60)
+
+    def _repo(self, root: Path, files: dict[str, str]) -> None:
+        for rel, text in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        self._git(root, "init", "-q")
+        self._git(root, "-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "-q", "--allow-empty", "-m", "init")
+        self._git(root, "add", "-A")
+        self._git(root, "-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "-q", "-m", "base")
+
+    def test_only_new_lines_reported(self):
+        import contextlib
+        import io
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root, {"a.py": "# Calls `old_ghost()`.\nX = 1\n"})
+            # committed finding exists; uncommitted edit adds another + touches X
+            (root / "a.py").write_text(
+                "# Calls `old_ghost()`.\nX = 2\n# Calls `new_ghost()`.\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root), "--no-color", "--changed", "--format", "json"])
+            self.assertEqual(rc, 1)
+            changed_only = json.loads(buf.getvalue())
+            self.assertEqual(len(changed_only), 1)
+            self.assertIn("new_ghost", changed_only[0]["title"])
+            buf_all = io.StringIO()
+            with contextlib.redirect_stdout(buf_all):
+                rc_all = main(["scan", str(root), "--no-color", "--format", "json"])
+            self.assertEqual(rc_all, 1)
+            self.assertEqual(len(json.loads(buf_all.getvalue())), 2)
+
+    def test_untracked_file_fully_reported(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root, {"a.py": "X = 1\n"})
+            (root / "new.py").write_text("# Calls `fresh_ghost()`.\nY = 1\n", encoding="utf-8")
+            self.assertEqual(
+                main(["scan", str(root), "--no-color", "--changed", "--fail-on", "lie"]), 1)
+
+    def test_outside_git_is_error(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("# Calls `ghost_fn()`.\nX = 1\n", encoding="utf-8")
+            self.assertEqual(main(["scan", str(root), "--no-color", "--changed"]), 2)
 
 
 if __name__ == "__main__":

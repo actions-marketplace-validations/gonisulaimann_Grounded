@@ -8,6 +8,15 @@ from pathlib import Path
 from . import __version__
 from .checkers import CHECKER_DESCRIPTIONS, CHECKERS, REMOVED_CHECKERS
 from .config import Config
+from .delta import (
+    DEFAULT_BASELINE_NAME,
+    GitError,
+    changed_lines,
+    filter_changed,
+    load_baseline,
+    split_baselined,
+    write_baseline,
+)
 from .models import SEVERITY_RANK
 from .reporters import format_terminal, to_html, to_json, to_sarif
 from .scanner import collect_files, scan_root
@@ -21,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("scan", help="scan a directory for belief rot")
+    s = sub.add_parser("scan", help="scan a directory for dangling references")
     s.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
     s.add_argument("--format", choices=["terminal", "json", "sarif", "html"], default="terminal")
     s.add_argument("--output", "-o", default=None, help="write report to file instead of stdout")
@@ -30,11 +39,26 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--config", default=None, help="explicit config file (grounded.toml)")
     s.add_argument("--enable", default=None, help="comma-separated checker ids to run exclusively")
     s.add_argument("--disable", default=None, help="comma-separated checker ids to skip")
+    s.add_argument("--baseline", default=None, metavar="FILE",
+                   help="report only findings not recorded in FILE (see 'grounded baseline')")
+    s.add_argument("--show-baselined", action="store_true",
+                   help="with --baseline, also list suppressed findings on stderr")
+    s.add_argument("--changed", nargs="?", const="HEAD", default=None, metavar="BASE",
+                   help="report only findings on lines changed vs BASE (default: HEAD, uncommitted work). "
+                        "The tree is still fully scanned; reporting is filtered. Errors outside git.")
     s.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     s.add_argument("--quiet", "-q", action="store_true", help="only print findings count + failures")
 
     sub.add_parser("init", help="write a starter grounded.toml in the current directory").add_argument(
         "--force", action="store_true", help="overwrite existing grounded.toml")
+
+    b = sub.add_parser("baseline", help="record current findings so later scans gate on new ones only")
+    b.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
+    b.add_argument("--output", "-o", default=None,
+                   help=f"baseline file to write (default: <path>/{DEFAULT_BASELINE_NAME})")
+    b.add_argument("--config", default=None, help="explicit config file (grounded.toml)")
+    b.add_argument("--enable", default=None, help="comma-separated checker ids to run exclusively")
+    b.add_argument("--disable", default=None, help="comma-separated checker ids to skip")
 
     e = sub.add_parser("explain", help="explain what a checker proves")
     e.add_argument("checker", nargs="?", default=None, help="checker id (omit to list all)")
@@ -71,6 +95,29 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     findings, facts, index = scan_root(root, config)
     n_files = len(facts)
+
+    suppressed_note = ""
+    if args.changed is not None:
+        try:
+            hunks, untracked = changed_lines(root, args.changed)
+        except GitError as exc:
+            print(f"grounded: --changed unavailable: {exc}", file=sys.stderr)
+            return 2
+        before = len(findings)
+        findings = filter_changed(findings, hunks, untracked)
+        suppressed_note = f" ({before - len(findings)} outside changed lines hidden)"
+    if args.baseline:
+        try:
+            fps = load_baseline(Path(args.baseline))
+        except ValueError as exc:
+            print(f"grounded: {exc}", file=sys.stderr)
+            return 2
+        findings, suppressed = split_baselined(findings, fps)
+        suppressed_note += f" ({len(suppressed)} baselined hidden)"
+        if args.show_baselined:
+            for f in suppressed:
+                print(f"baselined: {f.path}:{f.line} [{f.checker}] {f.title}", file=sys.stderr)
+
     fmt = args.format
     if fmt == "json":
         out = to_json(findings)
@@ -87,6 +134,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
             out = f"grounded: {len(findings)} finding(s), {counts['lie']} lie(s), {counts['drift']} drift(s), {counts['smell']} smell(s) in {n_files} file(s)."
         else:
             out = format_terminal(findings, n_files, root=str(root), use_color=use_color)
+    if suppressed_note and fmt in ("terminal",):
+        out += f"\ngrounded:{suppressed_note}."
     if args.output:
         Path(args.output).write_text(out, encoding="utf-8")
     else:
@@ -98,6 +147,27 @@ def cmd_scan(args: argparse.Namespace) -> int:
     for f in findings:
         if SEVERITY_RANK.get(f.severity, 0) >= threshold:
             return 1
+    return 0
+
+
+def cmd_baseline(args: argparse.Namespace) -> int:
+    root = Path(args.path).resolve()
+    if not root.exists():
+        print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
+        return 2
+    if root.is_file():
+        root = root.parent
+    config = Config.load(root, explicit=args.config)
+    _resolve_enable_disable(config, args.enable, args.disable)
+    findings, facts, index = scan_root(root, config)
+    target = Path(args.output) if args.output else (root / DEFAULT_BASELINE_NAME)
+    stats = write_baseline(target, findings)
+    if target.exists() and (stats["added"] or stats["removed"]):
+        print(f"grounded: wrote {target}: {stats['total']} recorded "
+              f"(+{stats['added']} new, -{stats['removed']} stale removed)")
+    else:
+        print(f"grounded: wrote {target}: {stats['total']} recorded")
+    print("grounded: commit this file; scans with --baseline gate on new findings only.")
     return 0
 
 
@@ -151,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "scan":
         return cmd_scan(args)
+    if args.cmd == "baseline":
+        return cmd_baseline(args)
     if args.cmd == "init":
         return cmd_init(args)
     if args.cmd == "explain":

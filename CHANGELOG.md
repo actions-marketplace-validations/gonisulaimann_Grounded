@@ -3,6 +3,19 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.3.0] - 2026-09-17
+
+### Added
+- `grounded baseline`: record current findings to `.grounded-baseline.json`.
+  `scan --baseline FILE` then reports only new findings. Fingerprints hash
+  checker, path, and claim text (never line numbers), so unrelated edits
+  that shift lines do not churn the file. `--show-baselined` lists
+  suppressed findings.
+- `scan --changed [BASE]` (default: `HEAD`): report only findings on lines
+  changed relative to BASE, for PR gates and pre-commit use. The tree is
+  still fully scanned; reporting is filtered. Fails loudly outside git.
+- `.gitignore`, contributor fixture guidelines in README.
+
 ## [0.2.0] - 2026-09-17
 
 ### Changed
