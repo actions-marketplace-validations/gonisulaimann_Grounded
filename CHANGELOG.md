@@ -3,6 +3,12 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.1] - 2026-09-17
+
+### Fixed
+- CI demo-fixture count (8 to 10) after the Go fixture was added. No
+  product code changes.
+
 ## [0.4.0] - 2026-09-17
 
 ### Added
