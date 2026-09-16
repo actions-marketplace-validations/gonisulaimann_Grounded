@@ -461,5 +461,67 @@ class TestChangedLines(unittest.TestCase):
             self.assertEqual(main(["scan", str(root), "--no-color", "--changed"]), 2)
 
 
+class TestSuppressions(unittest.TestCase):
+    def scan(self, root: Path, files: dict[str, str]):
+        for rel, text in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        return scan_root(root, Config())
+
+    def test_trailing_disable_suppresses(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# Calls `ghost_fn()`.  # grounded-disable: stale-symbol-ref\nX = 1\n",
+                encoding="utf-8")
+            self.assertEqual(main(["scan", str(root), "--no-color"]), 0)
+
+    def test_other_checker_not_suppressed(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# Calls `ghost_fn()`.  # grounded-disable: fragile-anchor\nX = 1\n",
+                encoding="utf-8")
+            self.assertEqual(main(["scan", str(root), "--no-color"]), 1)
+
+    def test_all_suppresses(self):
+        from grounded.scanner import apply_suppressions
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# Calls `ghost_fn()`.  # grounded-disable: all\nX = 1\n", encoding="utf-8")
+            findings, facts, _ = scan_root(root, Config())
+            kept, n = apply_suppressions(findings, {f.path: f for f in facts})
+            self.assertEqual(kept, [])
+            self.assertEqual(n, 1)
+
+    def test_js_marker_suppresses(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.js").write_text(
+                "// Calls `ghost_fn()`. // grounded-disable: stale-symbol-ref\nconst x = 1;\n",
+                encoding="utf-8")
+            self.assertEqual(main(["scan", str(root), "--no-color"]), 0)
+
+
+class TestRepoFiles(unittest.TestCase):
+    def test_action_files_parse(self):
+        import json
+        root = Path(__file__).resolve().parent.parent
+        matcher = json.loads((root / ".github" / "grounded-problem-matcher.json").read_text())
+        self.assertEqual(len(matcher["problemMatcher"]), 3)
+        for entry in matcher["problemMatcher"]:
+            self.assertIn("owner", entry)
+        action = (root / "action.yml").read_text()
+        self.assertIn("grounded-problem-matcher.json", action)
+        self.assertIn("composite", action)
+        hooks = (root / ".pre-commit-hooks.yaml").read_text()
+        self.assertIn("grounded scan", hooks)
+
+
 if __name__ == "__main__":
     unittest.main()

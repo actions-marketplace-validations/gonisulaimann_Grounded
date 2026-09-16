@@ -1,0 +1,43 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "grounded-lie",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^LIE\\s+(.+?):(\\d+)\\s+\\[(.+?)\\]\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "code": 3,
+          "message": 4
+        }
+      ]
+    },
+    {
+      "owner": "grounded-drift",
+      "severity": "warning",
+      "pattern": [
+        {
+          "regexp": "^DRIFT\\s+(.+?):(\\d+)\\s+\\[(.+?)\\]\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "code": 3,
+          "message": 4
+        }
+      ]
+    },
+    {
+      "owner": "grounded-smell",
+      "severity": "notice",
+      "pattern": [
+        {
+          "regexp": "^SMELL\\s+(.+?):(\\d+)\\s+\\[(.+?)\\]\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "code": 3,
+          "message": 4
+        }
+      ]
+    }
+  ]
+}

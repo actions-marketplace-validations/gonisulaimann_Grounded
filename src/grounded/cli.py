@@ -19,7 +19,7 @@ from .delta import (
 )
 from .models import SEVERITY_RANK
 from .reporters import format_terminal, to_html, to_json, to_sarif
-from .scanner import collect_files, scan_root
+from .scanner import apply_suppressions, collect_files, scan_root
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,6 +97,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
     n_files = len(facts)
 
     suppressed_note = ""
+    facts_by_path = {f.path: f for f in facts}
+    findings, n_suppressed = apply_suppressions(findings, facts_by_path)
+    if n_suppressed:
+        suppressed_note = f" ({n_suppressed} suppressed by grounded-disable)"
     if args.changed is not None:
         try:
             hunks, untracked = changed_lines(root, args.changed)
@@ -160,6 +164,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     config = Config.load(root, explicit=args.config)
     _resolve_enable_disable(config, args.enable, args.disable)
     findings, facts, index = scan_root(root, config)
+    findings, _ = apply_suppressions(findings, {f.path: f for f in facts})
     target = Path(args.output) if args.output else (root / DEFAULT_BASELINE_NAME)
     stats = write_baseline(target, findings)
     if target.exists() and (stats["added"] or stats["removed"]):

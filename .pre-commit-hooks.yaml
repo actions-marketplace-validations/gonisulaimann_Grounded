@@ -1,0 +1,8 @@
+- id: grounded
+  name: grounded comment references
+  description: Find dangling references in code comments
+  entry: grounded scan . --changed --fail-on lie
+  language: python
+  pass_filenames: false
+  # grounded is dependency-free; pin a released version once installed from PyPI:
+  #   additional_dependencies: ['grounded==0.4.0']

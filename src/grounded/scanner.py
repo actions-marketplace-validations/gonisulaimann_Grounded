@@ -1,6 +1,7 @@
 """Directory scanner: collect files, build index, run checkers."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .checkers import CHECKERS
@@ -8,6 +9,36 @@ from .config import Config, DEFAULT_SUFFIXES
 from .models import FileFacts, Finding
 from .parsers import parse_file
 from .repo_index import RepoIndex
+
+_SUPPRESS = re.compile(r"grounded-disable\s*:\s*([A-Za-z0-9_][A-Za-z0-9_\-, ]*)")
+
+
+def apply_suppressions(findings: list[Finding], facts_by_path: dict[str, FileFacts]) -> tuple[list[Finding], int]:
+    """Honor `# grounded-disable: <id>[, ...]` / `// grounded-disable: ...`.
+
+    A marker on any line of a finding's [line, end_line] span suppresses it
+    for the listed checker ids (`all` matches everything). Returns
+    (kept, suppressed_count). Explicit, local, reviewable: the decision to
+    accept a finding lives next to the finding.
+    """
+    kept: list[Finding] = []
+    suppressed = 0
+    for f in findings:
+        facts = facts_by_path.get(f.path)
+        if facts is None:
+            kept.append(f)
+            continue
+        disabled: set[str] = set()
+        for ln in range(f.line, max(f.line, f.end_line) + 1):
+            if 1 <= ln <= len(facts.lines):
+                m = _SUPPRESS.search(facts.lines[ln - 1])
+                if m:
+                    disabled.update(x.strip() for x in m.group(1).split(",") if x.strip())
+        if f.checker in disabled or "all" in disabled:
+            suppressed += 1
+            continue
+        kept.append(f)
+    return kept, suppressed
 
 
 def collect_files(root: Path, config: Config) -> list[Path]:
