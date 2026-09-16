@@ -1,0 +1,67 @@
+"""Core data models for grounded."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Any
+
+
+SEVERITIES = ("lie", "drift", "smell")
+
+SEVERITY_RANK = {"lie": 3, "drift": 2, "smell": 1}
+
+
+@dataclass
+class Finding:
+    path: str
+    line: int
+    end_line: int
+    checker: str
+    severity: str  # lie | drift | smell
+    title: str
+    claim: str = ""
+    evidence: str = ""
+    fix: str = ""
+    confidence: float = 1.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @property
+    def rank(self) -> int:
+        return SEVERITY_RANK.get(self.severity, 0)
+
+
+@dataclass
+class FileFacts:
+    path: str  # relative posix path
+    language: str  # "python" | "javascript"
+    lines: list[str] = field(default_factory=list)
+    functions: list[Any] = field(default_factory=list)  # FuncInfo
+    comments: list[Any] = field(default_factory=list)  # Comment
+    # v2: import-awareness. Local names bound by imports, and the top-level
+    # module each alias comes from ("" for relative/unresolvable).
+    # e.g. {"CookieJar": "http.cookiejar", "os": "os", "axios": ""}
+    imports: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class FuncInfo:
+    name: str
+    lineno: int
+    end_lineno: int
+    args: list[str]
+    docstring: str = ""
+    docstring_lineno: int = 0
+    has_value_return: bool = False
+    has_bare_return_only: bool = False
+    raises: list[str] = field(default_factory=list)
+    is_method: bool = False
+
+
+@dataclass
+class Comment:
+    text: str  # stripped of marker, preserved inner text
+    raw: str  # full raw line(s) joined
+    line: int  # start line (1-indexed)
+    end_line: int
+    is_block: bool = False  # /* */ or docstring-adjacent block

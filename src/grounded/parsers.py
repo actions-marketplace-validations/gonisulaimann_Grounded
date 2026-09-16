@@ -1,0 +1,456 @@
+"""File parsers: extract functions + comments for Python and JavaScript/TypeScript.
+
+Stdlib only. The JS parser is intentionally regex-based (no native deps)
+and tuned for precision over recall: it extracts what it can prove,
+and never invents structure it cannot see.
+"""
+from __future__ import annotations
+
+import ast
+import io
+import re
+import tokenize
+from pathlib import Path
+
+from .models import Comment, FileFacts, FuncInfo
+
+
+# ---------------------------------------------------------------- Python
+
+def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> FuncInfo:
+    args: list[str] = []
+    a = node.args
+    for arg in list(a.posonlyargs) + list(a.args):
+        args.append(arg.arg)
+    if a.vararg is not None:
+        args.append("*" + a.vararg.arg)
+    for arg in a.kwonlyargs:
+        args.append(arg.arg)
+    if a.kwarg is not None:
+        args.append("**" + a.kwarg.arg)
+    doc = ast.get_docstring(node, clean=False) or ""
+    doc_lineno = 0
+    if (
+        node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    ):
+        doc_lineno = node.body[0].lineno
+    has_value_return = False
+    has_return = False
+    raises: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            if child is not node:
+                continue
+        if isinstance(child, ast.Return):
+            has_return = True
+            if child.value is not None and not (
+                isinstance(child.value, ast.Constant) and child.value.value is None
+            ):
+                has_value_return = True
+        if isinstance(child, ast.Yield | ast.YieldFrom) if hasattr(ast, "YieldFrom") else isinstance(child, ast.Yield):
+            has_value_return = True
+        if isinstance(child, ast.Raise):
+            exc = child.exc
+            name = _exc_name(exc)
+            if name:
+                raises.append(name)
+    # dedupe preserving order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for r in raises:
+        if r not in seen:
+            seen.add(r)
+            uniq.append(r)
+    end = getattr(node, "end_lineno", None) or node.lineno
+    return FuncInfo(
+        name=node.name,
+        lineno=node.lineno,
+        end_lineno=end,
+        args=args,
+        docstring=doc,
+        docstring_lineno=doc_lineno,
+        has_value_return=has_value_return,
+        has_bare_return_only=(has_return and not has_value_return),
+        raises=uniq,
+    )
+
+
+def _exc_name(exc: ast.expr | None) -> str | None:
+    if exc is None:
+        return "Exception(reraise)"
+    if isinstance(exc, ast.Name):
+        return exc.id
+    if isinstance(exc, ast.Attribute):
+        return exc.attr
+    if isinstance(exc, ast.Call):
+        return _exc_name(exc.func)
+    if isinstance(exc, ast.Subscript):
+        return _exc_name(exc.value)
+    return None
+
+
+def parse_python(path: Path, rel: str, text: str) -> FileFacts:
+    lines = text.splitlines()
+    facts = FileFacts(path=rel, language="python", lines=lines)
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        facts.imports = _py_imports(tree)
+        # is_method detection: need parent tracking
+        parents: dict[int, ast.AST] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[id(child)] = node
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                info = _py_func_info(node, text)
+                parent = parents.get(id(node))
+                info.is_method = isinstance(parent, ast.ClassDef)
+                facts.functions.append(info)
+    facts.comments = _py_comments(text)
+    return facts
+
+
+def _py_imports(tree: ast.AST) -> dict[str, str]:
+    """alias -> top-level module ('' for relative imports). Conservative:
+    any binding form counts, at any depth (precision-first: an imported name
+    resolves outside snapshot analysis)."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                top = (a.name or "").split(".")[0]
+                out[(a.asname or top).split(".")[0]] = top
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            top = mod.split(".")[0] if mod else ""
+            if node.level:
+                top = ""  # relative: internal, target unknown statically
+            for a in node.names:
+                if a.name == "*":
+                    continue
+                out[a.asname or a.name] = top
+    return out
+
+
+def _py_comments(text: str) -> list[Comment]:
+    comments: list[Comment] = []
+    try:
+        toks = tokenize.generate_tokens(io.StringIO(text).readline)
+        for tok in toks:
+            if tok.type == tokenize.COMMENT:
+                raw = tok.string
+                inner = raw[1:]
+                if inner.startswith("!"):
+                    continue  # shebang-ish / directives kept but not findings; skip
+                # strip one leading space conventionally
+                if inner.startswith(" "):
+                    inner = inner[1:]
+                srow, _ = tok.start
+                comments.append(Comment(text=inner, raw=raw, line=srow, end_line=srow))
+    except (tokenize.TokenError, SyntaxError, IndentationError):
+        pass
+    return comments
+
+
+# ---------------------------------------------------------------- JavaScript / TypeScript
+
+_JS_LINE_COMMENT = re.compile(r"//(.*)$")
+_JS_BLOCK_START = re.compile(r"/\*")
+_JS_BLOCK_END = re.compile(r"\*/")
+_JS_FUNC_SIG = re.compile(
+    r"(?:function\s+([A-Za-z_$][A-Za-z0-9_$]*)|"
+    r"(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:function\b|\(|[^=;]*=>)|"
+    r"class\s+([A-Za-z_$][A-Za-z0-9_$]*))"
+)
+_JS_ARROW_PARAMS = re.compile(r"(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(?:async\s*)?\(?([^)=;]*?)\)?\s*=>")
+_JS_FUNC_PARAMS = re.compile(r"function\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\(([^)]*)\)")
+_JS_METHOD_PARAMS = re.compile(r"^\s*(?:async\s+|static\s+|get\s+|set\s+)?[A-Za-z_$][A-Za-z0-9_$]*\s*\(([^)]*)\)")
+
+
+def _split_params(raw: str) -> list[str]:
+    raw = raw.strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in raw:
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            name = _clean_param(cur)
+            if name:
+                out.append(name)
+            cur = ""
+        else:
+            cur += ch
+    name = _clean_param(cur)
+    if name:
+        out.append(name)
+    return out
+
+
+def _clean_param(p: str) -> str:
+    p = p.strip()
+    if not p:
+        return ""
+    # strip TS types/defaults: "name: Type = val" -> name ; "{a, b}" -> "" (destructured, keep raw-ish)
+    p = p.split("=")[0].strip()
+    p = p.split(":")[0].strip()
+    p = p.lstrip("...").strip()
+    if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", p):
+        return ""
+    return p
+
+
+def parse_javascript(path: Path, rel: str, text: str) -> FileFacts:
+    lines = text.splitlines()
+    facts = FileFacts(path=rel, language="javascript", lines=lines)
+    comments, code_mask = _js_comments(lines)
+    facts.comments = comments
+    facts.functions = _js_functions(lines, comments)
+    facts.imports = _js_imports(text)
+    return facts
+
+
+_JS_IMPORT_FROM = re.compile(
+    r"^\s*import\s+(?:type\s+)?(.*?)\s+from\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
+_JS_IMPORT_SIDE = re.compile(r"^\s*import\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
+_JS_REQUIRE = re.compile(
+    r"(?:const|let|var)\s+(?:(\w+)|[{]([^}]*)[}])\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)")
+
+
+def _js_imports(text: str) -> dict[str, str]:
+    """alias -> top-level package ('' for relative/internal specifiers).
+    Bare specifiers (react, axios, lodash) are external; ./ ../ / are repo."""
+    out: dict[str, str] = {}
+    for m in _JS_IMPORT_FROM.finditer(text):
+        clause, spec = m.group(1), m.group(2).strip()
+        top = "" if spec.startswith((".", "/")) else spec.split("/")[0]
+        # default import: `import Foo from 'x'` ; namespace: `* as ns`
+        dm = re.match(r"^([A-Za-z_$][A-Za-z0-9_$]*)\s*(,|$)", clause.strip())
+        if dm:
+            out[dm.group(1)] = top
+        nsm = re.search(r"\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)", clause)
+        if nsm:
+            out[nsm.group(1)] = top
+        brace = re.search(r"\{([^}]*)\}", clause)
+        if brace:
+            for part in brace.group(1).split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                bits = [b.strip() for b in part.split(" as ")]
+                alias = bits[-1].split(":")[0].strip()
+                if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", alias or ""):
+                    out[alias] = top
+    for m in _JS_REQUIRE.finditer(text):
+        default, named, spec = m.group(1), m.group(2), m.group(3).strip()
+        top = "" if spec.startswith((".", "/")) else spec.split("/")[0]
+        if default:
+            out[default] = top
+        if named:
+            for part in named.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                bits = [b.strip() for b in part.split(":")]
+                alias = bits[-1].strip()
+                if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", alias or ""):
+                    out[alias] = top
+    return out
+
+
+def _js_comments(lines: list[str]) -> tuple[list[Comment], list[bool]]:
+    comments: list[Comment] = []
+    code_mask = [True] * len(lines)
+    i = 0
+    n = len(lines)
+    in_block = False
+    block_start = 0
+    block_buf: list[str] = []
+    block_raw: list[str] = []
+    while i < n:
+        line = lines[i]
+        if not in_block:
+            bs = line.find("/*")
+            lc = line.find("//")
+            # determine which comes first, accounting for strings is overkill;
+            # heuristic: if // appears before /*, treat as line comment
+            if bs != -1 and (lc == -1 or bs < lc):
+                be = line.find("*/", bs + 2)
+                if be != -1:
+                    inner = line[bs + 2:be]
+                    raw = line[bs:be + 2]
+                    comments.append(Comment(text=inner.strip(), raw=raw, line=i + 1, end_line=i + 1, is_block=True))
+                    code_mask[i] = False if line[:bs].strip() == "" else code_mask[i]
+                    # check for trailing // after block? ignore
+                else:
+                    in_block = True
+                    block_start = i + 1
+                    block_buf = [line[bs + 2:]]
+                    block_raw = [line[bs:]]
+                    code_mask[i] = False if line[:bs].strip() == "" else code_mask[i]
+            elif lc != -1:
+                # crude string guard: count quotes before lc; if odd, likely inside string -> skip
+                prefix = line[:lc]
+                if prefix.count('"') % 2 == 1 or prefix.count("'") % 2 == 1 or prefix.count("`") % 2 == 1:
+                    pass
+                else:
+                    inner = line[lc + 2:]
+                    if inner.startswith(" "):
+                        inner = inner[1:]
+                    comments.append(Comment(text=inner, raw=line[lc:], line=i + 1, end_line=i + 1))
+                    if prefix.strip() == "":
+                        code_mask[i] = False
+        else:
+            be = line.find("*/")
+            if be != -1:
+                block_buf.append(line[:be])
+                block_raw.append(line[:be + 2])
+                full_inner = "\n".join(block_buf)
+                # strip leading * per line (JSDoc)
+                cleaned = "\n".join(
+                    re.sub(r"^\s*\*\s?", "", ln) for ln in full_inner.splitlines()
+                ).strip()
+                comments.append(Comment(text=cleaned, raw="\n".join(block_raw), line=block_start, end_line=i + 1, is_block=True))
+                in_block = False
+                block_buf = []
+                block_raw = []
+            else:
+                block_buf.append(line)
+                block_raw.append(line)
+                code_mask[i] = False
+        i += 1
+    # mark continuation lines of multi-line blocks as non-code
+    for c in comments:
+        if c.is_block and c.end_line > c.line:
+            for ln in range(c.line, c.end_line + 1):
+                if 1 <= ln <= len(code_mask):
+                    # only blank-ish lines; keep code lines that share a line with code
+                    if lines[ln - 1].strip().startswith(("*", "/*", "//")):
+                        code_mask[ln - 1] = False
+    return comments, code_mask
+
+
+def _js_functions(lines: list[str], comments: list[Comment]) -> list[FuncInfo]:
+    funcs: list[FuncInfo] = []
+    # map JSDoc block end line -> comment
+    jsdoc_by_end: dict[int, Comment] = {}
+    for c in comments:
+        if c.is_block and ("@param" in c.text or "@returns" in c.text or "@return" in c.text or "@throws" in c.text or "@exception" in c.text):
+            jsdoc_by_end[c.end_line] = c
+    for idx, line in enumerate(lines, start=1):
+        name = None
+        params: list[str] = []
+        m = re.match(r"^\s*(?:export\s+default\s+|export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)", line)
+        if m:
+            name = m.group(1)
+            params = _split_params(m.group(2))
+        else:
+            m2 = re.match(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(?([^)=;]*?)\)?\s*=>", line)
+            if m2 and ("=>" in line):
+                name = m2.group(1)
+                params = _split_params(m2.group(2))
+            else:
+                m3 = re.match(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?function\s*\(([^)]*)\)", line)
+                if m3:
+                    name = m3.group(1)
+                    params = _split_params(m3.group(2))
+                else:
+                    m4 = re.match(r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b", line)
+                    if m4:
+                        name = m4.group(1)
+                        params = []
+                    else:
+                        m5 = re.match(r"^\s*(?:async\s+|static\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*\{", line)
+                        if m5 and idx > 1:
+                            # likely a method or function without `function` keyword; only accept
+                            # if previous non-empty line suggests class/object context is unknown —
+                            # keep conservative: accept but mark; dedupe later.
+                            name = m5.group(1)
+                            if name in {"if", "for", "while", "switch", "catch", "return", "import", "export"}:
+                                name = None
+                            else:
+                                params = _split_params(m5.group(2))
+        if name:
+            # find preceding JSDoc within 3 lines
+            doc = ""
+            doc_line = 0
+            for back in range(1, 5):
+                c = jsdoc_by_end.get(idx - back)
+                if c is not None:
+                    # ensure only blank/comment lines between
+                    between = lines[idx - back:idx - 1]
+                    if all(l.strip() == "" or l.strip().startswith(("*", "/", "@")) for l in between):
+                        doc = c.text
+                        doc_line = c.line
+                    break
+            # crude body scan for throw/return (next 60 lines, brace depth)
+            has_value_return, raises = _js_body_signals(lines, idx)
+            funcs.append(FuncInfo(
+                name=name, lineno=idx, end_lineno=idx, args=params,
+                docstring=doc, docstring_lineno=doc_line,
+                has_value_return=has_value_return, raises=raises,
+            ))
+    # dedupe by (name, lineno)
+    seen: set[tuple[str, int]] = set()
+    uniq: list[FuncInfo] = []
+    for f in funcs:
+        key = (f.name, f.lineno)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(f)
+    return uniq
+
+
+def _js_body_signals(lines: list[str], start: int) -> tuple[bool, list[str]]:
+    has_value_return = False
+    raises: list[str] = []
+    depth = 0
+    started = False
+    for j in range(start - 1, min(len(lines), start + 80)):
+        line = lines[j]
+        # strip line comments for signal detection
+        code = re.sub(r"//.*$", "", line)
+        code = re.sub(r"/\*.*?\*/", "", code)
+        depth += code.count("{") - code.count("}")
+        if "{" in code:
+            started = True
+        m = re.search(r"\breturn\b([^;]*)", code)
+        if m:
+            val = m.group(1).strip().rstrip(";").strip()
+            if val and val not in ("", "undefined", "void 0"):
+                # bare `return;` vs `return x;`
+                has_value_return = True
+        for tm in re.finditer(r"\bthrow\s+new\s+([A-Za-z_$][A-Za-z0-9_$.]*)\s*\(", code):
+            raises.append(tm.group(1).split(".")[-1])
+        for tm in re.finditer(r"\bthrow\s+([A-Za-z_$][A-Za-z0-9_$]*)\b", code):
+            if tm.group(1) not in ("new",):
+                if tm.group(1) not in raises:
+                    raises.append(tm.group(1))
+        if started and depth <= 0 and j > start - 1:
+            # include one extra line after close? break when balanced
+            if depth < 0:
+                break
+            # don't break immediately on same-line {} — need at least a few lines
+            if j > start + 2 and depth == 0:
+                break
+    return has_value_return, raises
+
+
+def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return parse_python(path, rel, text)
+    if suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}:
+        return parse_javascript(path, rel, text)
+    return None
