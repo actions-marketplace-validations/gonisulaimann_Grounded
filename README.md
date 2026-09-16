@@ -1,5 +1,10 @@
 # grounded — dangling-reference detector for code comments (v2)
 
+[![CI](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg)](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml)
+[![PyPI version](https://badge.fury.io/py/grounded.svg)](https://pypi.org/project/grounded/)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Finds references in comments that resolve nowhere — import-aware,
 scope-aware, and measured against real repositories.**
 
