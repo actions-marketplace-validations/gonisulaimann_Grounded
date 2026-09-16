@@ -374,7 +374,7 @@ def _js_functions(lines: list[str], comments: list[Comment]) -> list[FuncInfo]:
                         m5 = re.match(r"^\s*(?:async\s+|static\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*\{", line)
                         if m5 and idx > 1:
                             # likely a method or function without `function` keyword; only accept
-                            # if previous non-empty line suggests class/object context is unknown —
+                            # without `function` keyword; conservative method-shape fallback
                             # keep conservative: accept but mark; dedupe later.
                             name = m5.group(1)
                             if name in {"if", "for", "while", "switch", "catch", "return", "import", "export"}:
@@ -441,7 +441,7 @@ def _js_body_signals(lines: list[str], start: int) -> tuple[bool, list[str]]:
             # include one extra line after close? break when balanced
             if depth < 0:
                 break
-            # don't break immediately on same-line {} — need at least a few lines
+            # wait for the brace depth to settle before closing the scan
             if j > start + 2 and depth == 0:
                 break
     return has_value_return, raises

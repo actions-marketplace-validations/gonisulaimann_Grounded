@@ -1,9 +1,9 @@
-"""Deterministic test suite for grounded v2 (stdlib unittest, no dependencies).
+"""Deterministic test suite for grounded (stdlib unittest, no dependencies).
 
-v2 scope: import-aware, scope-aware reference checks only. Docstring
-contracts (params/returns/raises) and commented-out code were removed —
-they belong to darglint/pydoclint, eslint-plugin-jsdoc, and Ruff ERA001
-(see ATTACK.md). Tests pin v2 suppression rules, not just detections.
+Scope: import-aware, scope-aware reference checks. Docstring contracts
+(params/returns/raises) and commented-out code are out of scope:
+darglint/pydoclint, eslint-plugin-jsdoc, and Ruff ERA001 cover them.
+Tests pin suppression rules, not just detections.
 """
 from __future__ import annotations
 

@@ -16,7 +16,7 @@ from .scanner import collect_files, scan_root
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="grounded",
-        description="grounded — the epistemic linter. Proves comments wrong with evidence. Deterministic, offline, zero dependencies.",
+        description="grounded: find dangling references in code comments. Deterministic, offline, zero dependencies.",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -84,7 +84,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             counts = {"lie": 0, "drift": 0, "smell": 0}
             for f in findings:
                 counts[f.severity] += 1
-            out = f"grounded: {len(findings)} finding(s) — {counts['lie']} lie(s), {counts['drift']} drift(s), {counts['smell']} smell(s) in {n_files} file(s)."
+            out = f"grounded: {len(findings)} finding(s), {counts['lie']} lie(s), {counts['drift']} drift(s), {counts['smell']} smell(s) in {n_files} file(s)."
         else:
             out = format_terminal(findings, n_files, root=str(root), use_color=use_color)
     if args.output:
@@ -107,7 +107,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"grounded: {target} already exists (use --force to overwrite)", file=sys.stderr)
         return 2
     target.write_text(
-        '# grounded — epistemic linter configuration\n'
+        '# grounded configuration\n'
         '# Uncomment to disable noisy checkers, or set fail_on to drift/smell/never.\n\n'
         '# disable = ["fragile-anchor"]\n'
         '# fail_on = "lie"\n'
@@ -122,7 +122,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
     if not args.checker:
         for cid in sorted(CHECKERS):
             print(f"{cid:18} {CHECKER_DESCRIPTIONS[cid]}")
-        print("\nseverities: lie (error — a provable falsehood) > drift (warning — stale by evidence) > smell (note — fragile, will rot)")
+        print("\nseverities: lie (error, provably false) > drift (warning, stale by evidence) > smell (note, fragile, will rot)")
         return 0
     cid = args.checker
     if cid in REMOVED_CHECKERS:

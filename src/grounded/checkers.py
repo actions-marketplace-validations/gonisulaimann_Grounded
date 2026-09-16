@@ -1,15 +1,14 @@
-"""Deterministic checkers, v2 (import-aware, scope-aware).
+"""Deterministic reference checks for code comments, v2.
 
-Scope decision (see ATTACK.md): docstring contract checks (params, returns,
-raises) and commented-out code are intentionally NOT checkers here. They
-belong to darglint / pydoclint (Python), eslint-plugin-jsdoc (JS/TS), and
-Ruff ERA001, all strictly superior on their surface — verified by executing
-them head-to-head. `grounded` v2 checks only mechanically-decidable
-reference claims with no exact incumbent:
+Not covered here, by design: docstring contracts (params, returns, raises)
+and commented-out code. Use darglint or pydoclint (Python),
+eslint-plugin-jsdoc (JS/TS), and Ruff ERA001 for those; each was compared
+head-to-head and is more precise on its surface (see REMOVED_CHECKERS).
 
+Covered here (no exact incumbent found):
 - stale-symbol-ref: comment names a call that resolves nowhere
   (not defined, imported, or used in-file; not stdlib/builtin/keyword).
-- stale-file-ref: comment claims a path inside THIS repo's tree that
+- stale-file-ref: comment claims a path inside this repo's tree that
   does not exist (namespace- and placeholder-aware).
 - number-drift: magic number in a comment disagrees with adjacent code.
 - fragile-anchor: line anchors and untracked workaround markers.
@@ -97,7 +96,7 @@ _TICKET = re.compile(r"(#[0-9]{1,6}\b|https?://\S+|GH-\d+|JIRA-[A-Z]+-\d+|[A-Z]{
 
 # v2: negated/alternative contexts discuss external systems, not repo
 # existence ("Don't use RANDOM()", "byref() calls are not needed",
-# "VALUES() is not supported"). Deliberately narrow (necessity/support
+# "VALUES() is not supported"). Narrow on purpose (necessity/support
 # negations only): a generic "does not <verb>" ("does not cache") must
 # NOT suppress, or real rename-refs die with it.
 _NEGATED = re.compile(
@@ -143,8 +142,8 @@ def _is_dunder(name: str) -> bool:
 
 
 def _stdlib_class(root: str) -> bool:
-    """Capitalized root whose lowercase is a stdlib module (Tarfile->tarfile,
-    not repo-defined — the index check runs separately and wins ties)."""
+    """Capitalized root whose lowercase is a stdlib module (Tarfile against
+    tarfile; repo definitions still take precedence via the index check)."""
     return bool(root) and root[0].isupper() and root.lower() in _STDLIB_MODULES
 
 
@@ -237,12 +236,11 @@ def _looks_like_code_block(body: str, language: str) -> tuple[bool, float]:
             return False, density
         return True, min(0.95, 0.6 + density)
     else:
-        # Suppression-only use (v2): bar is HIGH by design. This gate only
-        # decides whether a comment block's contents are code (suppress
-        # reference claims) — over-firing hides true findings (measured:
-        # 3 prose lines with 2x "for" + parens suppressed real TPs), while
-        # under-firing merely risks cascading claims. Prose with a couple
-        # of keywords/parens must NOT qualify.
+        # Suppression-only use (v2): the bar here is intentionally high. This
+        # gate only decides whether a comment block reads as code (which
+        # suppresses reference claims). Over-firing hides real findings;
+        # under-firing only risks extra claims. Prose with a couple of
+        # keywords or parens must not qualify.
         if re.match(r"^(eslint|ts-ignore|ts-expect|@|prettier|stylelint)", s.strip(), re.IGNORECASE):
             return False, 0.0
         punct = len(re.findall(r"[;{}()\[\]=><&|]", s))
@@ -299,18 +297,13 @@ def _commented_code_line_set(facts: FileFacts) -> set[int]:
 # ---------------------------------------------------------------- checkers
 
 def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
-    """v2: backticked calls + verb-anchored bare calls + dunder typos only.
+    """Backticked calls, verb-anchored bare calls, and dunder typos only.
 
-    v1 flagged any distinctive backticked word, which misfires on Sphinx
-    fields, attributes, options, and prose (measured: 25/26 FP on
-    requests). v2 rules, each with measured reason:
-    - Sphinx field / JSDoc tag lines are scrubbed (incumbents' surface).
-    - imported roots resolve outside the snapshot -> skip (stdlib, deps,
-      relative imports are all "known elsewhere").
-    - roots appearing in the file's own code (params, locals, attributes,
-      imports) -> skip via the code-text proxy.
-    - backticked non-calls: dunders only (`__get_item__` typo class).
-    - bare calls: reference-verb context required.
+    Plain backticked words are usually Sphinx fields, attributes, options,
+    or prose, so they are skipped (dunders excepted: a dunder with no
+    definition anywhere is almost always a typo). Imported names, stdlib
+    names, and names used in the file's own code are skipped: they resolve
+    outside snapshot analysis. Bare calls need reference-verb context.
     """
     findings: list[Finding] = []
     dead = _commented_code_line_set(facts)
@@ -397,9 +390,9 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             has_verb = bool(REFERENCE_VERBS.search(window)) or bool(re.search(r"@deprecated|@see|see\s+`?", window, re.IGNORECASE))
             if not has_verb:
                 continue
-            # v2: bare claims anchored to a ticket/URL point deliberately
-            # outside the snapshot (history, upstream). Backticked claims
-            # are still checked (explicit code formatting = intent).
+            # v2: bare claims anchored to a ticket/URL point outside the
+            # snapshot on purpose (history, upstream tickets). Backticked
+            # claims are still checked.
             if _TICKET.search(text):
                 continue
             # v2: acronym-led bare calls are SQL/C/system APIs (VALUES(),
@@ -649,8 +642,9 @@ CHECKER_DESCRIPTIONS = {
     "fragile-anchor": "Line-number anchors, see-above/below, or untracked HACK/WORKAROUND markers.",
 }
 
-# Removed in v2 after adversarial evaluation (ATTACK.md): verified redundant
-# with strictly-superior incumbents. `explain <id>` points users at them.
+# Intentionally unimplemented: docstring contracts and commented-out code
+# are covered more precisely by darglint/pydoclint, eslint-plugin-jsdoc,
+# and Ruff ERA001. `explain <id>` points users at them.
 REMOVED_CHECKERS = {
     "param-mismatch": "removed in v2 (use darglint/pydoclint for Python, eslint-plugin-jsdoc check-param-names/require-param for JS/TS).",
     "raises-mismatch": "removed in v2 (use darglint DAR402/pydoclint DOC502-503 for Python, eslint-plugin-jsdoc require-throws for JS/TS).",

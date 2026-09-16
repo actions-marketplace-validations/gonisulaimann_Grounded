@@ -1,4 +1,4 @@
-"""grounded: prove your comments wrong — deterministically, offline."""
+"""grounded: find dangling references in code comments. Deterministic, offline."""
 from __future__ import annotations
 
 __version__ = "0.2.0"

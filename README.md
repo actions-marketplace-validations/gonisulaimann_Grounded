@@ -1,12 +1,13 @@
-# grounded — dangling-reference detector for code comments (v2)
+# grounded
 
 [![CI](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg)](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml)
 [![PyPI version](https://badge.fury.io/py/grounded.svg)](https://pypi.org/project/grounded/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Finds references in comments that resolve nowhere — import-aware,
-scope-aware, and measured against real repositories.**
+Find dangling references in code comments. If a comment names a function
+that no longer exists, or a file that is not there, `grounded` reports it
+with the claim, the evidence, and a suggested fix.
 
 ```console
 $ grounded scan ./src
@@ -17,148 +18,113 @@ LIE src/app.py:9 [stale-symbol-ref] Comment references `ghost_service` which is 
     fix: Update the comment to the current name, or remove the reference.
 ```
 
-Zero dependencies. No network. No history. No LLM. Pure stdlib Python.
+Zero dependencies. No network access. Works on Python and JavaScript/TypeScript.
 
-> **History:** v1 ("epistemic linter", 8 checkers) was attacked by its own
-> author against requests/axios/django and falsified — 5/8 checkers were
-> redundant with superior incumbents and wild lie-precision measured ≈1–3%.
-> v2 deletes those checkers, rebuilds the survivors with import/scope
-> awareness, and re-measures: **844 → 42 findings, lie precision ≈1–3% →
-> 1/1 confirmed plus zero-noise silences where 86 false lies stood.**
-> Full evidence: [`ATTACK.md`](ATTACK.md). Small-n honesty applies: the
-> headline rate rests on few remaining lies because v2 mostly stays quiet —
-> which is the point. Quiet + right beats loud + wrong.
+## Install
 
-## Scope (deliberately narrow)
-
-v2 checks 4 claim types with no exact incumbent:
-
-| ID | Severity | Checks |
-|---|---|---|
-| `stale-symbol-ref` | lie | Comment names a call (`foo()` or `` `foo()` ``) that is not defined, imported, or used in-file — with rename suggestions |
-| `stale-file-ref` | lie | Comment claims a path inside this repo's tree that does not exist (namespace/placeholder/illustrative-aware) |
-| `number-drift` | drift | Magic number in a comment disagrees with adjacent code (±15 lines) |
-| `fragile-anchor` | smell | `line 42` anchors, see-above/below, untracked HACK/XXX/workarounds |
-
-Removed in v2 (verified redundant — `explain <id>` says where to go):
-
-| Removed | Use instead |
-|---|---|
-| `param-mismatch` | darglint / pydoclint (py), eslint-plugin-jsdoc check-param-names + require-param (js) |
-| `raises-mismatch` | darglint DAR402 / pydoclint DOC502–503 (py), eslint-plugin-jsdoc require-throws (js) |
-| `return-mismatch` | darglint DAR201–202 / pydoclint DOC201–203 (py), eslint-plugin-jsdoc require-returns-check (js) |
-| `commented-code` | Ruff ERA001 (py), eslint-plugin-comment-cleaner (js) |
-
-Each removal was verified by executing the incumbent head-to-head
-(darglint/pydoclint/Ruff/eslint-plugin-jsdoc all reproduce v1's true
-positives with better precision plus types, autofix, and config).
-
-## Why v2 is quiet (suppression rules, all evidence-driven)
-
-`stale-symbol-ref` stays silent when the root is: defined anywhere in the
-repo (incl. module-level assignments like `gettext_lazy = lazy(...)`),
-imported in the claiming file (stdlib, deps, or relative), a stdlib module
-or stdlib-class form (`tarfile`/`Tarfile`), used anywhere in the file's own
-code (params, locals, attributes), a builtin/keyword, on a Sphinx-field or
-JSDoc-tag line (incumbents' surface), a non-call backticked word that is not
-a dunder (fields/options/prose), a bare call without reference-verb context,
-an acronym-led bare call (`VALUES()`, `JSON_TYPE()` — SQL/system APIs), or
-in a negated context ("Don't use RANDOM()", "not supported"). Bare claims
-anchored to a ticket are left alone (deliberate external pointers).
-
-`stale-file-ref` only judges claims about this repo's tree (explicitly
-relative or first segment matching the repo root); skips placeholders
-(`myapp`, `app_label`, …), illustrative examples ("For example …"), and
-uses an alphabetic extension list (`HTTP/1.1` is not a file).
-
-## Measured results (adversarial benchmark, ATTACK.md)
-
-| Repo | v1 findings | v2 findings | v2 lies | Verdict on lies |
-|---|---|---|---|---|
-| psf/requests (37 files) | 46 (39 lie) | 4 (0 lie) | 0 | 25/26 symbol FPs eliminated; 4 smells are genuine untracked XXXs |
-| axios/axios (246 files) | 86 (63 lie) | 0 | 0 | 29 return-FPs gone with the checker; 17 prose-as-code gone; options/props silent for the right reasons |
-| django/django (2,977 files) | 712 (438 lie) | 38 (1 lie) | 1 | the 1 lie is a **confirmed true rename-rot** (`CookieTests.test_cookie_max_length()` vs real `test_max_cookie_length`) with a suggestion attached |
-
-v2 demo: `grounded scan examples/v2demo` → 8 findings (4 lie, 2 drift,
-2 smell), every one intended, every intended silence silent
-(imported names, params/locals, Sphinx fields, external modules,
-existing files).
-
-## Install & run
-
-Requires Python 3.10+.
+Requires Python 3.10 or later.
 
 ```console
 pip install grounded
-grounded scan .
-grounded scan ./src --format html --output report.html
-grounded scan . --fail-on drift
-grounded explain stale-symbol-ref
-grounded explain param-mismatch   # points to the incumbent
-grounded init
 ```
 
 From source:
 
 ```console
+git clone https://github.com/gonisulaimann/Grounded.git
+cd Grounded
 pip install -e .
-python -m unittest discover -s tests   # 42 tests, stdlib only
 ```
 
-Exit code `1` when any finding meets `--fail-on` (default `lie`).
+## Usage
+
+```console
+grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
+              [--fail-on lie|drift|smell|never]
+              [--enable CHECKER,...] [--disable CHECKER,...]
+              [--config grounded.toml] [--no-color] [--quiet]
+grounded list [PATH]       # show files that would be scanned
+grounded explain CHECKER   # describe a checker (including removed ones)
+grounded init [--force]    # write a starter grounded.toml
+```
+
+`grounded scan` exits with status `1` when any finding meets `--fail-on`
+(default: `lie`), `0` otherwise. Point it at CI and gate on the default.
+
+Example output formats for tooling: `--format json` for scripts,
+`--format sarif` for GitHub code scanning, `--format html` for a
+self-contained report page (no external assets, works opened from disk).
+
+## Rules
+
+| ID | Default severity | What it reports |
+|---|---|---|
+| `stale-symbol-ref` | lie (error) | A comment names a call that resolves nowhere: not defined in the repo, not imported in the file, not used in the file, not a builtin or keyword. Prints rename suggestions when a close match exists. |
+| `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
+| `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
+| `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, and workaround markers (`HACK`, `XXX`, `workaround`) with no ticket or expiry condition. |
+
+A rule stays silent unless the contradiction is mechanical. Imported names,
+standard library names, parameters, locals, attributes, docstring field
+lists (`:param:`, `@param`), and illustrative examples ("For example …")
+never produce findings.
 
 ## Configuration
 
-`grounded.toml` (or `pyproject.toml` `[tool.grounded]`):
+`grounded init` writes a starter file. Settings also load from
+`pyproject.toml` under `[tool.grounded]`.
 
 ```toml
+# grounded.toml
 disable = ["fragile-anchor"]
 fail_on = "lie"
-ignore_dirs = ["docs"]
+ignore_dirs = ["docs", "sandbox"]
+ignore_files = ["generated.py"]
 ```
 
-## Architecture (v2 deltas)
+## Non-goals
 
-- `parsers.py`: per-file **import maps** (AST for Python incl. relative
-  forms; import/require regexes for JS/TS with bare-vs-relative
-  classification) attached to `FileFacts`.
-- `repo_index.py`: symbols now include **module-level assignments**
-  (function-local names deliberately excluded); **`top_names`** (repo-root
-  entries) power the repo-scope rule; `.d.ts`/`.d.cts` excluded at scan.
-- `checkers.py`: 4 checkers + suppression machinery + `difflib`
-  rename suggestions + `REMOVED_CHECKERS` pointers. Deleted ~300 lines of
-  redundant checkers.
-- Outputs unchanged: terminal / JSON / SARIF 2.1.0 / self-contained HTML.
+Docstring contracts (parameter lists, return sections, raised exceptions)
+are covered precisely by [darglint](https://github.com/terrencepreilly/darglint)
+and [pydoclint](https://github.com/jsh9/pydoclint) for Python and
+[eslint-plugin-jsdoc](https://github.com/gajus/eslint-plugin-jsdoc) for
+JavaScript/TypeScript. Commented-out code is covered by
+[Ruff ERA001](https://docs.astral.sh/ruff/rules/commented-out-code/) and
+equivalent ESLint rules. `grounded` intentionally does not duplicate them;
+`grounded explain <id>` points at the right tool for each removed check.
 
-## Limitations (honest residue)
+## Limitations
 
-- Bare-call channel is intentionally weak (verb + gates); rename-refs
-  written without verbs or backticks are missed (recall cost of precision).
-- Illustrative-example detection is proximity-based; exotic phrasing slips
-  through either way.
-- Suggestions are string-similarity only (`difflib`, cutoff 0.8); first
-  guess can be wrong (django case suggested a cousin before the true
-  rename — both listed when close).
-- Cross-module renames where the name is imported are conservatively
-  skipped (imported = "known elsewhere").
-- Framework namespaces (Django templates, URLconfs) are out of scope by
-  design — the repo-scope rule stays quiet instead of guessing.
-- JS/TS analysis remains syntactic (imports + identifiers), not a full
-  type graph. A `tsc`-powered edition would be the next precision step
-  and would cost the zero-dependency property — deliberately not taken.
-- Benchmark small-n warning: v2's lie precision rests on 1–2 remaining
-  lies. The claim is "quiet and right on 3,200 files", not a percentage
-  proven at scale.
+- Unformatted, unverbed name mentions are skipped. A rename noted without
+  backticks or a reference verb ("calls", "see", "uses") will be missed.
+  This trades recall for precision.
+- Names imported from anywhere are treated as known elsewhere, including
+  cross-module renames.
+- Framework namespaces (template paths, URL names) are out of scope; such
+  references stay silent instead of guessed.
+- JavaScript/TypeScript analysis is syntactic (imports plus identifiers),
+  not a full type graph.
+- Rename suggestions use string similarity only; the first guess can miss.
 
-## What was learned (attack → rebuild)
+## Development
 
-- The valuable unsolved residue was never "verify all beliefs" — it is
-  **rename-aware dangling-reference detection**, and it only works with
-  import graphs + scope proxies + framework humility.
-- Every surviving v2 rule maps to a measured FP class; every deleted
-  checker maps to an executed incumbent. Nothing in v2 is defended by
-  taste.
-- The zero-dependency property survived (still stdlib-only) but is no
-  longer load-bearing for precision — import/scope reasoning did the work.
-  If precision stalls again, spending the dependency budget on a real JS
-  parser is the documented next step.
+```console
+python -m unittest discover -s tests   # 42 tests, stdlib only, no extras
+grounded scan src                      # self-scan gate, must report clean
+grounded scan examples/v2demo          # fixture tree, expect 8 findings
+```
+
+## Contributing
+
+Issues and pull requests are welcome. Please include:
+
+- a minimal fixture (a few lines showing the comment and the code),
+- current output vs expected output,
+- the checker id in the issue title.
+
+New checkers are accepted only with a fixture, tests, and no new runtime
+dependencies (stdlib only is a project rule).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

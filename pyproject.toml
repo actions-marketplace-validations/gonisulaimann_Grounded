@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grounded"
 version = "0.2.0"
-description = "The epistemic linter: proves your comments wrong with evidence. Deterministic, offline, zero dependencies."
+description = "Find dangling references in code comments. Deterministic, offline, zero dependencies."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }

@@ -1,4 +1,4 @@
-include README.md CHANGELOG.md ATTACK.md LICENSE
+include README.md CHANGELOG.md LICENSE
 recursive-include examples *.py *.js
 prune src/grounded.egg-info
 prune build
