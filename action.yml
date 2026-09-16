@@ -1,4 +1,4 @@
-name: grounded
+name: grounded-lint
 description: Find dangling references in code comments
 inputs:
   path:
