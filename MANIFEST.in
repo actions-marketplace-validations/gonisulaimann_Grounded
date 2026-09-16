@@ -1,0 +1,6 @@
+include README.md CHANGELOG.md ATTACK.md LICENSE
+recursive-include examples *.py *.js
+prune src/grounded.egg-info
+prune build
+prune dist
+global-exclude __pycache__ *.py[cod]
