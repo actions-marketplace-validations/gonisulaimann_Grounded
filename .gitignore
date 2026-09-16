@@ -6,3 +6,4 @@ dist/
 .venv/
 .coverage
 htmlcov/
+SESSION_EXPORT*
