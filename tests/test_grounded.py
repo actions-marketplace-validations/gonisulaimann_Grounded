@@ -200,6 +200,19 @@ class TestFileV2(unittest.TestCase):
                           "a.py": "# For example, see src/news/photos.py for layout.\nY = 2\n"})
         self.assertEqual(out, [])
 
+    def test_moved_path_fires_with_candidates(self):
+        out = self.files({"src/real/deep.py": "X = 1\n",
+                          "a.py": "# See src/old/deep.py for details.\nY = 2\n"})
+        self.assertTrue(any("src/old/deep.py" in f.title for f in out))
+        hit = [f for f in out if "src/old/deep.py" in f.title][0]
+        self.assertIn("src/real/deep.py", hit.evidence)
+
+    def test_ticketed_history_note_silent(self):
+        out = self.files({"src/a.py": "X = 1\n",
+                          "a.py": ("# These symbols used to be in src/old/stuff.py\n"
+                                   "# before the reorganization (See #10355)\nY = 2\n")})
+        self.assertEqual(out, [])
+
 
 class TestNumberAndAnchor(unittest.TestCase):
     def setUp(self):
@@ -508,6 +521,42 @@ class TestSuppressions(unittest.TestCase):
             self.assertEqual(main(["scan", str(root), "--no-color"]), 0)
 
 
+class TestGo(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def scan(self, files: dict[str, str]):
+        for rel, text in files.items():
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        return scan_root(self.root, Config())[0]
+
+    def test_backticked_call_missing_is_lie(self):
+        out = self.scan({"a.go": 'package main\n\n// Calls `ghost_cmd()` on failure.\nfunc Ping() {}\n'})
+        self.assertTrue(any(f.checker == "stale-symbol-ref" and "ghost_cmd" in f.title for f in out))
+
+    def test_imported_and_builtin_silent(self):
+        out = self.scan({"a.go": 'package main\n\nimport "fmt"\n\n// Uses `fmt.Println()`.\n// len() of the batch.\nfunc f() {}\n'})
+        self.assertFalse([f for f in out if f.checker == "stale-symbol-ref"])
+
+    def test_defined_method_silent(self):
+        out = self.scan({"a.go": 'package main\n\n// See ParseFlags() for merging.\nfunc ParseFlags() {}\n'})
+        self.assertFalse([f for f in out if f.checker == "stale-symbol-ref"])
+
+    def test_ticket_next_line_silences_temporal(self):
+        out = self.scan({"a.go": 'package main\n\n// Temporarily disable check X.\n// See https://example.com/issue/1.\nfunc f() {}\n'})
+        self.assertFalse([f for f in out if f.checker == "fragile-anchor"])
+
+    def test_untracked_hack_still_fires(self):
+        out = self.scan({"a.go": 'package main\n\n// HACK: skip validation for now\nfunc f() {}\n'})
+        self.assertTrue(any(f.checker == "fragile-anchor" for f in out))
+
+
 class TestRepoFiles(unittest.TestCase):
     def test_action_files_parse(self):
         import json
@@ -530,6 +579,71 @@ class TestRepoFiles(unittest.TestCase):
         self.assertEqual(bad, [])
         hooks = (root / ".pre-commit-hooks.yaml").read_text()
         self.assertIn("grounded scan", hooks)
+
+
+class TestFix(unittest.TestCase):
+    def _write(self, root: Path, files: dict[str, str]) -> None:
+        for rel, text in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+
+    def test_unique_match_rewritten(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {
+                "src/real/deep.py": "X = 1\n",
+                "a.py": "# See src/old/deep.py for details.\nY = 2\n",
+            })
+            self.assertEqual(main(["fix", str(root)]), 0)
+            self.assertIn("src/real/deep.py", (root / "a.py").read_text())
+            # rescan is clean
+            self.assertEqual(main(["scan", str(root), "--no-color"]), 0)
+
+    def test_dry_run_writes_nothing(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {
+                "src/real/deep.py": "X = 1\n",
+                "a.py": "# See src/old/deep.py for details.\nY = 2\n",
+            })
+            before = (root / "a.py").read_text()
+            self.assertEqual(main(["fix", str(root), "--dry-run"]), 0)
+            self.assertEqual((root / "a.py").read_text(), before)
+
+    def test_ambiguous_basename_untouched(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {
+                "src/one/deep.py": "X = 1\n",
+                "src/two/deep.py": "X = 2\n",
+                "a.py": "# See src/old/deep.py for details.\nY = 2\n",
+            })
+            self.assertEqual(main(["fix", str(root)]), 0)
+            self.assertIn("src/old/deep.py", (root / "a.py").read_text())
+
+    def test_docstring_claim_untouched(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {
+                "src/real/deep.py": "X = 1\n",
+                "a.py": 'def f():\n    """Do.\n\n    See src/old/deep.py.\n    """\n    return 1\n',
+            })
+            self.assertEqual(main(["fix", str(root)]), 0)
+            self.assertIn("src/old/deep.py", (root / "a.py").read_text())
+
+    def test_non_file_findings_untouched(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "# Calls `ghost_fn()`.\nX = 1\n"})
+            before = (root / "a.py").read_text()
+            self.assertEqual(main(["fix", str(root)]), 0)
+            self.assertEqual((root / "a.py").read_text(), before)
 
 
 if __name__ == "__main__":

@@ -67,6 +67,38 @@ COMMON_ENGLISH_FUNCWORDS = {
     "something", "nothing", "anything", "everything",
 }
 
+GO_BUILTINS = {
+    "append", "cap", "clear", "close", "complex", "copy", "delete",
+    "imag", "len", "make", "max", "min", "new", "panic", "print",
+    "println", "real", "recover", "error", "string", "int", "int8",
+    "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32",
+    "uint64", "uintptr", "float32", "float64", "complex64", "complex128",
+    "bool", "byte", "rune", "any", "comparable", "true", "false", "nil",
+    "iota",
+}
+
+GO_KEYWORDS = {
+    "break", "case", "chan", "const", "continue", "default", "defer",
+    "else", "fallthrough", "for", "func", "go", "goto", "if", "import",
+    "interface", "map", "package", "range", "return", "select", "struct",
+    "switch", "type", "var",
+}
+
+
+def _is_reserved(base: str, language: str) -> bool:
+    """Builtins, keywords, and prose words: never symbol references."""
+    if base in PYTHON_BUILTINS or base in JS_GLOBALS or base in KEYWORDS:
+        return True
+    if base.lower() in COMMON_ENGLISH_FUNCWORDS:
+        return True
+    if base.lower() in KEYWORDS:
+        return True
+    if base.lower() in {"true", "false", "none", "null", "undefined", "nil"}:
+        return True
+    if language == "go" and (base in GO_BUILTINS or base in GO_KEYWORDS):
+        return True
+    return False
+
 PLACEHOLDER_PATH_HINTS = {"example", "examples", "path", "to", "foo", "bar", "baz",
     "placeholder", "sample", "demo", "<", ">", "...", "xxx",
     "myapp", "mysite", "app_label", "yourproject", "yourdomain", "sitename"}
@@ -161,9 +193,32 @@ _JSDOC_TAG_LINE = re.compile(
 def _scrub_docstring(doc: str, language: str) -> str:
     if not doc:
         return ""
+    if language == "go":
+        return doc  # Go doc comments carry no contract tags to exclude
     pat = _JSDOC_TAG_LINE if language == "javascript" else _SPHINX_FIELD_LINE
     kept = [ln for ln in doc.splitlines() if not pat.match(ln)]
     return "\n".join(kept)
+
+
+def _comment_lines(facts: FileFacts) -> dict[int, str]:
+    """Map of line number to comment text (multi-line blocks expanded)."""
+    by_line: dict[int, str] = {}
+    for c in facts.comments:
+        for ln in range(c.line, c.end_line + 1):
+            by_line.setdefault(ln, c.text)
+    return by_line
+
+
+def _nearby_ticket(facts: FileFacts, line: int, end_line: int, by_line: dict[int, str] | None = None) -> bool:
+    """Ticket links often sit next to the marker ("See <url>" below a
+    "Temporarily ..." comment; "#10355" beside a history note). Markers
+    with a ticket within two lines point outside on purpose."""
+    if by_line is None:
+        by_line = _comment_lines(facts)
+    for ln in range(line - 2, end_line + 3):
+        if _TICKET.search(by_line.get(ln, "")):
+            return True
+    return False
 
 
 def _code_text(facts: FileFacts) -> str:
@@ -334,11 +389,7 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue
             if len(base) < 3:
                 continue
-            if base in PYTHON_BUILTINS or base in JS_GLOBALS or base.lower() in COMMON_ENGLISH_FUNCWORDS:
-                continue
-            if base.lower() in KEYWORDS or base in KEYWORDS:
-                continue
-            if base.lower() in {"true", "false", "none", "null", "undefined"}:
+            if _is_reserved(base, facts.language):
                 continue
             # v2: non-call backticked names are fields/attrs/prose, except
             # dunders: dunder names are almost always real protocol
@@ -378,11 +429,7 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             base = full.split(".")[-1]
             if len(base) < 3:
                 continue
-            if base in PYTHON_BUILTINS or base in JS_GLOBALS or base in KEYWORDS:
-                continue
-            if base.lower() in COMMON_ENGLISH_FUNCWORDS or base.lower() in KEYWORDS:
-                continue
-            if base.lower() in {"true", "false", "none", "null"}:
+            if _is_reserved(base, facts.language):
                 continue
             if f"`{full}()`" in text or f"`{base}()`" in text:
                 continue
@@ -454,6 +501,11 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         if not text.strip():
             return
         text = re.sub(r"https?://\S+", "", text)
+        # Ticket-anchored history notes ("used to be in X.py ... See #10355")
+        # point outside on purpose, like ticketed symbol claims. The ticket
+        # may sit on a neighboring comment line.
+        if _TICKET.search(text) or _nearby_ticket(facts, line, end):
+            return
         for m in _FILE_REF.finditer(text):
             ref = m.group(1)
             segs = [s.lower() for s in re.split(r"[/.]", ref)]
@@ -464,19 +516,25 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             if not _in_repo_scope(ref, index):
                 continue
             # v2: illustrative examples invent paths ("For example ...
-            # ``django/templatetags/news/photos.py``"). A ref shortly after
-            # such a marker is documentation, not a claim.
+            # ``django/templatetags/news/photos.py``"); a file ref
+            # within ~120 chars after such a marker is an example, not a claim.
             if _ILLUSTRATIVE.search(text[max(0, m.start() - 120):m.start()]):
                 continue
-            if index.has_file(ref):
+            if index.has_exact_path(ref):
                 continue
+            same = index.same_named(ref)
+            detail = ""
+            if same:
+                shown = ", ".join(f"`{s}`" for s in same[:3])
+                more = f" (+{len(same) - 3} more)" if len(same) > 3 else ""
+                detail = f" Same-named files exist: {shown}{more}."
             findings.append(Finding(
                 path=facts.path, line=line, end_line=end,
                 checker="stale-file-ref", severity="lie",
                 title=f"{kind} references missing file `{ref}`",
                 claim=ref,
                 evidence=f"`{ref}` claims a path inside this repo "
-                         f"(first segment matches the repo tree), but no such file exists.",
+                         f"(first segment matches the repo tree), but no such file exists.{detail}",
                 fix="Update the path or remove the reference. List nearby files to find the rename.",
                 confidence=0.85,
             ))
@@ -572,6 +630,14 @@ def check_number_drift(facts: FileFacts, index: RepoIndex) -> list[Finding]:
 
 
 def check_fragile_anchor(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    # Ticket links often sit on the line next to the marker ("See
+    # https://..." below a "Temporarily ..." comment). Judge the marker
+    # together with immediately adjacent comment lines.
+    by_line = _comment_lines(facts)
+
+    def has_ticket_nearby(c: Comment) -> bool:
+        return _nearby_ticket(facts, c.line, c.end_line, by_line)
+
     findings: list[Finding] = []
     for c in facts.comments:
         text = c.text
@@ -600,7 +666,7 @@ def check_fragile_anchor(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 confidence=0.65,
             ))
             continue
-        if _workaround_match(text) and not _TICKET.search(text):
+        if _workaround_match(text) and not _TICKET.search(text) and not has_ticket_nearby(c):
             mm = _workaround_match(text)
             findings.append(Finding(
                 path=facts.path, line=c.line, end_line=c.end_line,
@@ -612,7 +678,7 @@ def check_fragile_anchor(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 confidence=0.7,
             ))
             continue
-        if _TEMPORAL.search(text) and not _TICKET.search(text):
+        if _TEMPORAL.search(text) and not _TICKET.search(text) and not has_ticket_nearby(c):
             # only flag short comments where temporality is the point; avoid prose FPs
             if len(text) < 160 and re.search(r"\b(fix|hack|patch|toggle|flag|skip|disable)\b", text, re.IGNORECASE):
                 mm = _TEMPORAL.search(text)

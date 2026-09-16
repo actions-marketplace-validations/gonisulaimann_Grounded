@@ -25,6 +25,7 @@ class RepoIndex:
         self.files = files  # absolute paths
         self.py_symbols: set[str] = set()
         self.js_symbols: set[str] = set()
+        self.go_symbols: set[str] = set()
         self.all_symbols: set[str] = set()
         self.lower_map: dict[str, set[str]] = {}
         # relative posix paths + basenames for file-ref resolution
@@ -69,7 +70,9 @@ class RepoIndex:
                 self._index_python(text)
             elif suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}:
                 self._index_js(text)
-        self.all_symbols = set(self.py_symbols) | set(self.js_symbols)
+            elif suffix == ".go":
+                self._index_go(text)
+        self.all_symbols = set(self.py_symbols) | set(self.js_symbols) | set(self.go_symbols)
         for s in self.all_symbols:
             self.lower_map.setdefault(s.lower(), set()).add(s)
 
@@ -93,6 +96,16 @@ class RepoIndex:
             elif isinstance(node, ast.AnnAssign):
                 if isinstance(node.target, ast.Name):
                     self.py_symbols.add(node.target.id)
+
+    def _index_go(self, text: str) -> None:
+        for line in text.splitlines():
+            m = re.match(r"^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+            if m:
+                self.go_symbols.add(m.group(1))
+                continue
+            t = re.match(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\b", line)
+            if t:
+                self.go_symbols.add(t.group(1))
 
     def _index_js(self, text: str) -> None:
         for line in text.splitlines():
@@ -125,22 +138,23 @@ class RepoIndex:
                 return True
         return False
 
-    def has_file(self, ref: str) -> bool:
-        """Check whether a file reference resolves to a known file."""
+    def has_exact_path(self, ref: str) -> bool:
+        """Exact-path existence only (no basename fallback).
+
+        Basename matching hid moved files (`src/old/x.py` silently
+        resolving via an unrelated `x.py`), which is precisely the
+        rename/move signal the checker and autofix need. Same-named
+        files elsewhere are reported as candidates, not resolutions.
+        """
         r = ref.strip().strip("'\"`").lstrip("./")
         r = r.split("?")[0].split("#")[0]
         if not r:
             return False
         if r in self.rel_paths:
             return True
-        base = r.split("/")[-1]
-        if base in self.basenames:
-            return True
-        # suffix match: ref endswith known rel path
         for known in self.rel_paths:
             if known.endswith("/" + r) or known == r:
                 return True
-        # check on disk too (covers files we didn't index, e.g. .md/.json)
         candidate = self.root / r
         try:
             if candidate.exists():
@@ -148,3 +162,8 @@ class RepoIndex:
         except OSError:
             pass
         return False
+
+    def same_named(self, ref: str) -> list[str]:
+        """Repo-relative paths sharing the referenced basename, sorted."""
+        base = ref.strip().split("/")[-1]
+        return sorted(p for p in self.rel_paths if p.split("/")[-1] == base and not p.startswith("./"))

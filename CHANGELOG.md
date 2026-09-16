@@ -3,6 +3,23 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.0] - 2026-09-17
+
+### Added
+- Go support (functions, types, imports) for all four checkers.
+- `grounded fix [--dry-run]`: rewrites unambiguous stale file paths
+  (unique same-basename match, comments only).
+- Inline suppressions: `# grounded-disable: <id>` / `// grounded-disable: <id>`.
+- First-party GitHub Action (`action.yml`) with problem matchers for inline
+  PR annotations; verified live on a test PR.
+- Pre-commit hook definition (`.pre-commit-hooks.yaml`).
+
+### Changed
+- File references use exact-path semantics with same-name candidates
+  listed; ticket-anchored history notes stay silent.
+- Commented-code suppression gate tightened (prose with a few keywords no
+  longer qualifies).
+
 ## [0.3.0] - 2026-09-17
 
 ### Added

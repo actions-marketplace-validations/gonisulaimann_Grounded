@@ -453,4 +453,112 @@ def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
         return parse_python(path, rel, text)
     if suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}:
         return parse_javascript(path, rel, text)
+    if suffix == ".go":
+        return parse_go(path, rel, text)
     return None
+
+
+_GO_FUNC = re.compile(r"^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_GO_TYPE = re.compile(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+_GO_IMPORT_BLOCK = re.compile(r"^\s*import\s*\(", re.MULTILINE)
+_GO_IMPORT_LINE = re.compile(r'^\s*import\s+(?:([A-Za-z_\.][A-Za-z0-9_]*)\s+)?["`]([^"`]+)["`]')
+_GO_IMPORT_ENTRY = re.compile(r'^\s*(?:([A-Za-z_\.][A-Za-z0-9_]*)\s+)?["`]([^"`]+)["`]\s*$')
+
+
+def _go_imports(text: str) -> dict[str, str]:
+    """alias -> top path segment ('' for relative-ish/internal)."""
+    out: dict[str, str] = {}
+    for m in _GO_IMPORT_LINE.finditer(text):
+        alias, spec = m.group(1), m.group(2)
+        if spec.startswith((".", "/")):
+            top = ""
+        else:
+            top = spec.split("/")[0]
+        if alias in (None, "", "_", "."):
+            if alias in ("_", "."):
+                continue
+            # `import "fmt"` binds package name = last segment
+            out[spec.rstrip("/").split("/")[-1]] = top
+        else:
+            out[alias] = top
+    in_block = False
+    for line in text.splitlines():
+        if not in_block:
+            if _GO_IMPORT_BLOCK.match(line):
+                in_block = True
+            continue
+        if re.match(r"^\s*\)", line):
+            in_block = False
+            continue
+        m = _GO_IMPORT_ENTRY.match(line)
+        if not m:
+            continue
+        alias, spec = m.group(1), m.group(2)
+        top = "" if spec.startswith((".", "/")) else spec.split("/")[0]
+        if alias in (None, "", "_", "."):
+            if alias in ("_", "."):
+                continue
+            out[spec.rstrip("/").split("/")[-1]] = top
+        else:
+            out[alias] = top
+    return out
+
+
+def parse_go(path: Path, rel: str, text: str) -> FileFacts:
+    lines = text.splitlines()
+    facts = FileFacts(path=rel, language="go", lines=lines)
+    comments: list[Comment] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("//"):
+            inner = stripped[2:]
+            if inner.startswith(" "):
+                inner = inner[1:]
+            comments.append(Comment(text=inner, raw=stripped, line=i + 1, end_line=i + 1))
+        elif "/*" in line:
+            bs = line.find("/*")
+            be = line.find("*/", bs + 2)
+            prefix = line[:bs]
+            if be != -1:
+                if prefix.strip() == "":
+                    comments.append(Comment(text=line[bs + 2:be].strip(), raw=line[bs:be + 2],
+                                           line=i + 1, end_line=i + 1))
+            else:
+                buf = [line[bs + 2:]]
+                j = i + 1
+                while j < n and "*/" not in lines[j]:
+                    buf.append(lines[j])
+                    j += 1
+                if j < n:
+                    buf.append(lines[j][:lines[j].find("*/")])
+                    if prefix.strip() == "":
+                        comments.append(Comment(text="\n".join(buf).strip(),
+                                               raw="\n".join(buf), line=i + 1, end_line=j + 1))
+                    i = j
+        i += 1
+    facts.comments = comments
+    funcs: list[FuncInfo] = []
+    for idx, line in enumerate(lines, start=1):
+        m = _GO_FUNC.match(line)
+        if m and m.group(1) not in {"if", "for", "switch", "select", "range"}:
+            # preceding // doc block within 2 lines attaches as docstring
+            doc_lines: list[str] = []
+            k = idx - 2
+            while k >= 0 and lines[k].strip().startswith("//"):
+                doc_lines.append(lines[k].strip()[2:].strip())
+                k -= 1
+            doc_lines.reverse()
+            # crude signature params for future use; body signals skipped:
+            # Go checkers use symbol/file/anchor/number only.
+            funcs.append(FuncInfo(name=m.group(1), lineno=idx, end_lineno=idx,
+                                  args=[], docstring="\n".join(doc_lines),
+                                  docstring_lineno=k + 2 if doc_lines else 0))
+            continue
+        t = _GO_TYPE.match(line)
+        if t:
+            funcs.append(FuncInfo(name=t.group(1), lineno=idx, end_lineno=idx, args=[]))
+    facts.functions = funcs
+    facts.imports = _go_imports(text)
+    return facts

@@ -60,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--enable", default=None, help="comma-separated checker ids to run exclusively")
     b.add_argument("--disable", default=None, help="comma-separated checker ids to skip")
 
+    fx = sub.add_parser("fix", help="rewrite unambiguous stale file references (preview with --dry-run)")
+    fx.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
+    fx.add_argument("--dry-run", action="store_true", help="print fixes without writing")
+    fx.add_argument("--config", default=None, help="explicit config file (grounded.toml)")
+
     e = sub.add_parser("explain", help="explain what a checker proves")
     e.add_argument("checker", nargs="?", default=None, help="checker id (omit to list all)")
 
@@ -176,6 +181,30 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fix(args: argparse.Namespace) -> int:
+    from .fix import apply_fixes, file_fix_candidates
+    root = Path(args.path).resolve()
+    if not root.exists():
+        print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
+        return 2
+    if root.is_file():
+        root = root.parent
+    config = Config.load(root, explicit=args.config)
+    findings, facts, index = scan_root(root, config)
+    facts_by_path = {f.path: f for f in facts}
+    findings, _ = apply_suppressions(findings, facts_by_path)
+    fixes = file_fix_candidates(findings, root)
+    if not fixes:
+        print("grounded fix: nothing unambiguous to rewrite.")
+        return 0
+    for f, replacement, ln in fixes:
+        print(f"{'would rewrite' if args.dry_run else 'rewrote'} "
+              f"{f.path}:{ln}: {f.claim} -> {replacement}")
+    n = apply_fixes(root, fixes, dry_run=args.dry_run)
+    print(f"grounded fix: {n} file(s) {'would change' if args.dry_run else 'changed'}.")
+    return 0
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     target = Path.cwd() / "grounded.toml"
     if target.exists() and not args.force:
@@ -228,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_scan(args)
     if args.cmd == "baseline":
         return cmd_baseline(args)
+    if args.cmd == "fix":
+        return cmd_fix(args)
     if args.cmd == "init":
         return cmd_init(args)
     if args.cmd == "explain":

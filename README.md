@@ -18,7 +18,7 @@ LIE src/app.py:9 [stale-symbol-ref] Comment references `ghost_service` which is 
     fix: Update the comment to the current name, or remove the reference.
 ```
 
-Zero dependencies. No network access. Works on Python and JavaScript/TypeScript.
+Zero dependencies. No network access. Works on Python, JavaScript/TypeScript, and Go.
 
 ## Install
 
@@ -46,6 +46,7 @@ grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
               [--changed [BASE]]
               [--config grounded.toml] [--no-color] [--quiet]
 grounded baseline [PATH] [--output FILE]  # record findings for delta gating
+grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale file paths
 grounded list [PATH]       # show files that would be scanned
 grounded explain CHECKER   # describe a checker (including removed ones)
 grounded init [--force]    # write a starter grounded.toml
@@ -113,6 +114,49 @@ ignore_dirs = ["docs", "sandbox"]
 ignore_files = ["generated.py"]
 ```
 
+Suppress a single accepted finding where it sits (reviewable, local):
+
+```python
+# Calls `legacy_parse()` for old dumps.  # grounded-disable: stale-symbol-ref
+```
+
+```js
+// Calls `legacyParse()` for old dumps.  // grounded-disable: stale-symbol-ref
+```
+
+## CI, pre-commit, and GitHub Action
+
+Gate pull requests with the first-party Action (inline PR annotations
+included via problem matchers):
+
+```yaml
+- uses: gonisulaimann/Grounded@v0.4.0
+  with:
+    changed-base: origin/main   # new findings on edited lines only
+    fail-on: lie
+```
+
+Or with a baseline file for whole-tree delta gating:
+
+```yaml
+- uses: gonisulaimann/Grounded@v0.4.0
+  with:
+    baseline: .grounded-baseline.json
+```
+
+As a pre-commit hook (runs on uncommitted changes):
+
+```yaml
+repos:
+  - repo: https://github.com/gonisulaimann/Grounded
+    rev: v0.4.0
+    hooks:
+      - id: grounded
+```
+
+SARIF upload for code scanning: run with `--format sarif --output
+results.sarif`, then upload with `github/codeql-action/upload-sarif`.
+
 ## Non-goals
 
 Docstring contracts (parameter lists, return sections, raised exceptions)
@@ -133,16 +177,18 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
   cross-module renames.
 - Framework namespaces (template paths, URL names) are out of scope; such
   references stay silent instead of guessed.
-- JavaScript/TypeScript analysis is syntactic (imports plus identifiers),
-  not a full type graph.
+- JavaScript/TypeScript and Go analysis is syntactic (imports plus
+  identifiers), not a full type graph.
 - Rename suggestions use string similarity only; the first guess can miss.
+- `grounded fix` rewrites stale file paths only, and only on unambiguous
+  same-basename matches in comments (never docstrings, never ties).
 
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 42 tests, stdlib only, no extras
+python -m unittest discover -s tests   # 69 tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
-grounded scan examples/v2demo          # fixture tree, expect 8 findings
+grounded scan examples/v2demo          # fixture tree, expect 10 findings
 ```
 
 ## Contributing
