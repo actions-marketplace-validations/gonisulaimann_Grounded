@@ -14,6 +14,9 @@ _JS_FUNC_PATTERNS = [
     re.compile(r"^\s*(?:export\s+)?(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\{"),
     re.compile(r"^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s*)?function\b"),
     re.compile(r"^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s*)?\([^)]*\)\s*=>"),
+    re.compile(r"^\s*export\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\("),
+    re.compile(r"^\s*module\.exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*="),
+    re.compile(r"^\s*(?:export\s+)?(?:interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b"),
 ]
 
 _JS_METHOD_HINT = re.compile(r"^\s*(?:async\s+|static\s+|get\s+|set\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")

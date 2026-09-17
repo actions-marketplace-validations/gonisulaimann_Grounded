@@ -646,5 +646,21 @@ class TestFix(unittest.TestCase):
             self.assertEqual((root / "a.py").read_text(), before)
 
 
+class TestIndexCoverage(unittest.TestCase):
+    def test_js_index_extra_patterns(self):
+        from grounded.repo_index import RepoIndex
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.ts").write_text(
+                "export default function main() {}\n"
+                "module.exports.helper = 1;\n"
+                "export interface Config {}\n"
+                "type Alias = string;\n",
+                encoding="utf-8")
+            idx = RepoIndex(root, [root / "a.ts"])
+            for name in ["main", "helper", "Config", "Alias"]:
+                self.assertIn(name, idx.all_symbols)
+
+
 if __name__ == "__main__":
     unittest.main()

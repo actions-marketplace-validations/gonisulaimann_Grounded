@@ -355,32 +355,35 @@ def _js_functions(lines: list[str], comments: list[Comment]) -> list[FuncInfo]:
         if m:
             name = m.group(1)
             params = _split_params(m.group(2))
-        else:
+        if name is None:
             m2 = re.match(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(?([^)=;]*?)\)?\s*=>", line)
             if m2 and ("=>" in line):
                 name = m2.group(1)
                 params = _split_params(m2.group(2))
-            else:
-                m3 = re.match(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?function\s*\(([^)]*)\)", line)
-                if m3:
-                    name = m3.group(1)
-                    params = _split_params(m3.group(2))
-                else:
-                    m4 = re.match(r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b", line)
-                    if m4:
-                        name = m4.group(1)
-                        params = []
-                    else:
-                        m5 = re.match(r"^\s*(?:async\s+|static\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*\{", line)
-                        if m5 and idx > 1:
-                            # likely a method or function without `function` keyword; only accept
-                            # without `function` keyword; conservative method-shape fallback
-                            # keep conservative: accept but mark; dedupe later.
-                            name = m5.group(1)
-                            if name in {"if", "for", "while", "switch", "catch", "return", "import", "export"}:
-                                name = None
-                            else:
-                                params = _split_params(m5.group(2))
+        if name is None:
+            m3 = re.match(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?function\s*\(([^)]*)\)", line)
+            if m3:
+                name = m3.group(1)
+                params = _split_params(m3.group(2))
+        if name is None:
+            # multiline signature: `function Name(` without `)` on this line
+            m4 = re.match(r"^\s*(?:export\s+default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(", line)
+            if m4:
+                name = m4.group(1)
+                pm = re.search(r"\(\s*([^)]*)\)", line)
+                params = _split_params(pm.group(1)) if pm else []
+        if name is None:
+            m5 = re.match(r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b", line)
+            if m5:
+                name = m5.group(1)
+                params = []
+        if name is None and idx > 1:
+            m6 = re.match(r"^\s*(?:async\s+|static\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*\{", line)
+            if m6:
+                # method shape without `function` keyword; conservative fallback
+                if m6.group(1) not in {"if", "for", "while", "switch", "catch", "return", "import", "export"}:
+                    name = m6.group(1)
+                    params = _split_params(m6.group(2))
         if name:
             # find preceding JSDoc within 3 lines
             doc = ""

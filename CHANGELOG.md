@@ -3,26 +3,38 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.0] - 2026-09-17
+
+### Added
+- Go support: functions, types, and imports across all four checkers.
+- `grounded fix [--dry-run]`: rewrites unambiguous stale file paths
+  (unique same-basename match, comment lines only).
+- Inline suppressions: `# grounded-disable: <id>` (`//` form for JS/TS/Go).
+- First-party GitHub Action with problem matchers (verified live on a
+  test PR); pre-commit hook definition.
+
+### Changed
+- File references use exact-path semantics and list same-named candidates;
+  ticket-anchored history notes stay silent.
+- Markdown files are not scanned: measured zero file-reference hits across
+  160 documentation files, so no evidence of value (rejected).
+- Symbol rename autofix rejected: string-similarity ranking picked the
+  wrong target on a real case; suggestions stay advisory-only.
+
 ## [0.4.1] - 2026-09-17
 
 ### Fixed
-- CI demo-fixture count (8 to 10) after the Go fixture was added. No
-  product code changes.
+- CI demo-fixture count to match current fixtures. No product changes.
 
 ## [0.4.0] - 2026-09-17
 
 ### Added
-- Go support (functions, types, imports) for all four checkers.
-- `grounded fix [--dry-run]`: rewrites unambiguous stale file paths
-  (unique same-basename match, comments only).
-- Inline suppressions: `# grounded-disable: <id>` / `// grounded-disable: <id>`.
+- Inline suppressions: `# grounded-disable: <id>` (`//` form for JS/TS).
 - First-party GitHub Action (`action.yml`) with problem matchers for inline
   PR annotations; verified live on a test PR.
 - Pre-commit hook definition (`.pre-commit-hooks.yaml`).
 
 ### Changed
-- File references use exact-path semantics with same-name candidates
-  listed; ticket-anchored history notes stay silent.
 - Commented-code suppression gate tightened (prose with a few keywords no
   longer qualifies).
 
