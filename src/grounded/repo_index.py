@@ -32,6 +32,9 @@ class RepoIndex:
         self.c_symbols: set[str] = set()
         self.all_symbols: set[str] = set()
         self.lower_map: dict[str, set[str]] = {}
+        # Defining file per symbol (rel posix paths), for scope-proximate
+        # rename suggestions in autofix. A name may have several definers.
+        self.symbol_files: dict[str, set[str]] = {}
         # Optional pre-read contents (abs path string -> text) so callers
         # that already read the tree skip a second disk pass.
         self._texts = texts or {}
@@ -77,25 +80,29 @@ class RepoIndex:
                 except OSError:
                     continue
             if suffix == ".py":
-                self._index_python(text)
+                self._index_python(text, rel)
             elif suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}:
-                self._index_js(text)
+                self._index_js(text, rel)
             elif suffix == ".go":
-                self._index_go(text)
+                self._index_go(text, rel)
             elif suffix in {".c", ".h"}:
-                self._index_c(text)
+                self._index_c(text, rel)
         self.all_symbols = set(self.py_symbols) | set(self.js_symbols) | set(self.go_symbols) | set(self.c_symbols)
         for s in self.all_symbols:
             self.lower_map.setdefault(s.lower(), set()).add(s)
 
-    def _index_python(self, text: str) -> None:
+    def _record(self, target: set[str], name: str, rel: str) -> None:
+        target.add(name)
+        self.symbol_files.setdefault(name, set()).add(rel)
+
+    def _index_python(self, text: str, rel: str) -> None:
         try:
             tree = ast.parse(text)
         except SyntaxError:
             return
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                self.py_symbols.add(node.name)
+                self._record(self.py_symbols, node.name, rel)
         # v2: module-level assigned names (gettext_lazy = lazy(...),
         # constants, singletons). A comment referencing them is not
         # dangling. Restricted to module level on purpose: function locals
@@ -104,38 +111,44 @@ class RepoIndex:
             if isinstance(node, ast.Assign):
                 for t in node.targets:
                     if isinstance(t, ast.Name):
-                        self.py_symbols.add(t.id)
+                        self._record(self.py_symbols, t.id, rel)
             elif isinstance(node, ast.AnnAssign):
                 if isinstance(node.target, ast.Name):
-                    self.py_symbols.add(node.target.id)
+                    self._record(self.py_symbols, node.target.id, rel)
 
-    def _index_go(self, text: str) -> None:
+    def _index_go(self, text: str, rel: str) -> None:
         for line in text.splitlines():
             m = re.match(r"^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
             if m:
-                self.go_symbols.add(m.group(1))
+                self._record(self.go_symbols, m.group(1), rel)
                 continue
             t = re.match(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\b", line)
             if t:
-                self.go_symbols.add(t.group(1))
+                self._record(self.go_symbols, t.group(1), rel)
 
-    def _index_c(self, text: str) -> None:
+    def _index_c(self, text: str, rel: str) -> None:
         from .parsers import c_top_level_names
-        self.c_symbols.update(c_top_level_names(text))
+        for name in c_top_level_names(text):
+            self._record(self.c_symbols, name, rel)
 
-    def _index_js(self, text: str) -> None:
+    def _index_js(self, text: str, rel: str) -> None:
         for line in text.splitlines():
             for pat in _JS_FUNC_PATTERNS:
                 m = pat.match(line)
                 if m:
-                    self.js_symbols.add(m.group(1))
+                    self._record(self.js_symbols, m.group(1), rel)
                     break
         # export { a, b } / module.exports = { ... }
         for m in re.finditer(r"export\s*\{\s*([^}]+)\}", text):
             for part in m.group(1).split(","):
                 name = part.strip().split(" as ")[0].strip().split(" ")[0].strip()
                 if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name or ""):
-                    self.js_symbols.add(name)
+                    self._record(self.js_symbols, name, rel)
+        for m in re.finditer(r"module\.exports\s*=\s*\{([^}]+)\}", text):
+            for part in m.group(1).split(","):
+                name = part.strip().split(":")[0].strip()
+                if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name or ""):
+                    self._record(self.js_symbols, name, rel)
         for m in re.finditer(r"module\.exports\s*=\s*\{([^}]+)\}", text):
             for part in m.group(1).split(","):
                 name = part.strip().split(":")[0].strip()

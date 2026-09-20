@@ -700,6 +700,46 @@ class TestFix(unittest.TestCase):
             self.assertEqual(main(["fix", str(root)]), 0)
             self.assertEqual((root / "a.py").read_text(), before)
 
+    def test_symbol_rename_same_dir_unique(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {
+                "pkg/real.py": "def test_max_cookie_length():\n    pass\n",
+                "pkg/note.py": "# see comment in CookieTests.test_cookie_max_length()\nX = 1\n",
+                "other/test_choices_in_max_length.py": "def test_choices_in_max_length():\n    pass\n",
+            })
+            self.assertEqual(main(["fix", str(root)]), 0)
+            text = (root / "pkg" / "note.py").read_text()
+            self.assertIn("test_max_cookie_length", text)
+            self.assertNotIn("test_cookie_max_length", text)
+
+    def test_symbol_rename_ambiguous_same_dir_untouched(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {
+                "pkg/a.py": "def test_max_cookie_length():\n    pass\n",
+                "pkg/b.py": "def test_cookie_max_thing():\n    pass\n",
+                "pkg/note.py": "# see comment in CookieTests.test_cookie_max_length()\nX = 1\n",
+            })
+            before = (root / "pkg" / "note.py").read_text()
+            self.assertEqual(main(["fix", str(root)]), 0)
+            self.assertEqual((root / "pkg" / "note.py").read_text(), before)
+
+    def test_symbol_bare_claim_fixed_when_unique(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {
+                "pkg/real.py": "def fetch_user_data():\n    pass\n",
+                "pkg/note.py": "# Calls fetch_user_data_old() and formats.\nX = 1\n",
+            })
+            self.assertEqual(main(["fix", str(root)]), 0)
+            text = (root / "pkg" / "note.py").read_text()
+            self.assertIn("fetch_user_data()", text)
+            self.assertNotIn("fetch_user_data_old", text)
+
 
 class TestIndexCoverage(unittest.TestCase):
     def test_js_index_extra_patterns(self):
@@ -764,6 +804,91 @@ class TestMatcherDrift(unittest.TestCase):
                         matched[sev] = True
             self.assertTrue(matched["LIE"], "LIE line must match its matcher")
             self.assertTrue(matched["SMELL"], "SMELL line must match its matcher")
+
+
+class TestMcp(unittest.TestCase):
+    def _server(self, root: Path):
+        from grounded.mcp import McpServer
+        return McpServer(root)
+
+    def _handshake(self, server):
+        init = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                              "params": {"protocolVersion": "2025-03-26",
+                                         "capabilities": {},
+                                         "clientInfo": {"name": "t", "version": "0"}}})
+        self.assertEqual(init["result"]["protocolVersion"], "2025-03-26")
+        self.assertIn("tools", init["result"]["capabilities"])
+        self.assertIsNone(server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+
+    def test_full_session(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("# Calls `ghost_fn()`.\nX = 1\n", encoding="utf-8")
+            server = self._server(root)
+            self._handshake(server)
+            tools = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+            names = {t["name"] for t in tools["result"]["tools"]}
+            self.assertEqual(names, {"check_path", "explain_checker"})
+            resp = server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                  "params": {"name": "check_path", "arguments": {"path": "."}}})
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertTrue(payload["failed"])
+            self.assertEqual(payload["summary"]["lie"], 1)
+            self.assertIn("ghost_fn", payload["findings"][0]["title"])
+            exp = server.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                                 "params": {"name": "explain_checker",
+                                            "arguments": {"checker": "stale-symbol-ref"}}})
+            self.assertIn("stale-symbol-ref", exp["result"]["content"][0]["text"])
+
+    def test_version_negotiation_and_errors(self):
+        with tempfile.TemporaryDirectory() as td:
+            server = self._server(Path(td))
+            old = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                 "params": {"protocolVersion": "1999-01-01", "capabilities": {},
+                                            "clientInfo": {"name": "t", "version": "0"}}})
+            self.assertEqual(old["result"]["protocolVersion"], "2025-03-26")
+            self.assertEqual(
+                server.handle({"jsonrpc": "2.0", "id": 2, "method": "nope"}),
+                {"jsonrpc": "2.0", "id": 2,
+                 "error": {"code": -32601, "message": "method not found: nope"}})
+            self.assertEqual(
+                server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                               "params": {"name": "nope", "arguments": {}}})["error"]["code"],
+                -32602)
+
+    def test_path_escape_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            server = self._server(Path(td))
+            self._handshake(server)
+            resp = server.handle({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                                  "params": {"name": "check_path", "arguments": {"path": ".."}}})
+            self.assertEqual(resp["error"]["code"], -32602)
+
+    def test_stdio_transport_roundtrip(self):
+        import os
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("X = 1\n", encoding="utf-8")
+            repo = Path(__file__).resolve().parent.parent
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(repo / "src") + os.pathsep + env.get("PYTHONPATH", "")
+            proc = subprocess.run(
+                [sys.executable, "-m", "grounded.cli", "mcp", "--root", str(root)],
+                input=('{"jsonrpc":"2.0","id":1,"method":"initialize",'
+                       '"params":{"protocolVersion":"2025-03-26","capabilities":{},'
+                       '"clientInfo":{"name":"t","version":"0"}}}\n'
+                       '{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
+                       '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'),
+                capture_output=True, text=True, timeout=120,
+                cwd=str(Path(__file__).resolve().parent.parent))
+            self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
+            lines = [json.loads(ln) for ln in proc.stdout.splitlines() if ln.strip()]
+            self.assertEqual(lines[0]["result"]["serverInfo"]["name"], "grounded")
+            self.assertEqual({t["name"] for t in lines[1]["result"]["tools"]},
+                             {"check_path", "explain_checker"})
+            self.assertNotIn("Traceback", proc.stderr)
 
 
 if __name__ == "__main__":

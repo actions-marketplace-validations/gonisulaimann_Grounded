@@ -67,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
     fx.add_argument("--dry-run", action="store_true", help="print fixes without writing")
     fx.add_argument("--config", default=None, help="explicit config file (grounded.toml)")
 
+    mc = sub.add_parser("mcp", help="serve grounded over stdio as an MCP server for coding agents")
+    mc.add_argument("--root", default=".", help="server root; all paths stay inside it (default: .)")
+
     e = sub.add_parser("explain", help="explain what a checker proves")
     e.add_argument("checker", nargs="?", default=None, help="checker id (omit to list all)")
 
@@ -184,7 +187,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
 
 def cmd_fix(args: argparse.Namespace) -> int:
-    from .fix import apply_fixes, file_fix_candidates
+    from .fix import apply_fixes, apply_symbol_fixes, file_fix_candidates, symbol_fix_candidates
     root = Path(args.path).resolve()
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
@@ -196,13 +199,18 @@ def cmd_fix(args: argparse.Namespace) -> int:
     facts_by_path = {f.path: f for f in facts}
     findings, _ = apply_suppressions(findings, facts_by_path)
     fixes = file_fix_candidates(findings, root)
-    if not fixes:
+    sym_fixes = symbol_fix_candidates(findings, root, index)
+    if not fixes and not sym_fixes:
         print("grounded fix: nothing unambiguous to rewrite.")
         return 0
     for f, replacement, ln in fixes:
         print(f"{'would rewrite' if args.dry_run else 'rewrote'} "
               f"{f.path}:{ln}: {f.claim} -> {replacement}")
+    for f, old_seg, new_seg, ln in sym_fixes:
+        print(f"{'would rewrite' if args.dry_run else 'rewrote'} "
+              f"{f.path}:{ln}: {old_seg}() -> {new_seg}()")
     n = apply_fixes(root, fixes, dry_run=args.dry_run)
+    n += apply_symbol_fixes(root, sym_fixes, dry_run=args.dry_run)
     print(f"grounded fix: {n} file(s) {'would change' if args.dry_run else 'changed'}.")
     return 0
 
@@ -261,6 +269,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_baseline(args)
     if args.cmd == "fix":
         return cmd_fix(args)
+    if args.cmd == "mcp":
+        from .mcp import serve
+        return serve(Path(args.root).resolve())
     if args.cmd == "init":
         return cmd_init(args)
     if args.cmd == "explain":

@@ -3,6 +3,23 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.0] - 2026-09-21
+
+### Added
+- `grounded mcp`: stdlib MCP server over stdio (initialize negotiation,
+  tools/list, tools/call, ping) with `check_path` and `explain_checker`
+  tools; paths confined to the server root. Verified with an independent
+  Node client against the spec.
+- Symbol renames in `grounded fix`: exactly one similar (ratio 0.75+),
+  same-directory candidate, or nothing is touched. Proven on the case
+  that killed naive similarity autofix.
+- Per-symbol defining files in the repo index (powers scope proximity).
+
+### Changed
+- General Markdown verification declined after measurement (199 import
+  claims trivially valid, flag claims mostly external tools on axios
+  docs); overlaps readme-ci, doccident, doc-drift, and docverity.
+
 ## [0.6.0] - 2026-09-17
 
 ### Added

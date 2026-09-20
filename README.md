@@ -162,7 +162,7 @@ Gate pull requests with the first-party Action (inline PR annotations
 included via problem matchers):
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.4.0
+- uses: gonisulaimann/Grounded@v0.7.0
   with:
     changed-base: origin/main   # new findings on edited lines only
     fail-on: lie
@@ -171,7 +171,7 @@ included via problem matchers):
 Or with a baseline file for whole-tree delta gating:
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.4.0
+- uses: gonisulaimann/Grounded@v0.7.0
   with:
     baseline: .grounded-baseline.json
 ```
@@ -181,13 +181,31 @@ As a pre-commit hook (runs on uncommitted changes):
 ```yaml
 repos:
   - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.4.0
+    rev: v0.7.0
     hooks:
       - id: grounded
 ```
 
 SARIF upload for code scanning: run with `--format sarif --output
 results.sarif`, then upload with `github/codeql-action/upload-sarif`.
+
+## Coding agents (MCP)
+
+`grounded` serves itself over stdio as a Model Context Protocol server,
+so agents can verify references instead of trusting them:
+
+```json
+{
+  "mcpServers": {
+    "grounded": { "command": "grounded", "args": ["mcp", "--root", "."] }
+  }
+}
+```
+
+Two tools: `check_path` (scan a path under the server root; paths cannot
+escape it) and `explain_checker`. Protocol versions `2025-03-26` through
+`2025-06-18` are negotiated per the spec; logs go to stderr, stdout
+carries only MCP messages.
 
 ## Non-goals
 
@@ -216,13 +234,15 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
   kernel idioms, platform APIs, paper algorithms, and prose verbs in
   parentheses (`forks()`) can still report; judge those on sight.
 - Rename suggestions use string similarity only; the first guess can miss.
-- `grounded fix` rewrites stale file paths only, and only on unambiguous
+  `grounded fix` applies a symbol rename only with exactly one similar,
+  same-directory candidate.
+- `grounded fix` rewrites stale file paths only on unambiguous
   same-basename matches in comments (never docstrings, never ties).
 
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 78 tests, stdlib only, no extras
+python -m unittest discover -s tests   # 80+ tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
 ```
