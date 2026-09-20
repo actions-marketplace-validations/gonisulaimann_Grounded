@@ -881,7 +881,7 @@ class TestMcp(unittest.TestCase):
                        '"clientInfo":{"name":"t","version":"0"}}}\n'
                        '{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
                        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'),
-                capture_output=True, text=True, timeout=120,
+                capture_output=True, text=True, timeout=120, env=env,
                 cwd=str(Path(__file__).resolve().parent.parent))
             self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
             lines = [json.loads(ln) for ln in proc.stdout.splitlines() if ln.strip()]
