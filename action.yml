@@ -25,9 +25,9 @@ runs:
         if [ "${{ inputs.version }}" = "source" ]; then
           pip install "${{ github.action_path }}"
         elif [ -n "${{ inputs.version }}" ]; then
-          pip install "grounded==${{ inputs.version }}"
+          pip install "grounded-lint==${{ inputs.version }}"
         else
-          pip install grounded
+          pip install grounded-lint
         fi
     - name: Register problem matchers
       shell: bash

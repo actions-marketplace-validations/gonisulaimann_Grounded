@@ -3,6 +3,13 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.1] - 2026-09-21
+
+### Changed
+- Distribution renamed to `grounded-lint` on PyPI (bare `grounded` was
+  claimed). Command (`grounded`), import package, and action behavior
+  unchanged.
+
 ## [0.7.0] - 2026-09-21
 
 ### Added

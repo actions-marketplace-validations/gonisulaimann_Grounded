@@ -1,7 +1,7 @@
 # grounded
 
 [![CI](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg)](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml)
-[![PyPI version](https://badge.fury.io/py/grounded.svg)](https://pypi.org/project/grounded/)
+[![PyPI version](https://badge.fury.io/py/grounded-lint.svg)](https://pypi.org/project/grounded-lint/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
  <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi" /></a>
 
@@ -25,7 +25,7 @@ Zero dependencies. No network access. Works on Python, JavaScript/TypeScript, Go
 Requires Python 3.10 or later.
 
 ```console
-pip install grounded
+pip install grounded-lint
 ```
 
 From source:
