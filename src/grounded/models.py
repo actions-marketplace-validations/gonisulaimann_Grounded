@@ -48,6 +48,11 @@ class FileFacts:
     # conditional (compat imports that may legitimately fail are never
     # flagged).
     from_imports: list[Any] = field(default_factory=list)
+    # Structured JS/TS imports: [(specifier, kind, default or None,
+    # [named], lineno)]. Kinds: named, namespace (`* as ns`), sideeffect,
+    # require. Side-effect-only and non-relative specifiers resolve to
+    # module existence at most.
+    js_imports: list[Any] = field(default_factory=list)
 
 
 @dataclass

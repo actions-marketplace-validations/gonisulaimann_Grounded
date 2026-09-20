@@ -43,7 +43,7 @@ grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
               [--fail-on lie|drift|smell|never]
               [--enable CHECKER,...] [--disable CHECKER,...]
               [--baseline FILE] [--show-baselined]
-              [--changed [BASE]]
+              [--changed [BASE]] [--cache [FILE]]
               [--config grounded.toml] [--no-color] [--quiet]
               [--jobs N]
 grounded baseline [PATH] [--output FILE]  # record findings for delta gating
@@ -51,6 +51,9 @@ grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale file paths
 grounded list [PATH]       # show files that would be scanned
 grounded explain CHECKER   # describe a checker (including removed ones)
 grounded init [--force]    # write a starter grounded.toml
+grounded init-agent [--claude|--cursor|--aider] [--force] [--dry-run]
+grounded mcp [--root .]    # MCP server over stdio for coding agents
+grounded lsp               # LSP 3.17 server over stdio for editors
 ```
 
 `grounded scan` exits with status `1` when any finding meets `--fail-on`
@@ -118,6 +121,17 @@ grounded scan . --changed origin/main    # branch vs base (CI)
 Untracked files are fully reported. Outside a git repo, or with an
 unresolvable base, `--changed` exits `2` with the git error instead of
 silently scanning everything.
+
+Repeat scans go faster with `--cache` (per-file results keyed by
+mtime and size, opt-in, never required):
+
+```console
+grounded scan . --cache                # writes .grounded-cache.json
+```
+
+A repeat full-tree scan reuses unchanged files; the index still rebuilds
+from disk, so expect roughly a 2x speedup on large trees, not magic.
+Corrupt or mismatched caches fall back to a full scan silently.
 
 ## Rules
 
@@ -215,9 +229,27 @@ Claude Code (`.claude/settings.json`, runs after every file edit):
 }
 ```
 
-Cursor rules (`.cursor/rules/grounded.md` or project rules): tell the
-agent to run `grounded scan . --changed` after editing files and to fix
-reported lies before building on them.
+Cursor rules are generated, not hand-written (`.md` files in
+`.cursor/rules/` are ignored by Cursor; only `.mdc` with frontmatter
+loads):
+
+```console
+grounded init-agent            # Claude hook + Cursor rule + Aider config
+grounded init-agent --cursor   # just .cursor/rules/grounded.mdc
+```
+
+Or write the rule by hand (agent-requested mode: description, no globs):
+
+```markdown
+---
+description: Verify code references with grounded before building on edited code
+alwaysApply: false
+---
+
+After editing source files, run `grounded scan . --changed` and fix
+reported lies (dangling function names, missing files) before running
+tests or committing.
+```
 
 For agents that speak MCP, use `grounded mcp` (see below) instead of
 shelling out.
@@ -297,7 +329,7 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 80+ tests, stdlib only, no extras
+python -m unittest discover -s tests   # 118 tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
 ```

@@ -673,6 +673,70 @@ class TestStaleImport(unittest.TestCase):
         self.assertEqual(out, [])
 
 
+class TestStaleImportJs(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def scan(self, files: dict[str, str]):
+        for rel, text in files.items():
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        return scan_root(self.root, Config())[0]
+
+    def imps(self, files):
+        return [f for f in self.scan(files) if f.checker == "stale-import"]
+
+    def test_missing_name_is_lie(self):
+        out = self.imps({"lib/util.js": "export function real() {}\n",
+                         "lib/app.js": "import { gone } from './util.js';\n"})
+        self.assertTrue(any("gone" in f.title for f in out))
+
+    def test_missing_module_is_lie(self):
+        out = self.imps({"lib/app.js": "import { x } from './deleted';\n"})
+        self.assertTrue(any("deleted" in f.title for f in out))
+
+    def test_ok_named_and_default_silent(self):
+        out = self.imps({"lib/util.js": "export function real() {}\nexport default real;\n",
+                         "lib/app.js": "import real, { real as r2 } from './util.js';\n"})
+        self.assertEqual(out, [])
+
+    def test_missing_default_is_lie(self):
+        out = self.imps({"lib/util.js": "export function real() {}\n",
+                         "lib/app.js": "import real from './util.js';\n"})
+        self.assertTrue(any("default" in f.title for f in out))
+
+    def test_bare_and_sideeffect_silent(self):
+        out = self.imps({"lib/poly.js": "X = 1\n",
+                         "lib/app.js": "import axios from 'axios';\nimport './poly.js';\n"})
+        self.assertEqual(out, [])
+
+    def test_index_resolution_silent(self):
+        out = self.imps({"lib/util.js": "export function real() {}\n",
+                         "lib/app.js": "import { real } from './util';\n"})
+        self.assertEqual(out, [])
+
+    def test_star_reexport_silent(self):
+        out = self.imps({"lib/inner.js": "export function real() {}\n",
+                         "lib/index.js": "export * from './inner.js';\n",
+                         "lib/app.js": "import { real } from './index.js';\n"})
+        self.assertEqual(out, [])
+
+    def test_require_named_checked(self):
+        out = self.imps({"lib/util.js": "module.exports = { real: 1 };\n",
+                         "lib/app.js": "const { gone } = require('./util.js');\n"})
+        self.assertTrue(any("gone" in f.title for f in out))
+
+    def test_require_plain_script_silent(self):
+        out = self.imps({"lib/util.js": "function real() {}\n",
+                         "lib/app.js": "const { gone } = require('./util.js');\n"})
+        self.assertEqual(out, [])
+
+
 class TestRepoFiles(unittest.TestCase):
     def test_action_files_parse(self):
         import json
@@ -1065,6 +1129,61 @@ class TestLsp(unittest.TestCase):
             bye = next(r for r in rs if r.get("id") == 3)
             self.assertEqual(bye["result"], None)
 
+    def test_buffer_rename_invalidates_peer(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "models.py").write_text("class UserProfile:\n    pass\n", encoding="utf-8")
+            (root / "views.py").write_text("# Uses `UserProfile()`.\nX = 1\n", encoding="utf-8")
+            v_uri = root.as_uri() + "/views.py"
+            m_uri = root.as_uri() + "/models.py"
+            rs = self._framed_session(root, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"rootUri": root.as_uri(), "capabilities": {}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                 "params": {"textDocument": {"uri": v_uri, "languageId": "python",
+                                             "version": 1,
+                                             "text": "# Uses `UserProfile()`.\nX = 1\n"}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didChange",
+                 "params": {"textDocument": {"uri": m_uri, "version": 2},
+                            "contentChanges": [{"text": "class AccountProfile:\n    pass\n"}]}},
+                {"jsonrpc": "2.0", "method": "textDocument/didChange",
+                 "params": {"textDocument": {"uri": v_uri, "version": 2},
+                            "contentChanges": [{"text": "# Uses `UserProfile()`.\nX = 1\n"}]}},
+            ])
+            pubs = [r for r in rs if r.get("method") == "textDocument/publishDiagnostics"]
+            first = [p for p in pubs if p["params"]["uri"].endswith("views.py")][0]
+            self.assertEqual(first["params"]["diagnostics"], [])
+            last = [p for p in pubs if p["params"]["uri"].endswith("views.py")][-1]
+            self.assertEqual(len(last["params"]["diagnostics"]), 1)
+            self.assertEqual(last["params"]["diagnostics"][0]["code"], "stale-symbol-ref")
+
+    def test_close_reverts_to_disk(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "models.py").write_text("class UserProfile:\n    pass\n", encoding="utf-8")
+            (root / "views.py").write_text("# Uses `UserProfile()`.\nX = 1\n", encoding="utf-8")
+            v_uri = root.as_uri() + "/views.py"
+            m_uri = root.as_uri() + "/models.py"
+            rs = self._framed_session(root, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"rootUri": root.as_uri(), "capabilities": {}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                 "params": {"textDocument": {"uri": v_uri, "languageId": "python",
+                                             "version": 1,
+                                             "text": "# Uses `UserProfile()`.\nX = 1\n"}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didChange",
+                 "params": {"textDocument": {"uri": m_uri, "version": 2},
+                            "contentChanges": [{"text": "class AccountProfile:\n    pass\n"}]}},
+                {"jsonrpc": "2.0", "method": "textDocument/didClose",
+                 "params": {"textDocument": {"uri": m_uri}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didChange",
+                 "params": {"textDocument": {"uri": v_uri, "version": 3},
+                            "contentChanges": [{"text": "# Uses `UserProfile()`.\nX = 1\n"}]}},
+            ])
+            pubs = [r for r in rs if r.get("method") == "textDocument/publishDiagnostics"]
+            last = [p for p in pubs if p["params"]["uri"].endswith("views.py")][-1]
+            self.assertEqual(last["params"]["diagnostics"], [])
+
 
 class TestFileScope(unittest.TestCase):
     def test_scan_file_reports_only_that_file(self):
@@ -1108,6 +1227,139 @@ class TestFileScope(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
         self.assertIn("in-process", proc.stdout)
         self.assertIn("cold CLI", proc.stdout)
+
+
+class TestJobsPolicy(unittest.TestCase):
+    def test_thresholds(self):
+        from grounded.scanner import default_jobs
+        self.assertEqual(default_jobs(0), 1)
+        self.assertEqual(default_jobs(40), 1)
+        self.assertEqual(default_jobs(511), 1)
+        self.assertGreaterEqual(default_jobs(512), 1)
+        self.assertLessEqual(default_jobs(10**6), 8)
+
+
+class TestCache(unittest.TestCase):
+    def _write(self, root: Path, files: dict[str, str]) -> None:
+        for rel, text in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+
+    def test_roundtrip_identical(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "# Calls `ghost_fn()`.\nX = 1\n",
+                               "b.py": "Y = 2\n"})
+            cache = root / ".grounded-cache.json"
+            self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 1)
+            self.assertTrue(cache.exists())
+            # second run: same verdict from cache
+            self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 1)
+
+    def test_edit_invalidates(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "X = 1\n"})
+            cache = root / ".grounded-cache.json"
+            self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 0)
+            (root / "a.py").write_text("# Calls `ghost_fn()`.\nX = 1\n", encoding="utf-8")
+            self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 1)
+
+    def test_corrupt_cache_falls_back(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"a.py": "# Calls `ghost_fn()`.\nX = 1\n"})
+            cache = root / ".grounded-cache.json"
+            cache.write_text("not json{{{", encoding="utf-8")
+            self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 1)
+
+
+class TestInitAgent(unittest.TestCase):
+    def test_all_three_fresh(self):
+        import json
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            cwd, target = Path.cwd(), Path(td)
+            import os
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent"]), 0)
+                settings = json.loads((target / ".claude" / "settings.json").read_text())
+                cmds = [h.get("command")
+                        for e in settings["hooks"]["PostToolUse"] for h in e.get("hooks", [])]
+                self.assertIn("grounded scan . --changed --quiet", cmds)
+                mdc = (target / ".cursor" / "rules" / "grounded.mdc").read_text()
+                self.assertIn("alwaysApply: false", mdc)
+                self.assertIn("description:", mdc)
+                self.assertIn("lint-cmd", (target / ".aider.conf.yml").read_text())
+            finally:
+                os.chdir(cwd)
+
+    def test_idempotent_and_merging(self):
+        import json
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td)
+            (target / ".claude").mkdir()
+            (target / ".claude" / "settings.json").write_text(
+                json.dumps({"hooks": {"PostToolUse": [
+                    {"matcher": "Bash",
+                     "hooks": [{"type": "command", "command": "other"}]}]}}),
+                encoding="utf-8")
+            import os
+            cwd = Path.cwd()
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent", "--claude"]), 0)
+                self.assertEqual(main(["init-agent", "--claude"]), 0)
+                settings = json.loads((target / ".claude" / "settings.json").read_text())
+                cmds = [h.get("command")
+                        for e in settings["hooks"]["PostToolUse"] for h in e.get("hooks", [])]
+                self.assertIn("other", cmds)
+                self.assertEqual(cmds.count("grounded scan . --changed --quiet"), 1)
+            finally:
+                os.chdir(cwd)
+
+    def test_invalid_json_refused(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td)
+            (target / ".claude").mkdir()
+            (target / ".claude" / "settings.json").write_text("{nope", encoding="utf-8")
+            import os
+            cwd = Path.cwd()
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent", "--claude"]), 0)
+                self.assertEqual((target / ".claude" / "settings.json").read_text(), "{nope")
+            finally:
+                os.chdir(cwd)
+
+    def test_existing_files_kept_without_force(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td)
+            (target / ".cursor" / "rules").mkdir(parents=True)
+            (target / ".cursor" / "rules" / "grounded.mdc").write_text("mine\n", encoding="utf-8")
+            (target / ".aider.conf.yml").write_text("lint: true\n", encoding="utf-8")
+            import os
+            cwd = Path.cwd()
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent", "--cursor", "--aider"]), 0)
+                self.assertEqual(
+                    (target / ".cursor" / "rules" / "grounded.mdc").read_text(), "mine\n")
+                self.assertEqual((target / ".aider.conf.yml").read_text(), "lint: true\n")
+                self.assertEqual(
+                    main(["init-agent", "--cursor", "--aider", "--force"]), 0)
+                self.assertNotEqual(
+                    (target / ".cursor" / "rules" / "grounded.mdc").read_text(), "mine\n")
+            finally:
+                os.chdir(cwd)
 
 
 if __name__ == "__main__":

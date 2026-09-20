@@ -259,6 +259,7 @@ def parse_javascript(path: Path, rel: str, text: str) -> FileFacts:
     facts.comments = comments
     facts.functions = _js_functions(lines, comments)
     facts.imports = _js_imports(text)
+    facts.js_imports = _js_import_entries(text)
     return facts
 
 
@@ -267,6 +268,78 @@ _JS_IMPORT_FROM = re.compile(
 _JS_IMPORT_SIDE = re.compile(r"^\s*import\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
 _JS_REQUIRE = re.compile(
     r"(?:const|let|var)\s+(?:(\w+)|[{]([^}]*)[}])\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)")
+
+
+def _js_import_entries(text: str) -> list[tuple[str, str, str | None, list[tuple[str, str]], int]]:
+    """Structured JS/TS imports: (specifier, kind, default or None,
+    [(original, alias)] named, lineno).
+
+    Aliases matter: `import {b as c}` must verify `b` (the export), not
+    `c` (the local binding). Kinds: named (may include a default),
+    namespace (`* as ns`, binds the module itself), sideeffect
+    (`import 'x'`), require (`const X = require('x')`, `{a, b}`).
+    """
+    out: list[tuple[str, str, str | None, list[tuple[str, str]], int]] = []
+    in_template = False
+    for idx, line in enumerate(text.splitlines(), start=1):
+        # Skip lines inside multi-line template literals: imports quoted in
+        # strings are prose, not imports. (Single-line strings are safe:
+        # every pattern below is start-anchored.)
+        ticks = line.count("`") - line.count("\\`")
+        if in_template:
+            if ticks % 2 == 1:
+                in_template = False
+            continue
+        elif ticks % 2 == 1:
+            in_template = True
+            continue
+        s = line.strip()
+        m = re.match(r"^import\s+(?:type\s+)?(.*?)\s+from\s*['\"]([^'\"]+)['\"]\s*;?\s*$", s)
+        if m:
+            clause, spec = m.group(1).strip(), m.group(2)
+            default: str | None = None
+            named: list[tuple[str, str]] = []
+            dm = re.match(r"^([A-Za-z_$][A-Za-z0-9_$]*)\s*(,|$)", clause)
+            if dm:
+                default = dm.group(1)
+            brace = re.search(r"\{([^}]*)\}", clause)
+            if brace:
+                for part in brace.group(1).split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    bits = [b.strip() for b in part.split(" as ")]
+                    original = bits[0].split(":")[0].strip()
+                    alias = bits[-1].split(":")[0].strip()
+                    if (re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", original or "")
+                            and re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", alias or "")):
+                        named.append((original, alias))
+            nsm = re.search(r"\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)", clause)
+            if nsm:
+                out.append((spec, "namespace", nsm.group(1), [], idx))
+                continue
+            if default is None and not named:
+                out.append((spec, "sideeffect", None, [], idx))
+            else:
+                out.append((spec, "named", default, named, idx))
+            continue
+        m2 = re.match(r"^import\s*['\"]([^'\"]+)['\"]\s*;?\s*$", s)
+        if m2:
+            out.append((m2.group(1), "sideeffect", None, [], idx))
+            continue
+        m3 = _JS_REQUIRE.search(line)
+        if m3:
+            default, named, spec = m3.group(1), m3.group(2), m3.group(3)
+            rnamed: list[tuple[str, str]] = []
+            if named:
+                for part in named.split(","):
+                    bits = [b.strip() for b in part.strip().split(":")]
+                    original, alias = bits[0].strip(), bits[-1].strip()
+                    if (re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", original or "")
+                            and re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", alias or "")):
+                        rnamed.append((original, alias))
+            out.append((spec, "require", default, rnamed, idx))
+    return out
 
 
 def _js_imports(text: str) -> dict[str, str]:

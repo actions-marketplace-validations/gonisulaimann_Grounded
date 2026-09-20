@@ -3,6 +3,19 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.0] - 2026-09-21
+
+### Added
+- `stale-import` now covers JS/TS relative imports (module existence,
+  named/default exports, star re-exports; bare and asset specifiers skip).
+- LSP incremental index: buffer edits re-index the file, peer documents
+  re-diagnose, close reverts to disk. Single-file patch measured 9-22 ms.
+- `grounded init-agent`: generates Claude hook, Cursor rule, Aider config
+  (idempotent, refuses invalid JSON, never merges YAML blindly).
+- Parallel threshold retuned to 512 files / 8 workers on measurements
+  (parallel loses below ~500 files; 12-way oversubscription regressed).
+- Disk cache (`scan --cache`): mtime+size keyed per-file findings.
+
 ## [0.8.0] - 2026-09-21
 
 ### Added

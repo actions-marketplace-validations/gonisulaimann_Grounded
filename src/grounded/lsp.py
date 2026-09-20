@@ -70,17 +70,43 @@ class LspServer:
             self._root = root
         return root
 
+    def _rel_of(self, uri: str, root: Path) -> tuple[Path, str]:
+        path = uri_to_path(uri)
+        try:
+            rel = path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel = path.name
+        return path, rel
+
+    def _reindex_doc(self, uri: str, text: str | None) -> None:
+        """Patch the index from a buffer (or disk when text is None).
+
+        Unsaved renames must be visible to peer files immediately; waiting
+        for save leaves a window where the index contradicts the editor.
+        """
+        root = self._ensure_index(uri)
+        if self.index is None:
+            return
+        path, rel = self._rel_of(uri, root)
+        if text is None:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                self.index.forget_file(rel)
+                return
+        self.index._index_one(rel, path.suffix.lower(), text)
+
+    def _publish_all(self, write) -> None:
+        for uri in list(self.docs):
+            self._publish(uri, write)
+
     # -- diagnostics ----------------------------------------------------
 
     def _diagnose(self, uri: str, text: str | None) -> list[dict]:
         from .parsers import parse_file
         from .scanner import apply_suppressions
         root = self._ensure_index(uri)
-        path = uri_to_path(uri)
-        try:
-            rel = path.resolve().relative_to(root.resolve()).as_posix()
-        except ValueError:
-            rel = path.name
+        path, rel = self._rel_of(uri, root)
         body = text if text is not None else self.docs.get(uri, "")
         if body is None:
             return []
@@ -129,9 +155,9 @@ class LspServer:
         from .fix import apply_fixes, apply_symbol_fixes, file_fix_candidates, symbol_fix_candidates
         from .parsers import parse_file
         root = self._ensure_index(uri)
-        path = uri_to_path(uri)
+        path, rel = self._rel_of(uri, root)
         try:
-            rel = path.resolve().relative_to(root.resolve()).as_posix()
+            path.resolve().relative_to(root.resolve())
         except ValueError:
             return []
         body = self.docs.get(uri, "")
@@ -247,20 +273,31 @@ class LspServer:
             doc = params.get("textDocument", {})
             uri = doc.get("uri", "")
             self.docs[uri] = doc.get("text", "")
-            self._publish(uri, write)
+            self._reindex_doc(uri, self.docs[uri])
+            self._publish_all(write)
             return "continue"
         if method == "textDocument/didChange":
             uri = params.get("textDocument", {}).get("uri", "")
             changes = params.get("contentChanges", [])
             if changes and "text" in changes[-1]:
                 self.docs[uri] = changes[-1]["text"]
-            self._publish(uri, write)
+            self._reindex_doc(uri, self.docs.get(uri))
+            self._publish_all(write)
             return "continue"
         if method == "textDocument/didSave":
             uri = params.get("textDocument", {}).get("uri", "")
             if "text" in params:
                 self.docs[uri] = params["text"]
-            self._publish(uri, write)
+            self._reindex_doc(uri, self.docs.get(uri))
+            self._publish_all(write)
+            return "continue"
+        if method == "textDocument/didClose":
+            uri = params.get("textDocument", {}).get("uri", "")
+            self.docs.pop(uri, None)
+            # Closed without save abandons the buffer: revert the index to
+            # disk truth (or forget the file if it never existed there).
+            self._reindex_doc(uri, None)
+            self._publish_all(write)
             return "continue"
         if method == "textDocument/codeAction":
             uri = params.get("textDocument", {}).get("uri", "")

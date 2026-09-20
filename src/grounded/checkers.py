@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import difflib
+import posixpath
 import re
 import sys
 
@@ -600,15 +601,15 @@ def _effective_symbols(index: RepoIndex, rel: str, depth: int = 0,
 
 
 def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
-    """Python resolvable-import verification (v0.8).
+    """Resolvable-import verification (Python; JS/TS relative imports).
 
-    `from M import N` / `import M` where M resolves to a repo file: the
-    module must exist, and N must be defined there, re-exported there, or
-    itself a submodule (`from pkg import submod` is ubiquitous and valid).
-    Guarded imports (try/except, TYPE_CHECKING, version/platform checks)
-    and unresolvable modules (stdlib, deps) are never flagged. An
-    unresolvable-at-runtime import is an ImportError, so these are lies.
-    """
+    Python `from M import N` / JS `import {N} from './x'`: the module must
+    exist, and N must be defined there, re-exported there, or itself a
+    submodule. Guarded/conditional imports, bare specifiers (node_modules),
+    stdlib, and deps are never flagged. Broken imports fail at load, so
+    these are lies. See _check_stale_js_import for the JS/TS rules."""
+    if facts.language == "javascript":
+        return check_stale_js_import(facts, index)
     if facts.language != "python":
         return []
     findings: list[Finding] = []
@@ -682,6 +683,107 @@ def _resolve_py_base(claimer: str, level: int) -> list[str]:
     if level - 1 > len(parts):
         return []
     return parts[:len(parts) - (level - 1)]
+
+
+_JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
+
+
+def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] | None:
+    """Candidate module rel paths for a JS/TS specifier.
+
+    Only relative specifiers (./, ../) resolve: bare imports live in
+    node_modules and absolute specs need bundler config, both outside
+    snapshot analysis. Returns None (skip) or a possibly-empty list
+    (empty = module does not exist)."""
+    if not spec.startswith("./") and not spec.startswith("../"):
+        return None
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(claimer), spec))
+    cands = [base] if posixpath.splitext(base)[1].lower() in _JS_EXTS else []
+    cands += [base + e for e in _JS_EXTS]
+    cands += [base + "/index" + e for e in _JS_EXTS]
+    return [c for c in cands if c in index.rel_paths]
+
+
+def _effective_js_exports(index: RepoIndex, rel: str, depth: int = 0,
+                          seen: frozenset[str] | None = None) -> set[str]:
+    seen = seen or frozenset()
+    if rel in seen or depth > 2:
+        return set()
+    seen = seen | {rel}
+    out = set(index.file_exports.get(rel, set()))
+    for spec in index.file_export_stars.get(rel, []):
+        if not spec.startswith("./") and not spec.startswith("../"):
+            continue
+        base = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
+        cands = ([base] if posixpath.splitext(base)[1].lower() in _JS_EXTS else []
+                 + [base + e for e in _JS_EXTS] + [base + "/index" + e for e in _JS_EXTS])
+        for t in cands:
+            if t in index.rel_paths:
+                out |= _effective_js_exports(index, t, depth + 1, seen)
+    return out
+
+
+def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """JS/TS relative imports: module must exist; named bindings must be
+    exported (star re-exports followed); defaults need a default export."""
+    if facts.language != "javascript":
+        return []
+    # Import statements inside comments are prose, not imports. Line-based
+    # extraction cannot know that, so comment-only lines are excluded here.
+    comment_lines: set[int] = set()
+    for c in facts.comments:
+        for ln in range(c.line, c.end_line + 1):
+            comment_lines.add(ln)
+    findings: list[Finding] = []
+    for spec, kind, default, named, lineno in facts.js_imports:
+        if lineno in comment_lines:
+            continue
+        ext = posixpath.splitext(spec)[1].lower()
+        if ext and ext not in _JS_EXTS:
+            continue  # asset imports (css, json, svg): bundler surface
+        targets = _resolve_js_target(index, facts.path, spec)
+        if targets is None:
+            continue
+        if not targets:
+            findings.append(Finding(
+                path=facts.path, line=lineno, end_line=lineno,
+                checker="stale-import", severity="lie",
+                title=f"imports from `{spec}`, which does not exist",
+                claim=spec,
+                evidence="No such module file exists in this repo.",
+                fix="Fix the specifier or remove the import.",
+                confidence=0.85,
+            ))
+            continue
+        if kind in ("sideeffect", "namespace"):
+            continue
+        provided = set()
+        for t in targets:
+            provided |= _effective_js_exports(index, t)
+        if default is not None and "default" not in provided:
+            findings.append(Finding(
+                path=facts.path, line=lineno, end_line=lineno,
+                checker="stale-import", severity="lie",
+                title=f"default import `{default}` from `{spec}`, which has no default export",
+                claim=default,
+                evidence=f"`{targets[0]}` exists but exposes no default export.",
+                fix=f"Check for a rename in `{targets[0]}` or import a named binding.",
+                confidence=0.75,
+            ))
+        for original, alias in named:
+            if kind == "require" and not provided:
+                continue  # CJS without visible exports: cannot decide
+            if original not in provided:
+                findings.append(Finding(
+                    path=facts.path, line=lineno, end_line=lineno,
+                    checker="stale-import", severity="lie",
+                    title=f"`{original}` imported from `{spec}` but never exported there",
+                    claim=original if original == alias else f"{original} as {alias}",
+                    evidence=f"`{targets[0]}` exists but exports no `{original}`.",
+                    fix=f"Check for a rename in `{targets[0]}`.",
+                    confidence=0.8,
+                ))
+    return _dedupe(findings)
 
 
 def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:

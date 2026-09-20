@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--quiet", "-q", action="store_true", help="only print findings count + failures")
     s.add_argument("--jobs", type=int, default=None, metavar="N",
                    help="parallel workers (default: auto by file count)")
+    s.add_argument("--cache", nargs="?", const=".grounded-cache.json", default=None, metavar="FILE",
+                   help="reuse per-file results keyed by mtime+size (default file: .grounded-cache.json)")
 
     sub.add_parser("init", help="write a starter grounded.toml in the current directory").add_argument(
         "--force", action="store_true", help="overwrite existing grounded.toml")
@@ -69,6 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     mc = sub.add_parser("mcp", help="serve grounded over stdio as an MCP server for coding agents")
     mc.add_argument("--root", default=".", help="server root; all paths stay inside it (default: .)")
+
+    ag = sub.add_parser("init-agent", help="write agent configs (Claude/Cursor/Aider) that run grounded")
+    ag.add_argument("--claude", action="store_true", help="only .claude/settings.json hook")
+    ag.add_argument("--cursor", action="store_true", help="only .cursor/rules/grounded.mdc rule")
+    ag.add_argument("--aider", action="store_true", help="only .aider.conf.yml lint loop")
+    ag.add_argument("--force", action="store_true", help="overwrite existing generated files")
+    ag.add_argument("--dry-run", action="store_true", help="print actions without writing")
 
     ls = sub.add_parser("lsp", help="serve grounded over stdio as an LSP server for editors")
 
@@ -113,7 +122,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
         config.fail_on = args.fail_on
     _resolve_enable_disable(config, args.enable, args.disable)
 
-    findings, facts, index = scan_root(root, config, jobs=args.jobs)
+    cache_path = Path(args.cache) if args.cache else None
+    if cache_path is not None and not cache_path.is_absolute():
+        cache_path = root / cache_path
+    findings, facts, index = scan_root(root, config, jobs=args.jobs, cache_path=cache_path)
     n_files = len(facts)
     if only is not None:
         findings = [f for f in findings if f.path == only]
@@ -236,6 +248,99 @@ def cmd_fix(args: argparse.Namespace) -> int:
     return 0
 
 
+_CLAUDE_HOOK = {
+    "matcher": "Edit|Write",
+    "hooks": [{"type": "command", "command": "grounded scan . --changed --quiet"}],
+}
+
+_CURSOR_RULE = """---
+description: Verify code references with grounded before building on edited code
+alwaysApply: false
+---
+
+After editing source files, run `grounded scan . --changed` and fix
+reported lies (dangling function names, missing files) before running
+tests or committing. For agents over MCP, call the `check_path` tool
+on edited files instead of shelling out.
+"""
+
+_AIDER_CONF = """# Aider: lint edited files with grounded (verified contract: filenames
+# in, non-zero exit on findings).
+lint-cmd: "sh -c 'for f; do grounded scan \"$f\" --quiet || exit 1; done' sh"
+"""
+
+
+def _init_claude(root: Path, force: bool, dry_run: bool) -> str:
+    import json
+    target = root / ".claude" / "settings.json"
+    if dry_run:
+        return f"would merge hook into {target}"
+    data: dict = {}
+    if target.exists():
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError:
+            return f"refusing to touch invalid JSON: {target}"
+        if not isinstance(data, dict):
+            return f"refusing to touch non-object JSON: {target}"
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        return f"refusing to touch non-object hooks in: {target}"
+    post = hooks.setdefault("PostToolUse", [])
+    if not isinstance(post, list):
+        return f"refusing to touch non-list PostToolUse in: {target}"
+    for entry in post:
+        try:
+            for h in entry.get("hooks", []):
+                if h.get("command") == _CLAUDE_HOOK["hooks"][0]["command"]:
+                    return f"hook already present in {target}"
+        except AttributeError:
+            continue
+    post.append(dict(_CLAUDE_HOOK))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return f"wrote {target}"
+
+
+def _init_cursor(root: Path, force: bool, dry_run: bool) -> str:
+    target = root / ".cursor" / "rules" / "grounded.mdc"
+    if target.exists() and not force:
+        return f"exists, kept (use --force): {target}"
+    if dry_run:
+        return f"would write {target}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_CURSOR_RULE, encoding="utf-8")
+    return f"wrote {target}"
+
+
+def _init_aider(root: Path, force: bool, dry_run: bool) -> str:
+    # YAML is appended to, never parsed: without a YAML library, merging
+    # into an existing config risks corrupting it, so existing files win.
+    target = root / ".aider.conf.yml"
+    if target.exists() and not force:
+        return (f"exists, kept: {target} (add lint-cmd manually: "
+                f"{_AIDER_CONF.strip().splitlines()[-1].strip()})")
+    if dry_run:
+        return f"would write {target}"
+    target.write_text(_AIDER_CONF, encoding="utf-8")
+    return f"wrote {target}"
+
+
+def cmd_init_agent(args: argparse.Namespace) -> int:
+    root = Path.cwd()
+    want_all = not (args.claude or args.cursor or args.aider)
+    results = []
+    if args.claude or want_all:
+        results.append(_init_claude(root, args.force, args.dry_run))
+    if args.cursor or want_all:
+        results.append(_init_cursor(root, args.force, args.dry_run))
+    if args.aider or want_all:
+        results.append(_init_aider(root, args.force, args.dry_run))
+    for line in results:
+        print(f"grounded init-agent: {line}")
+    return 0
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     target = Path.cwd() / "grounded.toml"
     if target.exists() and not args.force:
@@ -293,6 +398,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "mcp":
         from .mcp import serve as serve_mcp
         return serve_mcp(Path(args.root).resolve())
+    if args.cmd == "init-agent":
+        return cmd_init_agent(args)
     if args.cmd == "lsp":
         from .lsp import serve as serve_lsp
         return serve_lsp()

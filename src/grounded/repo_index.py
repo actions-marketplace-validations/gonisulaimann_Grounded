@@ -41,6 +41,10 @@ class RepoIndex:
         self.file_imports: dict[str, set[str]] = {}
         # Star imports per file: [(module, level)] for one-hop expansion.
         self.file_stars: dict[str, list[tuple[str | None, int]]] = {}
+        # JS/TS export surface per file: exported names ('default' marks a
+        # default export) and star re-export specifiers.
+        self.file_exports: dict[str, set[str]] = {}
+        self.file_export_stars: dict[str, list[str]] = {}
         # Optional pre-read contents (abs path string -> text) so callers
         # that already read the tree skip a second disk pass.
         self._texts = texts or {}
@@ -85,22 +89,54 @@ class RepoIndex:
                     text = f.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
-            if suffix == ".py":
-                self._index_python(text, rel)
-            elif suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}:
-                self._index_js(text, rel)
-            elif suffix == ".go":
-                self._index_go(text, rel)
-            elif suffix in {".c", ".h"}:
-                self._index_c(text, rel)
-        self.all_symbols = set(self.py_symbols) | set(self.js_symbols) | set(self.go_symbols) | set(self.c_symbols)
-        for s in self.all_symbols:
-            self.lower_map.setdefault(s.lower(), set()).add(s)
+            self._index_one(rel, suffix, text, rebuild=False)
+        self._rebuild_unions()
 
     def _record(self, target: set[str], name: str, rel: str) -> None:
         target.add(name)
         self.symbol_files.setdefault(name, set()).add(rel)
         self.file_symbols.setdefault(rel, set()).add(name)
+
+    def _index_one(self, rel: str, suffix: str, text: str, rebuild: bool = True) -> None:
+        """(Re-)index a single file's contributions. Safe to call repeatedly:
+        previous contributions for rel are forgotten first."""
+        self._forget_no_rebuild(rel)
+        if suffix == ".py":
+            self._index_python(text, rel)
+        elif suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}:
+            self._index_js(text, rel)
+        elif suffix == ".go":
+            self._index_go(text, rel)
+        elif suffix in {".c", ".h"}:
+            self._index_c(text, rel)
+        if rebuild:
+            self._rebuild_unions()
+
+    def _rebuild_unions(self) -> None:
+        self.all_symbols = set(self.py_symbols) | set(self.js_symbols) | set(self.go_symbols) | set(self.c_symbols)
+        self.lower_map = {}
+        for s in self.all_symbols:
+            self.lower_map.setdefault(s.lower(), set()).add(s)
+
+    def forget_file(self, rel: str) -> None:
+        """Drop every index contribution from rel (rename/delete/close)."""
+        self._forget_no_rebuild(rel)
+        self._rebuild_unions()
+
+    def _forget_no_rebuild(self, rel: str) -> None:
+        old = self.file_symbols.pop(rel, set())
+        self.file_imports.pop(rel, None)
+        self.file_stars.pop(rel, None)
+        self.file_exports.pop(rel, None)
+        self.file_export_stars.pop(rel, None)
+        for name in old:
+            holders = self.symbol_files.get(name)
+            if holders is not None:
+                holders.discard(rel)
+                if not holders:
+                    del self.symbol_files[name]
+                    for lang in (self.py_symbols, self.js_symbols, self.go_symbols, self.c_symbols):
+                        lang.discard(name)
 
     def _index_python(self, text: str, rel: str) -> None:
         try:
@@ -192,22 +228,40 @@ class RepoIndex:
                 if m:
                     self._record(self.js_symbols, m.group(1), rel)
                     break
-        # export { a, b } / module.exports = { ... }
+            em = re.match(
+                r"^\s*export\s+(?:async\s+)?(?:function\*?\s+|class\s+|"
+                r"(?:const|let|var)\s+|(?:abstract\s+class\s+)|"
+                r"(?:interface|type|enum)\s+)([A-Za-z_$][A-Za-z0-9_$]*)", line)
+            if em:
+                self.file_exports.setdefault(rel, set()).add(em.group(1))
+            if re.match(r"^\s*export\s+default\b", line):
+                self.file_exports.setdefault(rel, set()).add("default")
+        # export { a, b as c } / export * from './x'
         for m in re.finditer(r"export\s*\{\s*([^}]+)\}", text):
             for part in m.group(1).split(","):
-                name = part.strip().split(" as ")[0].strip().split(" ")[0].strip()
-                if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name or ""):
-                    self._record(self.js_symbols, name, rel)
+                part = part.strip()
+                if not part:
+                    continue
+                bits = [b.strip() for b in part.split(" as ")]
+                alias = bits[-1].split(":")[0].strip()
+                if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", alias or ""):
+                    self._record(self.js_symbols, bits[0].split(":")[0].strip() or alias, rel)
+                    self.file_exports.setdefault(rel, set()).add(alias)
+        for m in re.finditer(r"export\s*\*\s*from\s*['\"]([^'\"]+)['\"]", text):
+            self.file_export_stars.setdefault(rel, []).append(m.group(1))
         for m in re.finditer(r"module\.exports\s*=\s*\{([^}]+)\}", text):
             for part in m.group(1).split(","):
                 name = part.strip().split(":")[0].strip()
                 if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name or ""):
                     self._record(self.js_symbols, name, rel)
-        for m in re.finditer(r"module\.exports\s*=\s*\{([^}]+)\}", text):
-            for part in m.group(1).split(","):
-                name = part.strip().split(":")[0].strip()
-                if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name or ""):
-                    self.js_symbols.add(name)
+                    self.file_exports.setdefault(rel, set()).add(name)
+        for m in re.finditer(r"(?:exports|module\.exports)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=", text):
+            self._record(self.js_symbols, m.group(1), rel)
+            self.file_exports.setdefault(rel, set()).add(m.group(1))
+        # `module.exports = <expr>` (anything but an object literal, whose
+        # keys are handled above) is a default export, named or not.
+        if re.search(r"module\.exports\s*=(?![=>])\s*(?![{\s])", text):
+            self.file_exports.setdefault(rel, set()).add("default")
 
     def has_symbol(self, name: str) -> bool:
         if not name:
