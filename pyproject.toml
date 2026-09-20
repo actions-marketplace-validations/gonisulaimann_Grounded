@@ -28,5 +28,8 @@ Changelog = "https://github.com/gonisulaimann/Grounded/blob/main/CHANGELOG.md"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+grounded = ["py.typed"]
+
 [tool.grounded]
 fail_on = "lie"
