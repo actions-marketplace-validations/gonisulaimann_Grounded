@@ -7,3 +7,5 @@ dist/
 .coverage
 htmlcov/
 SESSION_EXPORT*
+GROUNDED_SESSION_EXPORT*
+SESSION_EXPORT*

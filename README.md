@@ -18,7 +18,7 @@ LIE src/app.py:9 [stale-symbol-ref] Comment references `ghost_service` which is 
     fix: Update the comment to the current name, or remove the reference.
 ```
 
-Zero dependencies. No network access. Works on Python, JavaScript/TypeScript, and Go.
+Zero dependencies. No network access. Works on Python, JavaScript/TypeScript, Go, and C.
 
 ## Install
 
@@ -45,6 +45,7 @@ grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
               [--baseline FILE] [--show-baselined]
               [--changed [BASE]]
               [--config grounded.toml] [--no-color] [--quiet]
+              [--jobs N]
 grounded baseline [PATH] [--output FILE]  # record findings for delta gating
 grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale file paths
 grounded list [PATH]       # show files that would be scanned
@@ -58,6 +59,37 @@ grounded init [--force]    # write a starter grounded.toml
 Example output formats for tooling: `--format json` for scripts,
 `--format sarif` for GitHub code scanning, `--format html` for a
 self-contained report page (no external assets, works opened from disk).
+
+Large trees scan in parallel automatically (32+ files); `--jobs N`
+overrides, `--jobs 1` forces serial. Output is identical either way.
+
+In VS Code, wire the bundled problem matcher through a task
+(`.vscode/tasks.json`, paths relative to the workspace):
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "grounded",
+      "type": "shell",
+      "command": "grounded scan . --no-color",
+      "problemMatcher": {
+        "owner": "grounded",
+        "pattern": [
+          {
+            "regexp": "^(LIE|DRIFT|SMELL)\\s+(.+?):(\\d+)\\s+\\[(.+?)\\]\\s+(.*)$",
+            "file": 2,
+            "line": 3,
+            "code": 4,
+            "message": 5
+          }
+        ]
+      }
+    }
+  ]
+}
+```
 
 ## Adopting on an existing codebase
 
@@ -177,8 +209,12 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
   cross-module renames.
 - Framework namespaces (template paths, URL names) are out of scope; such
   references stay silent instead of guessed.
-- JavaScript/TypeScript and Go analysis is syntactic (imports plus
+- JavaScript/TypeScript, Go, and C analysis is syntactic (imports plus
   identifiers), not a full type graph.
+- External references stay silent only when recognized: stdlib and POSIX
+  names, imports, and same-file identifiers. References to vendored code,
+  kernel idioms, platform APIs, paper algorithms, and prose verbs in
+  parentheses (`forks()`) can still report; judge those on sight.
 - Rename suggestions use string similarity only; the first guess can miss.
 - `grounded fix` rewrites stale file paths only, and only on unambiguous
   same-basename matches in comments (never docstrings, never ties).
@@ -186,7 +222,7 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 69 tests, stdlib only, no extras
+python -m unittest discover -s tests   # 78 tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
 ```

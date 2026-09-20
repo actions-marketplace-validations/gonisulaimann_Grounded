@@ -1,7 +1,9 @@
 """Directory scanner: collect files, build index, run checkers."""
 from __future__ import annotations
 
+import os
 import re
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from .checkers import CHECKERS
@@ -76,33 +78,80 @@ def collect_files(root: Path, config: Config) -> list[Path]:
     return sorted(out)
 
 
-def scan_root(root: Path, config: Config) -> tuple[list[Finding], list[FileFacts], RepoIndex]:
-    files = collect_files(root, config)
-    index = RepoIndex(root.resolve(), files)
-    facts_list: list[FileFacts] = []
+_INDEX: RepoIndex | None = None
+
+
+def _init_worker(index: RepoIndex) -> None:
+    global _INDEX
+    _INDEX = index
+
+
+def _scan_one(args: tuple[str, str, list[str]]) -> tuple[FileFacts | None, list[Finding]]:
+    """Parse one file and run enabled checkers. Top-level for pickling.
+
+    The repo index is shared per worker via initializer (not per task):
+    pickling it with every task made parallel scans slower than serial.
+    """
+    rel, text, enabled = args
+    facts = parse_file(Path(rel), rel, text)
+    if facts is None:
+        return None, []
     findings: list[Finding] = []
+    for checker_id in enabled:
+        fn = CHECKERS.get(checker_id)
+        if fn is None:
+            continue
+        try:
+            for fd in fn(facts, _INDEX) or []:
+                findings.append(fd)
+        except Exception:
+            # A checker must never crash a scan; skip pathological files.
+            continue
+    return facts, findings
+
+
+def default_jobs(n_files: int) -> int:
+    if n_files < 32:
+        return 1
+    return min(32, (os.cpu_count() or 4) + 4)
+
+
+def scan_root(root: Path, config: Config, jobs: int | None = None) -> tuple[list[Finding], list[FileFacts], RepoIndex]:
+    global _INDEX
+    files = collect_files(root, config)
+    resolved = root.resolve()
+    if jobs is None:
+        jobs = default_jobs(len(files))
+    jobs = max(1, min(jobs, len(files) or 1))
+    enabled = sorted(config.enabled)
+    # Single disk pass: texts feed both the index build and the workers.
+    texts: dict[str, str] = {}
+    rels: dict[str, str] = {}
     for f in files:
         try:
-            rel = f.relative_to(root.resolve()).as_posix()
+            rel = f.relative_to(resolved).as_posix()
         except ValueError:
             rel = f.name
         try:
-            text = f.read_text(encoding="utf-8", errors="ignore")
+            texts[str(f)] = f.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        facts = parse_file(f, rel, text)
+        rels[str(f)] = rel
+    index = RepoIndex(resolved, [f for f in files if str(f) in texts], texts)
+    payloads = [(rels[k], v, enabled) for k, v in texts.items() if k in rels]
+    facts_list: list[FileFacts] = []
+    findings: list[Finding] = []
+    if jobs == 1:
+        _INDEX = index
+        results = [_scan_one(p) for p in payloads]
+    else:
+        chunksize = max(1, len(payloads) // (jobs * 8))
+        with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker, initargs=(index,)) as pool:
+            results = list(pool.map(_scan_one, payloads, chunksize=chunksize))
+    for facts, file_findings in results:
         if facts is None:
             continue
         facts_list.append(facts)
-        for checker_id in sorted(config.enabled):
-            fn = CHECKERS.get(checker_id)
-            if fn is None:
-                continue
-            try:
-                for fd in fn(facts, index) or []:
-                    findings.append(fd)
-            except Exception:
-                # A checker must never crash a scan; skip pathological files.
-                continue
+        findings.extend(file_findings)
     findings.sort(key=lambda x: (x.path, x.line, x.checker))
     return findings, facts_list, index

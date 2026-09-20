@@ -21,7 +21,7 @@ DEFAULT_IGNORE_FILES = {
     "poetry.lock", "Pipfile.lock",
 }
 
-DEFAULT_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go"}
+DEFAULT_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go", ".c", ".h"}
 
 
 class Config:

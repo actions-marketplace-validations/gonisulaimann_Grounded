@@ -3,6 +3,18 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.0] - 2026-09-17
+
+### Added
+- C support (`.c`/`.h`): functions incl. split declarations and K&R style,
+  types, macros, function-pointer members, `#include` maps.
+- Parallel scanning (`--jobs N`, auto by file count; identical output).
+- VS Code task snippet using the bundled problem matcher.
+
+### Changed
+- JS index covers default exports, `module.exports` members, TS
+  interfaces/types (no benchmark delta).
+
 ## [0.5.0] - 2026-09-17
 
 ### Added

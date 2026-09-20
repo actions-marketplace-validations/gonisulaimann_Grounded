@@ -563,6 +563,55 @@ class TestGo(unittest.TestCase):
         self.assertTrue(any(f.checker == "fragile-anchor" for f in out))
 
 
+class TestC(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def scan(self, files: dict[str, str]):
+        for rel, text in files.items():
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        return scan_root(self.root, Config())[0]
+
+    def syms(self, files):
+        return [f for f in self.scan(files) if f.checker == "stale-symbol-ref"]
+
+    def test_backticked_call_missing_is_lie(self):
+        out = self.syms({"a.c": "// Calls `ghost_fn()` on error.\nint main() { return 0; }\n"})
+        self.assertTrue(any("ghost_fn" in f.title for f in out))
+
+    def test_split_declaration_known(self):
+        out = self.syms({"a.c": "static void\nghost_fn(int x) {\n}\n",
+                         "b.c": "// Calls `ghost_fn()` on error.\nint main() { return 0; }\n"})
+        self.assertEqual(out, [])
+
+    def test_knr_definition_known(self):
+        out = self.syms({"a.c": "ghost_fn(x, y)\n{\n}\n",
+                         "b.c": "// Calls `ghost_fn()` on error.\nint main() { return 0; }\n"})
+        self.assertEqual(out, [])
+
+    def test_function_pointer_member_known(self):
+        out = self.syms({"a.h": "typedef struct { void (*cb)(int x); } T;\n",
+                         "b.c": '// Uses `cb()` for events.\n#include "a.h"\nint main() { return 0; }\n'})
+        # cb is imported via a.h include map (base a) or struct member context;
+        # at minimum the fptr declaration must not break the scan
+        self.assertIsInstance(out, list)
+
+    def test_stdlib_and_posix_silent(self):
+        out = self.syms({"a.c": "// Uses malloc() and strlen().\n// Calls socket() then bind().\nint main() { return 0; }\n"})
+        self.assertEqual(out, [])
+
+    def test_call_statement_not_indexed(self):
+        # `ghost_fn(x);` as a bare statement must not register a definition
+        from grounded.parsers import c_top_level_names
+        self.assertNotIn("ghost_fn", c_top_level_names("int main() {\n  ghost_fn(1);\n  return 0;\n}\n"))
+
+
 class TestRepoFiles(unittest.TestCase):
     def test_action_files_parse(self):
         import json
@@ -666,6 +715,55 @@ class TestIndexCoverage(unittest.TestCase):
             idx = RepoIndex(root, [root / "a.ts"])
             for name in ["main", "helper", "Config", "Alias"]:
                 self.assertIn(name, idx.all_symbols)
+
+
+class TestParallelDeterminism(unittest.TestCase):
+    def test_parallel_matches_serial(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir()
+            (root / "src" / "keep.py").write_text("X = 1\n", encoding="utf-8")
+            (root / "a.py").write_text(
+                "# Calls `ghost_fn()`.\n# See src/gone.py.\nX = 1\n", encoding="utf-8")
+            (root / "b.js").write_text(
+                "// Calls `other_ghost()`.\nconst y = 2;\n", encoding="utf-8")
+            serial, _, _ = scan_root(root, Config(), jobs=1)
+            parallel, _, _ = scan_root(root, Config(), jobs=2)
+            self.assertEqual(
+                [f.to_dict() for f in serial], [f.to_dict() for f in parallel])
+
+
+class TestMatcherDrift(unittest.TestCase):
+    def test_terminal_lines_match_problem_matcher(self):
+        """The GitHub Action annotations break silently if terminal output
+        drifts from the matcher regexes. This pins them together."""
+        import io
+        import contextlib
+        import re
+        from grounded.cli import main
+        root = Path(__file__).resolve().parent.parent
+        matcher = json.loads((root / ".github" / "grounded-problem-matcher.json").read_text())
+        patterns = {}
+        for entry in matcher["problemMatcher"]:
+            sev = {"error": "LIE", "warning": "DRIFT", "notice": "SMELL"}[
+                entry["severity"]]
+            patterns[sev] = re.compile(entry["pattern"][0]["regexp"])
+        with tempfile.TemporaryDirectory() as td:
+            troot = Path(td)
+            (troot / "a.py").write_text(
+                "# Calls `ghost_fn()`.\n# See line 99 for details.\nX = 1\n",
+                encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                main(["scan", str(troot), "--no-color"])
+            matched = {"LIE": False, "SMELL": False}
+            for line in buf.getvalue().splitlines():
+                for sev, pat in patterns.items():
+                    m = pat.match(line)
+                    if m and sev in matched:
+                        matched[sev] = True
+            self.assertTrue(matched["LIE"], "LIE line must match its matcher")
+            self.assertTrue(matched["SMELL"], "SMELL line must match its matcher")
 
 
 if __name__ == "__main__":

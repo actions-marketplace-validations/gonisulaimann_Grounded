@@ -23,14 +23,18 @@ _JS_METHOD_HINT = re.compile(r"^\s*(?:async\s+|static\s+|get\s+|set\s+)?([A-Za-z
 
 
 class RepoIndex:
-    def __init__(self, root: Path, files: list[Path]):
+    def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None):
         self.root = root
         self.files = files  # absolute paths
         self.py_symbols: set[str] = set()
         self.js_symbols: set[str] = set()
         self.go_symbols: set[str] = set()
+        self.c_symbols: set[str] = set()
         self.all_symbols: set[str] = set()
         self.lower_map: dict[str, set[str]] = {}
+        # Optional pre-read contents (abs path string -> text) so callers
+        # that already read the tree skip a second disk pass.
+        self._texts = texts or {}
         # relative posix paths + basenames for file-ref resolution
         self.rel_paths: set[str] = set()
         self.basenames: set[str] = set()
@@ -65,17 +69,22 @@ class RepoIndex:
                     acc = p if not acc else acc + "/" + p
                     self.dirs.add(acc)
             suffix = f.suffix.lower()
-            try:
-                text = f.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
+            if str(f) in self._texts:
+                text = self._texts[str(f)]
+            else:
+                try:
+                    text = f.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
             if suffix == ".py":
                 self._index_python(text)
             elif suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}:
                 self._index_js(text)
             elif suffix == ".go":
                 self._index_go(text)
-        self.all_symbols = set(self.py_symbols) | set(self.js_symbols) | set(self.go_symbols)
+            elif suffix in {".c", ".h"}:
+                self._index_c(text)
+        self.all_symbols = set(self.py_symbols) | set(self.js_symbols) | set(self.go_symbols) | set(self.c_symbols)
         for s in self.all_symbols:
             self.lower_map.setdefault(s.lower(), set()).add(s)
 
@@ -109,6 +118,10 @@ class RepoIndex:
             t = re.match(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\b", line)
             if t:
                 self.go_symbols.add(t.group(1))
+
+    def _index_c(self, text: str) -> None:
+        from .parsers import c_top_level_names
+        self.c_symbols.update(c_top_level_names(text))
 
     def _index_js(self, text: str) -> None:
         for line in text.splitlines():

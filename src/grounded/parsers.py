@@ -458,7 +458,133 @@ def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
         return parse_javascript(path, rel, text)
     if suffix == ".go":
         return parse_go(path, rel, text)
+    if suffix in {".c", ".h"}:
+        return parse_c(path, rel, text)
     return None
+
+
+_C_FUNC = re.compile(
+    r"^\s*(?:static\s+|inline\s+|extern\s+)?"
+    r"(?:[A-Za-z_][A-Za-z0-9_\s\*]*?\b)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+# NOTE: the type prefix is optional so single-token declarators
+# (`name(...)` after a lone return type) match. Callers must require a
+# non-empty prefix or pending-type state; a bare `foo(x);` call matches
+# this pattern but is not a definition.
+_C_FUNC_EXCLUDE = {
+    "if", "for", "while", "switch", "return", "sizeof", "defined",
+    "do", "else", "case", "goto",
+}
+_C_TYPE = re.compile(
+    r"^\s*(?:typedef\s+)?(?:struct|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)")
+_C_DEFINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)")
+_C_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
+# Function-pointer members (`int (*cb)(...)`, RedisModule API struct).
+_C_FPTR = re.compile(r"\(\*([A-Za-z_][A-Za-z0-9_]*)\)\s*\(")
+# Type keywords that the function pattern can mistake for a name
+# (`REDISMODULE_API void (*cb)(...)` must yield `cb`, never `void`).
+_C_RESERVED = frozenset({
+    "void", "char", "short", "int", "long", "float", "double", "signed",
+    "unsigned", "const", "static", "inline", "extern", "typedef", "struct",
+    "enum", "union", "sizeof",
+})
+# A lone return type (`static void` with nothing else) means the declarator
+# (and the defined name) sits on the next line. Ubiquitous in C codebases.
+_C_LONE_TYPE = re.compile(
+    r"^\s*(?:static\s+|inline\s+|extern\s+)?(?:const\s+)?[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\s*\*+|\s+[A-Za-z_][A-Za-z0-9_\s\*]*?)?\s*$")
+
+
+def c_top_level_names(text: str) -> set[str]:
+    """Defined names (functions incl. split declarations, types, macros).
+
+    Single source of truth shared by the parser and the repo index, so the
+    two can never disagree about what counts as defined.
+    """
+    names: set[str] = set()
+    lines = text.splitlines()
+    pending_type = False
+    for pos, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("#"):
+            d = _C_DEFINE.match(line)
+            if d:
+                names.add(d.group(1))
+            pending_type = False
+            continue
+        for fm in _C_FPTR.finditer(line):
+            names.add(fm.group(1))
+        m = _C_FUNC.match(line)
+        if m and m.group(1) not in _C_FUNC_EXCLUDE and m.group(1) not in _C_RESERVED:
+            prefix = re.sub(r"^\s*(?:static|inline|extern)\s+", "", line[:m.start(1)]).strip()
+            if prefix and re.search(r"[A-Za-z_]", prefix):
+                names.add(m.group(1))
+                pending_type = False
+                continue
+            if pending_type:
+                names.add(m.group(1))
+                pending_type = False
+                continue
+            # K&R style: `name(args)` with no return type, brace either on
+            # this line or the next non-empty one. A brace (and no `;`)
+            # proves it is not a call statement.
+            rest = line.rstrip()
+            nxt = ""
+            k = pos + 1
+            while k < len(lines) and not lines[k].strip():
+                k += 1
+            if k < len(lines):
+                nxt = lines[k].strip()
+            if rest.endswith("{") or nxt == "{":
+                names.add(m.group(1))
+                pending_type = False
+                continue
+        t = _C_TYPE.match(line)
+        if t:
+            names.add(t.group(1))
+            pending_type = False
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("//", "/*", "*")):
+            pending_type = False
+            continue
+        pending_type = bool(_C_LONE_TYPE.match(line)) and "(" not in line and ";" not in line and "{" not in line and "}" not in line
+    return names
+
+
+def _c_imports(text: str) -> dict[str, str]:
+    """header base -> package path ('' for quoted local includes)."""
+    out: dict[str, str] = {}
+    for m in _C_INCLUDE.finditer(text):
+        spec = m.group(1).strip()
+        base = spec.split("/")[-1].split(".")[0]
+        if not base:
+            continue
+        is_local = bool(re.search(r'#\s*include\s*"', m.group(0)))
+        out[base] = "" if is_local else spec.split("/")[0]
+    return out
+
+
+def parse_c(path: Path, rel: str, text: str) -> FileFacts:
+    lines = text.splitlines()
+    facts = FileFacts(path=rel, language="c", lines=lines)
+    facts.comments, _ = _js_comments(lines)
+    known = c_top_level_names(text)
+    funcs: list[FuncInfo] = []
+    for idx, line in enumerate(lines, start=1):
+        m = _C_FUNC.match(line)
+        if m and m.group(1) in known:
+            funcs.append(FuncInfo(name=m.group(1), lineno=idx, end_lineno=idx, args=[]))
+            continue
+        t = _C_TYPE.match(line)
+        if t and t.group(1) in known:
+            funcs.append(FuncInfo(name=t.group(1), lineno=idx, end_lineno=idx, args=[]))
+            continue
+        d = _C_DEFINE.match(line)
+        if d and d.group(1) in known:
+            funcs.append(FuncInfo(name=d.group(1), lineno=idx, end_lineno=idx, args=[]))
+    facts.functions = funcs
+    facts.imports = _c_imports(text)
+    return facts
 
 
 _GO_FUNC = re.compile(r"^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")

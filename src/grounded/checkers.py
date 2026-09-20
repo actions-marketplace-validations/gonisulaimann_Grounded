@@ -84,6 +84,45 @@ GO_KEYWORDS = {
     "switch", "type", "var",
 }
 
+# C standard library functions commonly named in comments without includes
+# (printf, malloc, ...). Anything else resolves via #include maps or defs.
+C_STDLIB_FUNCS = {
+    "printf", "fprintf", "sprintf", "snprintf", "scanf", "puts", "putchar",
+    "getchar", "malloc", "calloc", "realloc", "free", "memcpy", "memmove",
+    "memset", "memcmp", "strlen", "strcpy", "strncpy", "strcmp", "strncmp",
+    "strcat", "strchr", "strstr", "strtok", "atoi", "exit", "abort", "qsort",
+    "fopen", "fclose", "fread", "fwrite", "fseek", "ftell", "feof", "perror",
+    "assert", "sizeof",
+    "isspace", "isdigit", "isalpha", "isalnum", "isxdigit", "isprint",
+    "ispunct", "iscntrl", "isgraph", "islower", "isupper", "toupper", "tolower",
+    "strpbrk", "strspn", "strcspn", "strerror", "strdup", "strndup",
+    "bsearch", "wcspbrk", "wcslen", "va_start", "va_end", "va_arg",
+    "offsetof",
+    # POSIX / sockets / pthreads, the most-referenced C APIs in comments
+    "fork", "execve", "execvp", "waitpid", "pipe", "dup", "dup2", "close",
+    "read", "write", "open", "lseek", "fsync", "stat", "fstat", "unlink",
+    "link", "symlink", "readlink", "truncate", "ftruncate", "chmod", "chown",
+    "getpid", "getuid", "sleep", "usleep", "nanosleep", "mmap", "munmap",
+    "socket", "bind", "listen", "accept", "connect", "send", "recv",
+    "sendto", "recvfrom", "setsockopt", "getsockopt", "getsockname",
+    "getpeername", "htonl", "htons", "ntohl", "ntohs", "inet_ntoa",
+    "inet_pton", "getaddrinfo", "freeaddrinfo", "select", "poll", "epoll",
+    "pthread_create", "pthread_join", "pthread_mutex_lock",
+    "pthread_mutex_unlock", "dlopen", "dlsym", "rand", "srand", "time",
+    "gettimeofday", "localtime", "gmtime", "signal", "kill", "madvise",
+    "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof",
+    "atoll", "atof",
+}
+
+C_KEYWORDS = {
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while", "define", "include", "ifdef",
+    "ifndef", "endif", "pragma",
+}
+
 
 def _is_reserved(base: str, language: str) -> bool:
     """Builtins, keywords, and prose words: never symbol references."""
@@ -96,6 +135,8 @@ def _is_reserved(base: str, language: str) -> bool:
     if base.lower() in {"true", "false", "none", "null", "undefined", "nil"}:
         return True
     if language == "go" and (base in GO_BUILTINS or base in GO_KEYWORDS):
+        return True
+    if language == "c" and (base in C_STDLIB_FUNCS or base in C_KEYWORDS):
         return True
     return False
 
@@ -141,7 +182,7 @@ _NEGATED = re.compile(
 # ("For example ... ``django/templatetags/news/photos.py``"); a file ref
 # within ~120 chars after such a marker is an example, not a claim.
 _ILLUSTRATIVE = re.compile(
-    r"\b(for example|for instance|e\.g\.|such as|suppose|imagine)\b",
+    r"\b(for example|for instance|e\.g\.|such as|suppose|imagine|example)\b",
     re.IGNORECASE)
 
 
@@ -191,11 +232,11 @@ _JSDOC_TAG_LINE = re.compile(
 
 
 def _scrub_docstring(doc: str, language: str) -> str:
-    if not doc:
-        return ""
-    if language == "go":
-        return doc  # Go doc comments carry no contract tags to exclude
-    pat = _JSDOC_TAG_LINE if language == "javascript" else _SPHINX_FIELD_LINE
+    # Go doc comments carry no contract tags. C uses Doxygen, whose
+    # @param/@return lines are contracts like JSDoc.
+    if not doc or language == "go":
+        return doc
+    pat = _JSDOC_TAG_LINE if language in ("javascript", "c") else _SPHINX_FIELD_LINE
     kept = [ln for ln in doc.splitlines() if not pat.match(ln)]
     return "\n".join(kept)
 
@@ -245,6 +286,20 @@ def _code_text(facts: FileFacts) -> str:
 
 def _appears_in_code(name: str, code: str) -> bool:
     return re.search(r"\b" + re.escape(name) + r"\b", code) is not None
+
+
+def _appears_as_suffix(base: str, code: str, minimum: int = 6) -> bool:
+    """A longer code identifier ends with the claimed name (`je_` wrappers,
+    `XXH3_64bits_withSecret` variant families). Such comments name a member
+    of a family, not a standalone function. Suffix-only on purpose: prefix
+    extensions (`foo` -> `foo_v2`) are the classic rename shape and must
+    still fire."""
+    if len(base) < minimum:
+        return False
+    for tok in set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code)):
+        if len(tok) > len(base) and tok.endswith(base):
+            return True
+    return False
 
 
 def _suggest(base: str, index: RepoIndex, limit: int = 2) -> str:
@@ -407,6 +462,8 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue  # stdlib class form (Tarfile -> tarfile)
             if _appears_in_code(root, code) or (root != base and _appears_in_code(base, code)):
                 continue  # param, local, attribute, or same-file identifier
+            if _appears_as_suffix(base, code):
+                continue  # variant-family member (je_ wrappers, _withSecret)
             if index.has_symbol(name) or index.has_symbol(base):
                 continue
             if "." in name and not is_call:
@@ -458,6 +515,8 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             if facts.language == "python" and _stdlib_class(root):
                 continue
             if _appears_in_code(root, code) or (root != base and _appears_in_code(base, code)):
+                continue
+            if _appears_as_suffix(base, code, minimum=4):
                 continue
             if index.has_symbol(full) or index.has_symbol(base):
                 continue
@@ -568,6 +627,16 @@ def check_number_drift(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         if c.line in dead:
             continue
         if len(c.text) > 300:
+            continue
+        # Example sentences invent numbers ("Example, if we run for 1ms").
+        # The marker may sit on a neighboring comment line.
+        window_text = c.text
+        for ln in range(c.line - 2, c.end_line + 3):
+            if 1 <= ln <= len(facts.lines):
+                s = facts.lines[ln - 1].strip()
+                if s.startswith(("#", "//", "*", "/*")):
+                    window_text += "\n" + s
+        if _ILLUSTRATIVE.search(window_text):
             continue
         for m in _NUMBER_CLAIM.finditer(c.text):
             keyword = m.group(1).lower().replace("-", "_").replace(" ", "_")

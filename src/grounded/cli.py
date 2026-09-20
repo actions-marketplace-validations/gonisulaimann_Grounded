@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "The tree is still fully scanned; reporting is filtered. Errors outside git.")
     s.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     s.add_argument("--quiet", "-q", action="store_true", help="only print findings count + failures")
+    s.add_argument("--jobs", type=int, default=None, metavar="N",
+                   help="parallel workers (default: auto by file count)")
 
     sub.add_parser("init", help="write a starter grounded.toml in the current directory").add_argument(
         "--force", action="store_true", help="overwrite existing grounded.toml")
@@ -98,7 +100,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         config.fail_on = args.fail_on
     _resolve_enable_disable(config, args.enable, args.disable)
 
-    findings, facts, index = scan_root(root, config)
+    findings, facts, index = scan_root(root, config, jobs=args.jobs)
     n_files = len(facts)
 
     suppressed_note = ""
