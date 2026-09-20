@@ -70,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     mc = sub.add_parser("mcp", help="serve grounded over stdio as an MCP server for coding agents")
     mc.add_argument("--root", default=".", help="server root; all paths stay inside it (default: .)")
 
+    ls = sub.add_parser("lsp", help="serve grounded over stdio as an LSP server for editors")
+
     e = sub.add_parser("explain", help="explain what a checker proves")
     e.add_argument("checker", nargs="?", default=None, help="checker id (omit to list all)")
 
@@ -92,11 +94,19 @@ def _resolve_enable_disable(config: Config, enable: str | None, disable: str | N
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    root = Path(args.path).resolve()
+    given = Path(args.path)
+    root = given.resolve()
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
+    # A file argument scopes REPORTING to that file; the index is still
+    # built from the whole tree so cross-file references keep resolving.
+    only: str | None = None
     if root.is_file():
+        try:
+            only = root.relative_to(root.parent.resolve()).as_posix()
+        except ValueError:
+            only = root.name
         root = root.parent
     config = Config.load(root, explicit=args.config)
     if args.fail_on:
@@ -105,6 +115,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     findings, facts, index = scan_root(root, config, jobs=args.jobs)
     n_files = len(facts)
+    if only is not None:
+        findings = [f for f in findings if f.path == only]
 
     suppressed_note = ""
     facts_by_path = {f.path: f for f in facts}
@@ -188,16 +200,25 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
 def cmd_fix(args: argparse.Namespace) -> int:
     from .fix import apply_fixes, apply_symbol_fixes, file_fix_candidates, symbol_fix_candidates
-    root = Path(args.path).resolve()
+    given = Path(args.path)
+    root = given.resolve()
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
+    only: str | None = None
     if root.is_file():
+        try:
+            only = root.relative_to(root.parent.resolve()).as_posix()
+        except ValueError:
+            only = root.name
         root = root.parent
     config = Config.load(root, explicit=args.config)
     findings, facts, index = scan_root(root, config)
     facts_by_path = {f.path: f for f in facts}
     findings, _ = apply_suppressions(findings, facts_by_path)
+    if only is not None:
+        # Never rewrite files the user did not name.
+        findings = [f for f in findings if f.path == only]
     fixes = file_fix_candidates(findings, root)
     sym_fixes = symbol_fix_candidates(findings, root, index)
     if not fixes and not sym_fixes:
@@ -270,8 +291,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "fix":
         return cmd_fix(args)
     if args.cmd == "mcp":
-        from .mcp import serve
-        return serve(Path(args.root).resolve())
+        from .mcp import serve as serve_mcp
+        return serve_mcp(Path(args.root).resolve())
+    if args.cmd == "lsp":
+        from .lsp import serve as serve_lsp
+        return serve_lsp()
     if args.cmd == "init":
         return cmd_init(args)
     if args.cmd == "explain":

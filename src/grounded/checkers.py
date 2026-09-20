@@ -552,6 +552,138 @@ def _in_repo_scope(ref: str, index: RepoIndex) -> bool:
     return first in index.top_names
 
 
+def _resolve_py_target(index: RepoIndex, claimer: str, module: str | None, level: int) -> list[str] | None:
+    """Candidate module rel paths for an import, or None if unresolvable
+    (stdlib, third-party, namespace packages: outside snapshot analysis).
+
+    Relative (level>0) walks up from the claiming file. Absolute requires
+    the top segment to be a repo root entry.
+    """
+    if level:
+        base = _resolve_py_base(claimer, level)
+        if not base and level - 1 > len(claimer.split("/")[:-1]):
+            return None
+        if module:
+            base = base + module.split(".")
+        prefix = "/".join(base)
+    else:
+        if not module:
+            return None
+        segs = module.split(".")
+        if segs[0] not in index.top_names:
+            return None
+        prefix = "/".join(segs)
+    if not prefix:
+        return None
+    return [prefix + ".py", prefix + "/__init__.py"]
+
+
+def _effective_symbols(index: RepoIndex, rel: str, depth: int = 0,
+                       seen: frozenset[str] | None = None) -> set[str]:
+    """Names a module file provides: defs, assignments, imports, plus one
+    star-import hop (`from .models import *` re-exports everything). Depth
+    capped with a seen-set; __init__ chains resolve in one hop in practice.
+    """
+    seen = seen or frozenset()
+    if rel in seen or depth > 2:
+        return set()
+    seen = seen | {rel}
+    out = set(index.file_symbols.get(rel, set())) | set(index.file_imports.get(rel, set()))
+    for module, level in index.file_stars.get(rel, []):
+        targets = _resolve_py_target(index, rel, module, level)
+        if targets is None:
+            continue
+        for t in targets:
+            if t in index.rel_paths:
+                out |= _effective_symbols(index, t, depth + 1, seen)
+    return out
+
+
+def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """Python resolvable-import verification (v0.8).
+
+    `from M import N` / `import M` where M resolves to a repo file: the
+    module must exist, and N must be defined there, re-exported there, or
+    itself a submodule (`from pkg import submod` is ubiquitous and valid).
+    Guarded imports (try/except, TYPE_CHECKING, version/platform checks)
+    and unresolvable modules (stdlib, deps) are never flagged. An
+    unresolvable-at-runtime import is an ImportError, so these are lies.
+    """
+    if facts.language != "python":
+        return []
+    findings: list[Finding] = []
+    for module, level, names, is_guarded, lineno in facts.from_imports:
+        if is_guarded:
+            continue
+        targets = _resolve_py_target(index, facts.path, module, level)
+        if targets is None:
+            continue
+        existing = [t for t in targets if t in index.rel_paths]
+        for name, _asname in names:
+            if name == "*":
+                continue
+            if name.startswith("__") and name.endswith("__"):
+                continue  # import system provides dunders (__file__, ...)
+            if module is None:
+                # `from . import sub`: the name may be a submodule file, or
+                # a name defined/re-exported by the package __init__.
+                base = "/".join(_resolve_py_base(facts.path, level))
+                pkg_init = (base + "/__init__.py") if base else "__init__.py"
+                if (name in index.file_symbols.get(pkg_init, set())
+                        or name in index.file_imports.get(pkg_init, set())):
+                    continue
+                subs = ([base + "/" + name + ".py", base + "/" + name + "/__init__.py"]
+                        if base else [name + ".py", name + "/__init__.py"])
+                if any(s in index.rel_paths for s in subs):
+                    continue
+                findings.append(Finding(
+                    path=facts.path, line=lineno, end_line=lineno,
+                    checker="stale-import", severity="lie",
+                    title=f"`from . import {name}` but no such submodule exists",
+                    claim=f"from {'.' * level} import {name}",
+                    evidence="No matching submodule file exists in this repo.",
+                    fix="Fix the submodule path or remove the import.",
+                    confidence=0.85,
+                ))
+                break
+            if not existing:
+                findings.append(Finding(
+                    path=facts.path, line=lineno, end_line=lineno,
+                    checker="stale-import", severity="lie",
+                    title=f"`from {module}` imports from a module that does not exist",
+                    claim=f"from {'.' * level}{module or ''} import {name}",
+                    evidence="No such module file exists in this repo.",
+                    fix="Fix the module path or remove the import.",
+                    confidence=0.85,
+                ))
+                break
+            provided = any(name in _effective_symbols(index, t) for t in existing)
+            # PEP 562: a module-level __getattr__ means any name may resolve.
+            dynamic = any("__getattr__" in index.file_symbols.get(t, set()) for t in existing)
+            home = existing[0].rsplit("/", 1)[0] if "/" in existing[0] else ""
+            submod = (home + "/" + name + ".py") if home else (name + ".py")
+            subpkg = (home + "/" + name + "/__init__.py") if home else (name + "/__init__.py")
+            if provided or dynamic or submod in index.rel_paths or subpkg in index.rel_paths:
+                continue
+            findings.append(Finding(
+                path=facts.path, line=lineno, end_line=lineno,
+                checker="stale-import", severity="lie",
+                title=f"`{name}` imported from `{existing[0]}` but never defined there",
+                claim=f"from {'.' * level}{module or ''} import {name}",
+                evidence=f"`{existing[0]}` exists but defines no `{name}`.",
+                fix=f"Check for a rename in `{existing[0]}` (or a moved submodule).",
+                confidence=0.8,
+            ))
+    return _dedupe(findings)
+
+
+def _resolve_py_base(claimer: str, level: int) -> list[str]:
+    parts = claimer.split("/")[:-1]
+    if level - 1 > len(parts):
+        return []
+    return parts[:len(parts) - (level - 1)]
+
+
 def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     findings: list[Finding] = []
     dead = _commented_code_line_set(facts)
@@ -766,6 +898,7 @@ def check_fragile_anchor(facts: FileFacts, index: RepoIndex) -> list[Finding]:
 CHECKERS = {
     "stale-symbol-ref": check_stale_symbol,
     "stale-file-ref": check_stale_file,
+    "stale-import": check_stale_import,
     "number-drift": check_number_drift,
     "fragile-anchor": check_fragile_anchor,
 }
@@ -773,6 +906,7 @@ CHECKERS = {
 CHECKER_DESCRIPTIONS = {
     "stale-symbol-ref": "Comment names a call (foo() or `foo()`) that is not defined, imported, or used in-file (v2: import- and scope-aware).",
     "stale-file-ref": "Comment claims a path inside this repo's tree that does not exist (namespace- and placeholder-aware).",
+    "stale-import": "Resolvable `from M import N` where the module is missing or N is not defined, re-exported, or a submodule there.",
     "number-drift": "Comment states a magic number (timeout/port/limit) that disagrees with adjacent code.",
     "fragile-anchor": "Line-number anchors, see-above/below, or untracked HACK/WORKAROUND markers.",
 }

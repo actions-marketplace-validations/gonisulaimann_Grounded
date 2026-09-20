@@ -612,6 +612,67 @@ class TestC(unittest.TestCase):
         self.assertNotIn("ghost_fn", c_top_level_names("int main() {\n  ghost_fn(1);\n  return 0;\n}\n"))
 
 
+class TestStaleImport(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def scan(self, files: dict[str, str]):
+        for rel, text in files.items():
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        return scan_root(self.root, Config())[0]
+
+    def imps(self, files):
+        return [f for f in self.scan(files) if f.checker == "stale-import"]
+
+    def test_missing_name_is_lie(self):
+        out = self.imps({"pkg/mod.py": "def real():\n    pass\n",
+                         "pkg/use.py": "from .mod import gone_thing\n"})
+        self.assertTrue(any("gone_thing" in f.title for f in out))
+
+    def test_missing_module_is_lie(self):
+        out = self.imps({"pkg/use.py": "from .deleted import thing\n"})
+        self.assertTrue(any("deleted" in f.title for f in out))
+
+    def test_ok_import_silent(self):
+        out = self.imps({"pkg/mod.py": "def real():\n    pass\n",
+                         "pkg/use.py": "from .mod import real\n"})
+        self.assertEqual(out, [])
+
+    def test_submodule_form_silent(self):
+        out = self.imps({"pkg/sub.py": "X = 1\n",
+                         "pkg/use.py": "from . import sub\n"})
+        self.assertEqual(out, [])
+
+    def test_reexport_silent(self):
+        out = self.imps({"pkg/inner.py": "def real():\n    pass\n",
+                         "pkg/__init__.py": "from .inner import real\n",
+                         "pkg/use.py": "from . import real\n"})
+        self.assertEqual(out, [])
+
+    def test_stdlib_and_thirdparty_silent(self):
+        out = self.imps({"a.py": "import os\nfrom requests import Session\n"})
+        self.assertEqual(out, [])
+
+    def test_guarded_imports_silent(self):
+        out = self.imps({
+            "a.py": "try:\n    from .gone import x\nexcept ImportError:\n    x = None\n",
+            "b.py": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from .alsogone import Y\n",
+            "c.py": "import sys\nif sys.version_info >= (3, 11):\n    from .newonly import Z\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_star_silent(self):
+        out = self.imps({"pkg/mod.py": "X = 1\n",
+                         "pkg/use.py": "from .mod import *\n"})
+        self.assertEqual(out, [])
+
+
 class TestRepoFiles(unittest.TestCase):
     def test_action_files_parse(self):
         import json
@@ -889,6 +950,164 @@ class TestMcp(unittest.TestCase):
             self.assertEqual({t["name"] for t in lines[1]["result"]["tools"]},
                              {"check_path", "explain_checker"})
             self.assertNotIn("Traceback", proc.stderr)
+
+
+class TestLsp(unittest.TestCase):
+    def _framed_session(self, root: Path, messages: list[dict]) -> list[dict]:
+        """Drive the server with Content-Length framing, return responses."""
+        import os
+        import subprocess
+        import sys
+        repo = Path(__file__).resolve().parent.parent
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(repo / "src") + os.pathsep + env.get("PYTHONPATH", "")
+        payload = b""
+        for m in messages:
+            body = json.dumps(m).encode()
+            payload += b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        proc = subprocess.run(
+            [sys.executable, "-m", "grounded.cli", "lsp"],
+            input=payload, capture_output=True, timeout=120, env=env, cwd=str(repo))
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode()[-500:])
+        out, responses = proc.stdout, []
+        while True:
+            head, sep, rest = out.partition(b"\r\n\r\n")
+            if not sep:
+                break
+            length = 0
+            for ln in head.decode().split("\r\n"):
+                if ln.lower().startswith("content-length:"):
+                    length = int(ln.split(":")[1])
+            responses.append(json.loads(rest[:length].decode()))
+            out = rest[length:]
+        self.assertNotIn("Traceback", proc.stderr.decode())
+        return responses
+
+    def test_full_session(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            uri = root.as_uri() + "/a.py"
+            text = "# Calls `ghost_fn()`.\nX = 1\n"
+            rs = self._framed_session(root, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"rootUri": root.as_uri(), "capabilities": {}}},
+                {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+                {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                 "params": {"textDocument": {"uri": uri, "languageId": "python",
+                                             "version": 1, "text": text}}},
+            ])
+            init = next(r for r in rs if r.get("id") == 1)
+            self.assertIn("codeActionProvider", init["result"]["capabilities"])
+            pubs = [r for r in rs if r.get("method") == "textDocument/publishDiagnostics"]
+            self.assertEqual(len(pubs), 1)
+            diags = pubs[0]["params"]["diagnostics"]
+            self.assertEqual(len(diags), 1)
+            self.assertEqual(diags[0]["severity"], 1)
+            self.assertEqual(diags[0]["code"], "stale-symbol-ref")
+            self.assertEqual(diags[0]["source"], "grounded")
+
+    def test_code_action_and_heal(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "real.py").write_text("def ghost_fix_target():\n    pass\n", encoding="utf-8")
+            uri = root.as_uri() + "/a.py"
+            text = "# Calls `ghost_fixtarget()`.\nX = 1\n"
+            rs = self._framed_session(root, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"rootUri": root.as_uri(), "capabilities": {}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                 "params": {"textDocument": {"uri": uri, "languageId": "python",
+                                             "version": 1, "text": text}}},
+            ])
+            diag = next(r for r in rs if r.get("method") == "textDocument/publishDiagnostics")
+            d = diag["params"]["diagnostics"][0]
+            rs2 = self._framed_session(root, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"rootUri": root.as_uri(), "capabilities": {}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                 "params": {"textDocument": {"uri": uri, "languageId": "python",
+                                             "version": 1, "text": text}}},
+                {"jsonrpc": "2.0", "id": 2, "method": "textDocument/codeAction",
+                 "params": {"textDocument": {"uri": uri},
+                            "range": d["range"],
+                            "context": {"diagnostics": [d]}}},
+                {"jsonrpc": "2.0", "id": 3, "method": "shutdown"},
+                {"jsonrpc": "2.0", "method": "exit"},
+            ])
+            acts = next(r for r in rs2 if r.get("id") == 2)["result"]
+            self.assertEqual(len(acts), 1)
+            self.assertEqual(acts[0]["kind"], "quickfix")
+            edit = acts[0]["edit"]["changes"][uri][0]
+            self.assertIn("ghost_fix_target", edit["newText"])
+            healed = text.replace("ghost_fixtarget", "ghost_fix_target")
+            rs3 = self._framed_session(root, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"rootUri": root.as_uri(), "capabilities": {}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didChange",
+                 "params": {"textDocument": {"uri": uri, "version": 2},
+                            "contentChanges": [{"text": healed}]}},
+            ])
+            pubs = [r for r in rs3 if r.get("method") == "textDocument/publishDiagnostics"]
+            self.assertEqual(pubs[0]["params"]["diagnostics"], [])
+
+    def test_unknown_method_and_shutdown(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rs = self._framed_session(root, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"rootUri": root.as_uri(), "capabilities": {}}},
+                {"jsonrpc": "2.0", "id": 2, "method": "nope/method"},
+                {"jsonrpc": "2.0", "id": 3, "method": "shutdown"},
+                {"jsonrpc": "2.0", "method": "exit"},
+            ])
+            err = next(r for r in rs if r.get("id") == 2)
+            self.assertEqual(err["error"]["code"], -32601)
+            bye = next(r for r in rs if r.get("id") == 3)
+            self.assertEqual(bye["result"], None)
+
+
+class TestFileScope(unittest.TestCase):
+    def test_scan_file_reports_only_that_file(self):
+        import contextlib
+        import io
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "bad.py").write_text("# Calls `ghost_fn()`.\nX = 1\n", encoding="utf-8")
+            (root / "ok.py").write_text("Y = 2\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root / "ok.py"), "--no-color", "--format", "json"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(buf.getvalue()), [])
+
+    def test_fix_file_leaves_others_alone(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src" / "real").mkdir(parents=True)
+            (root / "src" / "real" / "deep.py").write_text("X = 1\n", encoding="utf-8")
+            a = root / "a.py"
+            b = root / "b.py"
+            a.write_text("# See src/old/deep.py.\n", encoding="utf-8")
+            b.write_text("# See src/old/deep.py.\n", encoding="utf-8")
+            self.assertEqual(main(["fix", str(a)]), 0)
+            self.assertIn("src/real/deep.py", a.read_text())
+            self.assertIn("src/old/deep.py", b.read_text())
+
+    def test_bench_smoke(self):
+        import os
+        import subprocess
+        import sys
+        repo = Path(__file__).resolve().parent.parent
+        env = dict(os.environ)
+        env["GROUNDED_BENCH_N"] = "1"
+        proc = subprocess.run(
+            [sys.executable, str(repo / "examples" / "bench" / "bench.py")],
+            capture_output=True, text=True, timeout=180, env=env, cwd=str(repo))
+        self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
+        self.assertIn("in-process", proc.stdout)
+        self.assertIn("cold CLI", proc.stdout)
 
 
 if __name__ == "__main__":

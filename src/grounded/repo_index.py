@@ -35,6 +35,12 @@ class RepoIndex:
         # Defining file per symbol (rel posix paths), for scope-proximate
         # rename suggestions in autofix. A name may have several definers.
         self.symbol_files: dict[str, set[str]] = {}
+        # Defined names per file (rel posix path), for import resolution.
+        self.file_symbols: dict[str, set[str]] = {}
+        # From-imported names per file (re-export chains resolve through these).
+        self.file_imports: dict[str, set[str]] = {}
+        # Star imports per file: [(module, level)] for one-hop expansion.
+        self.file_stars: dict[str, list[tuple[str | None, int]]] = {}
         # Optional pre-read contents (abs path string -> text) so callers
         # that already read the tree skip a second disk pass.
         self._texts = texts or {}
@@ -94,27 +100,75 @@ class RepoIndex:
     def _record(self, target: set[str], name: str, rel: str) -> None:
         target.add(name)
         self.symbol_files.setdefault(name, set()).add(rel)
+        self.file_symbols.setdefault(rel, set()).add(name)
 
     def _index_python(self, text: str, rel: str) -> None:
         try:
             tree = ast.parse(text)
         except SyntaxError:
             return
+
+        def _targets(t) -> list[str]:
+            # Destructured assignment targets: `A, B = ...`, `(A, B) = ...`.
+            if isinstance(t, ast.Name):
+                return [t.id]
+            if isinstance(t, (ast.Tuple, ast.List)):
+                out: list[str] = []
+                for e in t.elts:
+                    out.extend(_targets(e))
+                return out
+            if isinstance(t, ast.Starred):
+                return _targets(t.value)
+            return []
+
+        def _bind_assign(node) -> None:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    for name in _targets(t):
+                        self._record(self.py_symbols, name, rel)
+            elif isinstance(node, ast.AnnAssign):
+                for name in _targets(node.target):
+                    self._record(self.py_symbols, name, rel)
+
+        def _bind_import(node) -> None:
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    top = (a.name or "").split(".")[0]
+                    self.file_imports.setdefault(rel, set()).add(a.asname or top)
+            elif isinstance(node, ast.ImportFrom):
+                for a in node.names:
+                    if a.name == "*":
+                        self.file_stars.setdefault(rel, []).append((node.module, node.level or 0))
+                    else:
+                        self.file_imports.setdefault(rel, set()).add(a.asname or a.name)
+
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 self._record(self.py_symbols, node.name, rel)
-        # v2: module-level assigned names (gettext_lazy = lazy(...),
-        # constants, singletons). A comment referencing them is not
-        # dangling. Restricted to module level on purpose: function locals
-        # must NOT leak repo-wide (precision direction).
-        for node in getattr(tree, "body", []):
-            if isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name):
-                        self._record(self.py_symbols, t.id, rel)
-            elif isinstance(node, ast.AnnAssign):
-                if isinstance(node.target, ast.Name):
-                    self._record(self.py_symbols, node.target.id, rel)
+            elif isinstance(node, ast.ImportFrom):
+                for a in node.names:
+                    if a.name != "*":
+                        self.file_imports.setdefault(rel, set()).add(a.asname or a.name)
+        # Module-level bindings: direct body plus recursive descent into
+        # try/if bodies (compat shims nest try blocks and assign/import
+        # there constantly). Never descends into functions or classes, so
+        # locals stay local. Depth is bounded by the tree itself.
+        _TRY = (ast.Try,) + ((ast.TryStar,) if hasattr(ast, "TryStar") else ())
+        stack: list[list] = [getattr(tree, "body", [])]
+        while stack:
+            for node in stack.pop():
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Import, ast.ImportFrom)):
+                    _bind_assign(node)
+                    _bind_import(node)
+                elif isinstance(node, ast.If):
+                    stack.append(list(node.orelse))
+                    stack.append(list(node.body))
+                elif isinstance(node, _TRY):
+                    for h in node.handlers:
+                        stack.append(list(h.body))
+                    stack.append(list(node.orelse))
+                    stack.append(list(node.finalbody))
+                    stack.append(list(node.body))
 
     def _index_go(self, text: str, rel: str) -> None:
         for line in text.splitlines():

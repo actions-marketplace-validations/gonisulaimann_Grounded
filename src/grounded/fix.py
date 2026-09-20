@@ -20,8 +20,10 @@ from .models import Finding
 from .repo_index import RepoIndex
 
 
-def file_fix_candidates(findings: list[Finding], root: Path) -> list[tuple[Finding, str, int]]:
-    """Return (finding, replacement rel path, 1-based line) for safe fixes."""
+def file_fix_candidates(findings: list[Finding], root: Path,
+                        texts: dict[str, list[str]] | None = None) -> list[tuple[Finding, str, int]]:
+    """Candidates for file rewrites. `texts` optionally overrides disk reads
+    (unsaved editor buffers); keys are rel posix paths."""
     by_base: dict[str, list[str]] = {}
     for p in root.rglob("*"):
         if p.is_file():
@@ -39,11 +41,13 @@ def file_fix_candidates(findings: list[Finding], root: Path) -> list[tuple[Findi
         matches = by_base.get(base, [])
         if len(matches) != 1:
             continue
-        target = Path(root / f.path)
-        try:
-            lines = target.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
+        lines = (texts.get(f.path) if texts else None)
+        if lines is None:
+            target = Path(root / f.path)
+            try:
+                lines = target.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
         # comment findings: claim lives on [line, end_line]; docstring
         # findings reuse the docstring's opening line: unsafe, skip unless
         # the claim text is actually on the reported line.
@@ -56,7 +60,8 @@ def file_fix_candidates(findings: list[Finding], root: Path) -> list[tuple[Findi
 
 
 def symbol_fix_candidates(
-    findings: list[Finding], root: Path, index: RepoIndex
+    findings: list[Finding], root: Path, index: RepoIndex,
+    texts: dict[str, list[str]] | None = None,
 ) -> list[tuple[Finding, str, str, int]]:
     """Return (finding, old segment, new segment, 1-based line) for safe
     symbol renames. Backticked claims and verb-anchored bare calls both
@@ -91,8 +96,11 @@ def symbol_fix_candidates(
         pool = in_dir or scored
         if len(pool) != 1:
             continue  # ambiguous: report, never touch
-        out.append((f, base, pool[0][1], _claim_line(root, f)))
-    return [(f, o, n, ln) for f, o, n, ln in out if ln is not None]
+        ln = _claim_line(texts.get(f.path) if texts else None, root, f)
+        if ln is None:
+            continue
+        out.append((f, base, pool[0][1], ln))
+    return out
 
 
 def _same_dir(root: Path, claim_path: str, cand: str, index: RepoIndex) -> bool:
@@ -108,14 +116,18 @@ def _defining_files(cand: str, index: RepoIndex) -> list[str]:
     return sorted(index.symbol_files.get(cand, []))
 
 
-def _claim_line(root: Path, f: Finding) -> int | None:
+def _claim_line(override: list[str] | None, root: Path, f: Finding) -> int | None:
     """Locate the claim occurrence; None when not safely locatable
-    (docstring findings reuse the docstring's opening line)."""
-    target = Path(root / f.path)
-    try:
-        lines = target.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
+    (docstring findings reuse the docstring's opening line). `override`
+    supplies buffer lines for unsaved editor content."""
+    if override is not None:
+        lines = override
+    else:
+        target = Path(root / f.path)
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
     needle = f.claim.strip("`")
     for ln in range(f.line, f.end_line + 1):
         if 1 <= ln <= len(lines) and needle in lines[ln - 1]:

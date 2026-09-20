@@ -73,7 +73,7 @@ def to_sarif(findings: list[Finding], root: str = "") -> str:
         "runs": [{
             "tool": {"driver": {
                 "name": "grounded",
-                "version": "0.7.1",
+                "version": "0.8.0",
                 "informationUri": "https://example.com/grounded",
                 "rules": list(rules_seen.values()),
             }},

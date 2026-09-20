@@ -42,6 +42,12 @@ class FileFacts:
     # module each alias comes from ("" for relative/unresolvable).
     # e.g. {"CookieJar": "http.cookiejar", "os": "os", "axios": ""}
     imports: dict[str, str] = field(default_factory=dict)
+    # Structured from-imports for import resolution:
+    # [(module or None, level, [(name, asname)], guarded, lineno)] where
+    # guarded means inside try/except, TYPE_CHECKING, or a version/platform
+    # conditional (compat imports that may legitimately fail are never
+    # flagged).
+    from_imports: list[Any] = field(default_factory=list)
 
 
 @dataclass

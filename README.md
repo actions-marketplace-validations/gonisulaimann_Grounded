@@ -189,7 +189,44 @@ repos:
 SARIF upload for code scanning: run with `--format sarif --output
 results.sarif`, then upload with `github/codeql-action/upload-sarif`.
 
-## Coding agents (MCP)
+## Coding agents
+
+`grounded scan <file>` checks one file (exit 1 on findings, 0 when clean),
+which is the contract agent lint loops expect. Verified recipes:
+
+Aider (`--lint-cmd` accepts filenames, expects non-zero on failure):
+
+```console
+aider --lint-cmd "sh -c 'for f; do grounded scan \"$f\" --quiet || exit 1; done' sh"
+```
+
+Claude Code (`.claude/settings.json`, runs after every file edit):
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{ "type": "command", "command": "grounded scan . --changed --quiet" }]
+      }
+    ]
+  }
+}
+```
+
+Cursor rules (`.cursor/rules/grounded.md` or project rules): tell the
+agent to run `grounded scan . --changed` after editing files and to fix
+reported lies before building on them.
+
+For agents that speak MCP, use `grounded mcp` (see below) instead of
+shelling out.
+
+Measured cost (best of 7, wall clock, `examples/bench/bench.py`):
+in-process single-file check 0.6 ms, cold CLI single-file check 58 ms
+(Python startup dominates). No pytest comparison is claimed here: tests
+catch everything, grounded is the millisecond pre-filter before you pay
+for them.
 
 `grounded` serves itself over stdio as a Model Context Protocol server,
 so agents can verify references instead of trusting them:
@@ -206,6 +243,24 @@ Two tools: `check_path` (scan a path under the server root; paths cannot
 escape it) and `explain_checker`. Protocol versions `2025-03-26` through
 `2025-06-18` are negotiated per the spec; logs go to stderr, stdout
 carries only MCP messages.
+
+## Editors (LSP)
+
+`grounded lsp` speaks Language Server Protocol 3.17 over stdio: instant
+diagnostics (lie as error, drift as warning, smell as information) plus
+quickfix actions for unambiguous renames and path moves. Neovim:
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = { "python", "javascript", "typescript", "go", "c" },
+  callback = function()
+    vim.lsp.start({ name = "grounded", cmd = { "grounded", "lsp" } })
+  end,
+})
+```
+
+Any editor with a generic LSP client (VS Code, Cursor, Zed, Emacs
+eglot) can point at the same command.
 
 ## Non-goals
 

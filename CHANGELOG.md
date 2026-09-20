@@ -3,6 +3,25 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.0] - 2026-09-21
+
+### Added
+- `stale-import` checker: resolvable Python imports verified (module
+  exists; name defined, re-exported, or a submodule). Star re-exports,
+  tuple targets, nested compat blocks, `__getattr__` modules, and dunder
+  imports handled; guarded and external imports never flagged.
+- `grounded lsp`: stdlib LSP 3.17 server (diagnostics + quickfix actions),
+  protocol-tested including a full heal loop.
+- File-scoped `scan`/`fix`: a file argument scopes reporting (and
+  rewriting) to that file; the index still spans the tree.
+- Agent recipes: verified Aider lint loop, Claude Code hooks JSON, Cursor
+  rules snippet.
+- `examples/bench/bench.py`: reproducible pre-test-filter timings.
+
+### Changed
+- General Markdown verification declined after measurement; symbol rename
+  autofix requires scope plus similarity (ties never touch).
+
 ## [0.7.1] - 2026-09-21
 
 ### Changed
