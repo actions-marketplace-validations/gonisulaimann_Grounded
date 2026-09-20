@@ -4,6 +4,7 @@
 [![PyPI version](https://badge.fury.io/py/grounded.svg)](https://pypi.org/project/grounded/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+ <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi" /></a>
 
 Find dangling references in code comments. If a comment names a function
 that no longer exists, or a file that is not there, `grounded` reports it
