@@ -5,9 +5,6 @@
           <img alt="Grounded Logo" src="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/logo_black.png" width="260">
         </picture>
     </a>
-    <br>
-    Grounded
-    <br>
     <small>The 0.6ms Reference &amp; Import Integrity Firewall for AI Coding Agents</small>
 </h1>
 
