@@ -199,7 +199,7 @@ class McpServer:
         if not symbol:
             return _error(req_id, -32602, "symbol is required")
         root = target if target.is_dir() else target.parent
-        _, facts, index = scan_root(root, Config.load(root))
+        _, facts, index = scan_root(root, Config.load(root), include_claim_surfaces=True)
         result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(symbol)
         return _ok(req_id, {
             "content": [{"type": "text", "text": json.dumps(result)}],

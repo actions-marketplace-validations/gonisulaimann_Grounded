@@ -113,7 +113,10 @@ def build_alias_zones(root: Path, tsconfigs: list[Path],
     return zones
 
 
-def collect_files(root: Path, config: Config) -> list[Path]:
+def collect_files(root: Path, config: Config, include_claim_surfaces: bool = False) -> list[Path]:
+    """All scannable files. Markdown and manifests ride along only for
+    rename mapping (impact/MCP blast_radius: query paths that never
+    gate) or when their checkers run; default scans stay byte-identical."""
     out: list[Path] = []
     root = root.resolve()
     stack = [root]
@@ -141,6 +144,11 @@ def collect_files(root: Path, config: Config) -> list[Path]:
                     # default scans stay byte-identical.
                     suffixes = DEFAULT_SUFFIXES | {".md", ".markdown", ".mdc"}
                 want_cfg = "stale-entrypoint" in (config.enabled or ())
+                if include_claim_surfaces:
+                    # Rename mapping reads docs and manifests; query paths
+                    # never gate, so collecting more changes nothing gated.
+                    suffixes = suffixes | {".md", ".markdown", ".mdc", ".toml"}
+                    want_cfg = True
                 if e.suffix.lower() in suffixes or (want_cfg and (
                         e.suffix.lower() == ".toml" or e.name == "package.json")):
                     # skip minified bundles
@@ -255,10 +263,11 @@ def _suffix_of(rel: str) -> str:
 
 
 def scan_root(root: Path, config: Config, jobs: int | None = None,
-              cache_path: Path | None = None) -> tuple[list[Finding], list[FileFacts], RepoIndex]:
+              cache_path: Path | None = None, include_claim_surfaces: bool = False,
+              ) -> tuple[list[Finding], list[FileFacts], RepoIndex]:
     global _INDEX
     from . import __version__
-    files = collect_files(root, config)
+    files = collect_files(root, config, include_claim_surfaces=include_claim_surfaces)
     resolved = root.resolve()
     if jobs is None:
         jobs = default_jobs(len(files))

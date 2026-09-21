@@ -6,6 +6,13 @@ All notable changes to `grounded` are documented here. Format follows
 ## [Unreleased]
 
 ### Added
+- Rename mapping across all claim surfaces: `impact` / MCP
+  `blast_radius` now report claims from doc examples, mock strings,
+  entry points, and contract frames — not just comments. Docs and
+  manifests ride along in query paths only; gated scans are
+  byte-identical.
+
+### Added
 - `stale-entrypoint` (experimental, opt-in): `pyproject.toml`
   `[project.scripts]` targets and `package.json` `bin`/`main` paths
   pointing at nothing in the repo. Manifest files are collected only

@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser("lsp", help="serve grounded over stdio as an LSP server for editors")
 
-    im = sub.add_parser("impact", help="show everything touching a symbol (definers, importers, comment claims)")
+    im = sub.add_parser("impact", help="show everything touching a symbol (definers, importers, claims across comments, docs, mocks, entry points)")
     im.add_argument("symbol", help="symbol name, e.g. gettext_lazy")
     im.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
     im.add_argument("--format", choices=["terminal", "json"], default="terminal")
@@ -409,7 +409,7 @@ def cmd_impact(args: argparse.Namespace) -> int:
     if root.is_file():
         root = root.parent
     config = Config.load(root, explicit=args.config)
-    _, facts, index = scan_root(root, config)
+    _, facts, index = scan_root(root, config, include_claim_surfaces=True)
     result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(args.symbol)
     if args.format == "json":
         import json as _json

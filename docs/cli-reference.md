@@ -10,7 +10,7 @@ Generated from `grounded --help`; if this page and `--help` disagree,
 | `scan [PATH]` | Scan a directory (or one file). Never writes. |
 | `baseline [PATH]` | Record findings to `.grounded-baseline.json`. |
 | `fix [PATH]` | Rewrite unambiguous findings. Prints without writing under `--dry-run`. |
-| `impact SYMBOL [PATH]` | Definers, importers, and comment claims for a symbol. Never writes. |
+| `impact SYMBOL [PATH]` | Definers, importers, and claims (comments, doc examples, mocks, entry points) for a symbol. Never writes. |
 | `list [PATH]` | List files that would be scanned. Never writes. |
 | `explain [CHECKER]` | Describe a checker (or where a removed one went). Never writes. |
 | `init` | Write a starter `grounded.toml`. Refuses to overwrite without `--force`. |

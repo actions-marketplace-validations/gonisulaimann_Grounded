@@ -2283,6 +2283,36 @@ class TestImpact(unittest.TestCase):
             self.assertEqual(result["imported_by"], ["pkg/views.py"])
             self.assertEqual(result["claimed_by"], ["pkg/views.py"])
 
+    def test_blast_radius_claims_all_surfaces(self):
+        from grounded.config import Config
+        from grounded.graph import ClaimGraph
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = root / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
+            (pkg / "core.py").write_text(
+                "def get_account(uid):\n    return uid\n", encoding="utf-8")
+            (pkg / "views.py").write_text(
+                "# DEPRECATED: use get_account(uid) instead.\nX = 1\n", encoding="utf-8")
+            (root / "README.md").write_text(
+                "# Demo\n\n```python\nresult = get_account(1)\n```\n", encoding="utf-8")
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_core.py").write_text(
+                'from unittest.mock import patch\n\n@patch("pkg.core.get_account")\n'
+                "def test_x(m):\n    pass\n",
+                encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "d"\n[project.scripts]\ndemo = "pkg.core:get_account"\n',
+                encoding="utf-8")
+            _, facts, index = scan_root(root, Config(), include_claim_surfaces=True)
+            result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius("get_account")
+            self.assertEqual(
+                sorted(result["claimed_by"]),
+                ["README.md", "pkg/views.py", "pyproject.toml", "tests/test_core.py"])
+
     def test_dangling_signature(self):
         from grounded.config import Config
         from grounded.graph import ClaimGraph

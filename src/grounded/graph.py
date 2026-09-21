@@ -18,6 +18,10 @@ import re
 class ClaimGraph:
     def __init__(self, index, facts_by_path: dict) -> None:
         from .checkers import _BACKTICK_SYMBOL, _SYMBOL_CALL
+        from .checkers import (_CONTRACT_DEPRECATION, _CONTRACT_LOCK,
+                               _CONTRACT_NAME, _DOC_CALL, _MOCK_PATCH_OBJECT,
+                               _MOCK_PATCH_STR, _doc_fence_blocks,
+                               _entry_toml, _mock_split)
         self.defines: dict[str, set[str]] = {}    # symbol -> {files}
         self.imported_by: dict[str, set[str]] = {}  # symbol -> {files}
         self.claimed_by: dict[str, set[str]] = {}  # symbol -> {files}
@@ -47,6 +51,64 @@ class ClaimGraph:
                         seen.add(base)
                 for m in _SYMBOL_CALL.finditer(text):
                     seen.add(m.group(1).split(".")[-1])
+                # Contract frames name symbols bare (no backticks/parens):
+                # deprecation targets and lock holders break on rename.
+                if _CONTRACT_DEPRECATION.search(text):
+                    for m in _CONTRACT_NAME.finditer(text):
+                        raw = m.group(1).rstrip(".")
+                        base = raw[:raw.index("(")].split(".")[-1] if raw.endswith(")") else raw.split(".")[-1]
+                        if len(base) >= 3:
+                            seen.add(base)
+                for m in _CONTRACT_LOCK.finditer(text):
+                    base = m.group(1).rstrip(".").split(".")[-1]
+                    if len(base) >= 3:
+                        seen.add(base)
+            lang = getattr(facts, "language", "")
+            if lang == "markdown":
+                # Fenced code examples name symbols that break on rename.
+                # Same block gating as the checker: illustrative blocks
+                # stay out; everything called gets listed (query tool:
+                # recall direction, never a verdict).
+                for _lang, start, end in _doc_fence_blocks(facts.lines):
+                    for line in facts.lines[start - 1:end - 1]:
+                        for m in _DOC_CALL.finditer(line):
+                            base = m.group(1).split(".")[-1].lstrip("$")
+                            if len(base) >= 3:
+                                seen.add(base)
+            elif lang == "python":
+                # Mock strings name symbols that break on rename.
+                code_lines = {i for i in range(1, len(facts.lines) + 1)}
+                for c in facts.comments:
+                    for ln in range(c.line, c.end_line + 1):
+                        code_lines.discard(ln)
+                for lineno in sorted(code_lines):
+                    line = facts.lines[lineno - 1]
+                    for m in _MOCK_PATCH_STR.finditer(line):
+                        split = _mock_split(m.group(1))
+                        if split and len(split[1]) >= 3:
+                            seen.add(split[1])
+                    for m in _MOCK_PATCH_OBJECT.finditer(line):
+                        attr = m.group(3)
+                        if attr and len(attr) >= 3:
+                            seen.add(attr)
+                        if m.group(1):
+                            split = _mock_split(m.group(1))
+                            if split and len(split[1]) >= 3:
+                                seen.add(split[1])
+            elif lang == "config" and facts.path.endswith("pyproject.toml"):
+                # Entrypoint targets break when the function is renamed.
+                data = _entry_toml("\n".join(facts.lines))
+                proj = data.get("project") if isinstance(data, dict) else None
+                if isinstance(proj, dict):
+                    for section in ("scripts", "gui-scripts"):
+                        part = proj.get(section)
+                        if isinstance(part, dict):
+                            for target in part.values():
+                                if not isinstance(target, str):
+                                    continue
+                                _mod, _, func = target.split("[")[0].strip().partition(":")
+                                if func.strip() and len(func.strip()) >= 3:
+                                    seen.add(func.strip())
             for name in seen:
                 self.claimed_by.setdefault(name, set()).add(rel)
 
