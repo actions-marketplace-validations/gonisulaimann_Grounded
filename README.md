@@ -348,7 +348,7 @@ so agents can verify references instead of trusting them:
 }
 ```
 
-Two tools: `check_path` (scan a path under the server root; paths cannot
+Three tools: `check_path` (scan a path under the server root; paths cannot
 escape it), `explain_checker`, and `blast_radius` (definers, importers,
 and comment claims for a symbol: ask before renaming). Protocol versions `2025-03-26` through
 `2025-06-18` are negotiated per the spec; logs go to stderr, stdout
