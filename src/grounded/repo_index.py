@@ -49,6 +49,12 @@ class RepoIndex:
         # JS/TS export surface per file: exported names ('default' marks a
         # default export) and star re-export specifiers.
         self.file_exports: dict[str, set[str]] = {}
+        # Files with at least one ESM `export` statement. A default import
+        # from a non-ESM (CJS/script) file is valid via interop, so the
+        # missing-default check only applies to ESM targets.
+        self.file_esm: set[str] = set()
+        # Files with dynamic namespace injection (see _DYNAMIC_NS).
+        self.file_dynamic_ns: set[str] = set()
         self.file_export_stars: dict[str, list[str]] = {}
         # Files with a bare `export *` (external re-export): export set unknown.
         self.file_export_unknown: set[str] = set()
@@ -135,6 +141,10 @@ class RepoIndex:
     _ATTR_USE = re.compile(
         r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
         r"\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b")
+    # Dynamic namespace injection: static analysis cannot enumerate the
+    # names (`globals().update(...)` in __init__). Files flagged here make
+    # `from . import X` unknowable for their package: suppress, don't guess.
+    _DYNAMIC_NS = re.compile(r"globals\(\)\s*\.\s*update\s*\(")
 
     @staticmethod
     def _attr_pairs(text: str) -> set[tuple[str, str]]:
@@ -166,6 +176,8 @@ class RepoIndex:
         if suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
                       ".mts", ".cts", ".go", ".c", ".h"}:
             self.file_attr_uses[rel] = self._attr_pairs(text)
+        if self._DYNAMIC_NS.search(text):
+            self.file_dynamic_ns.add(rel)
         if rebuild:
             self._rebuild_unions()
 
@@ -183,6 +195,8 @@ class RepoIndex:
     def _forget_no_rebuild(self, rel: str) -> None:
         old = self.file_symbols.pop(rel, set())
         self.file_imports.pop(rel, None)
+        self.file_esm.discard(rel)
+        self.file_dynamic_ns.discard(rel)
         self.file_attr_uses.pop(rel, None)
         self.file_stars.pop(rel, None)
         self.file_exports.pop(rel, None)
@@ -242,9 +256,16 @@ class RepoIndex:
                         if a.asname and a.asname != a.name:
                             self.file_imports[rel].add(a.name)
 
+        _TypeAlias = getattr(ast, "TypeAlias", None)  # 3.12+; absent on 3.10/3.11
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 self._record(self.py_symbols, node.name, rel)
+            elif _TypeAlias is not None and isinstance(node, _TypeAlias):
+                # PEP 695 `type X = ...`: a real runtime binding; without
+                # it every `from types import X` misfires (seen: _pyrepl).
+                name = getattr(node.name, "id", "")
+                if name:
+                    self._record(self.py_symbols, name, rel)
             elif isinstance(node, ast.ImportFrom):
                 for a in node.names:
                     if a.name != "*":
@@ -300,11 +321,19 @@ class RepoIndex:
                 r"(?:interface|type|enum)\s+)([A-Za-z_$][A-Za-z0-9_$]*)", line)
             if em:
                 self.file_exports.setdefault(rel, set()).add(em.group(1))
+                if not re.match(r"^\s*export\s+(?:interface|type)\b", line):
+                    # Value export (enum counts: it emits runtime code).
+                    # Pure type exports are erased and prove nothing about
+                    # the runtime module system.
+                    self.file_esm.add(rel)
             if re.match(r"^\s*export\s+default\b", line):
                 self.file_exports.setdefault(rel, set()).add("default")
+                self.file_esm.add(rel)
         # export { a, b as c } / export type { T } / export * from './x'
-        for m in re.finditer(r"export\s+(?:type\s+)?\{\s*([^}]+)\}", text):
-            for part in m.group(1).split(","):
+        for m in re.finditer(r"export\s+(?:(type)\s+)?\{\s*([^}]+)\}", text):
+            if not m.group(1):
+                self.file_esm.add(rel)
+            for part in m.group(2).split(","):
                 part = part.strip()
                 if not part:
                     continue
@@ -315,6 +344,7 @@ class RepoIndex:
                     self.file_exports.setdefault(rel, set()).add(alias)
         for m in re.finditer(r"export\s*\*\s*from\s*['\"]([^'\"]+)['\"]", text):
             spec = m.group(1)
+            self.file_esm.add(rel)
             self.file_export_stars.setdefault(rel, []).append(spec)
             if not spec.startswith("./") and not spec.startswith("../"):
                 # Bare re-export (external package): this module's export

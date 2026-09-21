@@ -329,7 +329,9 @@ _JS_IMPORT_FROM = re.compile(
     r"^\s*import\s+(?:type\s+)?(.*?)\s+from\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
 _JS_IMPORT_SIDE = re.compile(r"^\s*import\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
 _JS_REQUIRE = re.compile(
-    r"(?:const|let|var)\s+(?:(\w+)|[{]([^}]*)[}])\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)")
+    r"(?:const|let|var)\s+(?:(\w+)|[{]([^}]*)[}])\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)"
+    r"((?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*)")
+_JS_REQUIRE_PROP = re.compile(r"\.\s*([A-Za-z_$][A-Za-z0-9_$]*)")
 
 
 def _js_import_entries(text: str) -> list[tuple[str, str, str | None, list[tuple[str, str]], int]]:
@@ -391,8 +393,14 @@ def _js_import_entries(text: str) -> list[tuple[str, str, str | None, list[tuple
             continue
         m3 = _JS_REQUIRE.search(line)
         if m3:
-            default, named, spec = m3.group(1), m3.group(2), m3.group(3)
+            default, named, spec, tail = m3.group(1), m3.group(2), m3.group(3), m3.group(4)
             rnamed: list[tuple[str, str]] = []
+            props = _JS_REQUIRE_PROP.findall(tail or "")
+            if props and default:
+                # `var Y = require('m').P[.Q]`: Y is the named export P,
+                # not a default import (seen: express lib/*.js).
+                rnamed.append((props[0], default))
+                default = None
             if named:
                 for part in named.split(","):
                     bits = [b.strip() for b in part.strip().split(":")]

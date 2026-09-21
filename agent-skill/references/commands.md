@@ -27,6 +27,8 @@ Contracts:
 * `scan <file>` checks one file, exit 1 on findings, 0 when clean.
 * `scan` never writes. Only `fix` (without `--dry-run`) writes, and only
   the lines of unambiguous findings.
+* `--changed` reports on-diff findings plus rename fallout: verified
+  findings anywhere that name a diff-touched symbol.
 * `impact` never writes. `mcp` and `lsp` never write.
 * Machine output: `--format json` (scripts), `--format sarif` (code
   scanning). Terminal output is for humans; parse JSON instead.

@@ -12,6 +12,7 @@ from .delta import (
     DEFAULT_BASELINE_NAME,
     GitError,
     changed_lines,
+    changed_symbols,
     filter_changed,
     load_baseline,
     split_baselined,
@@ -152,11 +153,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if args.changed is not None:
         try:
             hunks, untracked = changed_lines(root, args.changed)
+            symbols = changed_symbols(root, args.changed)
         except GitError as exc:
             print(f"grounded: --changed unavailable: {exc}", file=sys.stderr)
             return 2
         before = len(findings)
-        findings = filter_changed(findings, hunks, untracked)
+        findings = filter_changed(findings, hunks, untracked, symbols)
         suppressed_note = f" ({before - len(findings)} outside changed lines hidden)"
     if args.baseline:
         try:

@@ -448,6 +448,8 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue
             if len(base) < 3:
                 continue
+            if "xxx" in base.lower():
+                continue  # Xxx placeholder convention (protobuf)
             if _is_reserved(base, facts.language):
                 continue
             # v2: non-call backticked names are fields/attrs/prose, except
@@ -490,6 +492,8 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             base = full.split(".")[-1]
             if len(base) < 3:
                 continue
+            if "xxx" in base.lower():
+                continue  # Xxx placeholder convention (protobuf)
             if _is_reserved(base, facts.language):
                 continue
             if f"`{full}()`" in text or f"`{base}()`" in text:
@@ -582,6 +586,10 @@ def _resolve_py_target(index: RepoIndex, claimer: str, module: str | None, level
     return [prefix + ".py", prefix + "/__init__.py"]
 
 
+def _dynamic_ns(index: RepoIndex, rel: str) -> bool:
+    return rel in index.file_dynamic_ns
+
+
 def _effective_symbols(index: RepoIndex, rel: str, depth: int = 0,
                        seen: frozenset[str] | None = None) -> set[str]:
     """Names a module file provides: defs, assignments, imports, plus one
@@ -629,12 +637,18 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             if name.startswith("__") and name.endswith("__"):
                 continue  # import system provides dunders (__file__, ...)
             if module is None:
-                # `from . import sub`: the name may be a submodule file, or
-                # a name defined/re-exported by the package __init__.
+                # `from . import sub`: the name may be a submodule file, a
+                # name defined/re-exported by the package __init__ (stars
+                # followed), or injected dynamically (`globals().update()`
+                # in __init__: unknowable, never flagged — seen: CPython's
+                # multiprocessing).
                 base = "/".join(_resolve_py_base(facts.path, level))
                 pkg_init = (base + "/__init__.py") if base else "__init__.py"
                 if (name in index.file_symbols.get(pkg_init, set())
-                        or name in index.file_imports.get(pkg_init, set())):
+                        or name in index.file_imports.get(pkg_init, set())
+                        or name in _effective_symbols(index, pkg_init)):
+                    continue
+                if _dynamic_ns(index, pkg_init):
                     continue
                 subs = ([base + "/" + name + ".py", base + "/" + name + "/__init__.py"]
                         if base else [name + ".py", name + "/__init__.py"])
@@ -664,6 +678,9 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             provided = any(name in _effective_symbols(index, t) for t in existing)
             # PEP 562: a module-level __getattr__ means any name may resolve.
             dynamic = any("__getattr__" in index.file_symbols.get(t, set()) for t in existing)
+            # Dynamic namespace injection (`globals().update(...)`):
+            # names cannot be enumerated statically. Seen: re/_constants.
+            dynamic = dynamic or any(t in index.file_dynamic_ns for t in existing)
             home = existing[0].rsplit("/", 1)[0] if "/" in existing[0] else ""
             submod = (home + "/" + name + ".py") if home else (name + ".py")
             subpkg = (home + "/" + name + "/__init__.py") if home else (name + "/__init__.py")
@@ -730,7 +747,10 @@ def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] |
 def _js_candidates(index: RepoIndex, base: str) -> list[str]:
     cands = ([base] if posixpath.splitext(base)[1].lower() in _JS_EXTS else []
              + [base + e for e in _JS_EXTS] + [base + "/index" + e for e in _JS_EXTS])
-    return [c for c in cands if c in index.rel_paths]
+    # rel_paths stores both `x` and `./x`; every other map (exports,
+    # imports, symbols) uses the clean form, so normalize: a `./`-form
+    # target otherwise misses every export lookup (seen: express examples).
+    return [(c[2:] if c.startswith("./") else c) for c in cands if c in index.rel_paths]
 
 
 def _effective_js_exports(index: RepoIndex, rel: str, depth: int = 0,
@@ -804,6 +824,8 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         if not complete:
             continue  # unknowable export surface: stay silent, never guess
         if default is not None and "default" not in provided:
+            if not all(t in index.file_esm for t in targets):
+                continue  # CJS/script target: default interop always binds
             findings.append(Finding(
                 path=facts.path, line=lineno, end_line=lineno,
                 checker="stale-import", severity="lie",

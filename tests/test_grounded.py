@@ -66,6 +66,12 @@ class TestSymbolV2(unittest.TestCase):
                          "b.py": "# Calls `ghost_fn()` for help.\nX = 1\n"})
         self.assertTrue(any("ghost_fn" in f.title for f in out))
 
+    def test_placeholder_xxx_is_silent(self):
+        # Xxx/XXX is the protobuf placeholder convention (seen: grpc-go
+        # testutils), never a real reference.
+        out = self.syms({"a.py": "# Uses SendXxx() for delivery.\nX = 1\n"})
+        self.assertEqual(out, [])
+
     def test_imported_root_is_silent(self):
         out = self.syms({"a.py": "from http.cookiejar import CookieJar\n# Wraps CookieJar.clear().\nX = 1\n"})
         self.assertEqual(out, [])
@@ -495,6 +501,31 @@ class TestChangedLines(unittest.TestCase):
             (root / "a.py").write_text("# Calls `ghost_fn()`.\nX = 1\n", encoding="utf-8")
             self.assertEqual(main(["scan", str(root), "--no-color", "--changed"]), 2)
 
+    def test_rename_fallout_on_untouched_lines_reported(self):
+        import contextlib
+        import io
+        import json
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root, {
+                "pkg/__init__.py": "",
+                "pkg/core.py": "def get_user(uid):\n    return uid\n",
+                "pkg/views.py": ('"""Views."""\nfrom .core import get_user\n\n\n'
+                                 "def show(uid):\n    return get_user(uid)\n"),
+                "other.py": "# Calls `other_ghost()`.\nY = 1\n",
+            })
+            (root / "pkg" / "core.py").write_text(
+                "def get_account(uid):\n    return uid\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root), "--no-color", "--changed", "--format", "json"])
+            self.assertEqual(rc, 1)
+            out = json.loads(buf.getvalue())
+            self.assertEqual(len(out), 1)
+            self.assertIn("get_user", out[0]["title"])
+            self.assertEqual(out[0]["checker"], "stale-import")
+
 
 class TestSuppressions(unittest.TestCase):
     def scan(self, root: Path, files: dict[str, str]):
@@ -681,6 +712,29 @@ class TestStaleImport(unittest.TestCase):
                          "pkg/use.py": "from .mod import gone_thing\n"})
         self.assertTrue(any("gone_thing" in f.title for f in out))
 
+    def test_from_package_star_reexport_silent(self):
+        # `from . import X` where X arrives via `from .mod import *`
+        # (seen: asyncio.DefaultEventLoopPolicy).
+        out = self.imps({"pkg/__init__.py": "from .mod import *\n",
+                         "pkg/mod.py": "Policy = 1\n",
+                         "pkg/use.py": "from . import Policy\n"})
+        self.assertEqual(out, [])
+
+    def test_from_package_dynamic_ns_silent(self):
+        # `globals().update(...)` in __init__: namespace unknowable
+        # (seen: multiprocessing.get_context).
+        out = self.imps({"pkg/__init__.py": "from . import context\nglobals().update({})\n",
+                         "pkg/context.py": "X = 1\n",
+                         "pkg/use.py": "from . import get_context\n"})
+        self.assertEqual(out, [])
+
+    def test_dynamic_ns_module_silent(self):
+        # Names injected via globals().update in a regular module
+        # (seen: re._constants BRANCH).
+        out = self.imps({"pkg/_names.py": "def _make():\n    globals().update({'X': 1})\n",
+                         "pkg/use.py": "from . import _names\nfrom ._names import X\n"})
+        self.assertEqual(out, [])
+
     def test_missing_module_is_lie(self):
         out = self.imps({"pkg/use.py": "from .deleted import thing\n"})
         self.assertTrue(any("deleted" in f.title for f in out))
@@ -755,6 +809,27 @@ class TestStaleImportJs(unittest.TestCase):
         out = self.imps({"lib/util.js": "export function real() {}\n",
                          "lib/app.js": "import real from './util.js';\n"})
         self.assertTrue(any("default" in f.title for f in out))
+
+    def test_cjs_default_import_silent(self):
+        # Node default-import interop: importing the default of a CJS
+        # module always binds module.exports (seen: express examples).
+        out = self.imps({"lib/utils.js": "exports.compileETag = function(v) { return v; };\n",
+                         "lib/app.js": "import compileETag from './utils';\n"})
+        self.assertEqual(out, [])
+
+    def test_directory_index_normalized(self):
+        out = self.imps({"index.js": "module.exports = require('./lib/app');\n",
+                         "lib/app.js": "module.exports = {};\n",
+                         "examples/a/index.js": "import app from '../..';\n"})
+        self.assertEqual(out, [])
+
+    def test_require_prop_is_named_import(self):
+        out = self.imps({"lib/utils.js": "exports.compileETag = function(v) { return v; };\n",
+                         "lib/app.js": "var compileETag = require('./utils').compileETag;\n"})
+        self.assertEqual(out, [])
+        bad = self.imps({"lib/utils.js": "exports.other = 1;\n",
+                         "lib/app.js": "var gone = require('./utils').gone;\n"})
+        self.assertTrue(any("gone" in f.title for f in bad))
 
     def test_bare_and_sideeffect_silent(self):
         out = self.imps({"lib/poly.js": "X = 1\n",
@@ -1003,6 +1078,17 @@ class TestIndexCoverage(unittest.TestCase):
             idx = RepoIndex(root, [root / "a.ts"])
             for name in ["main", "helper", "Config", "Alias"]:
                 self.assertIn(name, idx.all_symbols)
+
+    @unittest.skipIf(sys.version_info < (3, 12), "PEP 695 needs 3.12+")
+    def test_py_pep695_type_alias_indexed(self):
+        # `type X = ...` is a runtime binding; without it every import
+        # from the module misfires (seen: _pyrepl/types.py on CPython).
+        from grounded.repo_index import RepoIndex
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "types.py").write_text("type KeySpec = str\n", encoding="utf-8")
+            idx = RepoIndex(root, [root / "types.py"])
+            self.assertIn("KeySpec", idx.all_symbols)
 
 
 class TestParallelDeterminism(unittest.TestCase):

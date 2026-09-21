@@ -8,8 +8,12 @@ Two adoption mechanisms, composable:
   do not churn the baseline. Editing the offending line itself changes the
   claim and re-triggers the gate.
 - changed lines: `git diff` selects added/modified lines; findings outside
-  them are hidden. The whole tree is still scanned (cross-file resolution
-  needs the full index); filtering applies to reporting only.
+  them are hidden, EXCEPT findings whose claim names a symbol the diff
+  touches (rename fallout: the edit renamed it here, the lie lives
+  there). The whole tree is still scanned (cross-file resolution
+  needs the full index); filtering applies to reporting only. Only
+  verified findings are ever shown: expansion changes relevance, never
+  truth.
 
 Outside a git repo, or when git cannot resolve the base, changed-line mode
 is an error, never a silent full scan: a gate must not quietly change what
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -150,16 +155,44 @@ def changed_lines(root: Path, base: str) -> tuple[dict[str, set[int]], set[str]]
     return hunks, untracked
 
 
-def filter_changed(findings: list[Finding], hunks: dict[str, set[int]], untracked: set[str]) -> list[Finding]:
-    """Keep findings on added/modified lines, or in fully-untracked files."""
+def _diff_symbols(diff: str) -> set[str]:
+    """Identifiers (len>=3) on added/removed diff lines, headers excluded."""
+    out: set[str] = set()
+    for line in diff.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+") or line.startswith("-"):
+            for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", line[1:]):
+                if len(tok) >= 3:
+                    out.add(tok)
+    return out
+
+
+def changed_symbols(root: Path, base: str) -> set[str]:
+    """Symbols touched by branch changes plus uncommitted worktree edits."""
+    ref = _resolve_base(root, base)
+    out = _diff_symbols(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", ref, "HEAD", "--"))
+    out |= _diff_symbols(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--"))
+    return out
+
+
+def _claim_symbols(finding: Finding) -> set[str]:
+    return {t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", finding.claim or "") if len(t) >= 3}
+
+
+def filter_changed(findings: list[Finding], hunks: dict[str, set[int]], untracked: set[str],
+                   symbols: set[str] | frozenset = frozenset()) -> list[Finding]:
+    """Keep findings on added/modified lines, in fully-untracked files, or
+    naming a diff-touched symbol (rename fallout on untouched lines)."""
     kept: list[Finding] = []
     for f in findings:
         if f.path in untracked:
             kept.append(f)
             continue
         lines = hunks.get(f.path)
-        if not lines:
+        if lines and any(ln in lines for ln in range(f.line, f.end_line + 1)):
+            kept.append(f)
             continue
-        if any(ln in lines for ln in range(f.line, f.end_line + 1)):
+        if symbols and _claim_symbols(f) & set(symbols):
             kept.append(f)
     return kept

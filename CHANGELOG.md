@@ -3,6 +3,30 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- `--changed` rename-fallout expansion: findings off the diff still
+  report when their claim names a diff-touched symbol. Only verified
+  findings surface; the demo is `demo/firewall.sh` (30 seconds,
+  self-checking).
+- Repo-scale benchmark harness (`bench/run.py`: cold-CLI latency,
+  throughput, RSS, findings as JSON) and the firewall demo (`demo/`).
+
+### Fixed
+- PEP 695 `type X = ...` aliases indexed (was: false lies on every
+  import from such a module).
+- `./`-prefixed index paths normalized before JS export lookup (was:
+  false "no default export" on directory imports).
+- `require('./x').prop` treated as a named import, not a default
+  import.
+- Default imports from CJS-shaped targets stay silent (Node interop
+  always binds); the missing-default check applies to ESM targets.
+- `from . import X` follows star re-exports and yields to
+  `globals().update()` namespaces (static-analysis boundary, seen on
+  CPython).
+- `Xxx`/`XXX` placeholder names never report in `stale-symbol-ref`.
+
 ## [0.13.0] - 2026-09-21
 
 ### Added

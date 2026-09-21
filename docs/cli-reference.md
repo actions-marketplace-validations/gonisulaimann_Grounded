@@ -30,7 +30,7 @@ unambiguous findings. Everything else is read-only by construction.
 | `--fail-on lie\|drift\|smell\|never` | Minimum severity that exits `1` (default from config, else `lie`). |
 | `--enable ID,...` / `--disable ID,...` | Run a subset of checkers. Unknown ids are dropped; an emptied set falls back to all. Opt-in checkers (`stale-doc-ref`, `stale-contract-ref`, `ghost-export`) run only when named. |
 | `--baseline FILE` | Report only findings not recorded in FILE. `--show-baselined` also lists suppressed findings on stderr. |
-| `--changed [BASE]` | Report only findings on lines changed vs BASE (default `HEAD`). Full tree is still scanned; reporting is filtered. Errors outside git (exit `2`). |
+| `--changed [BASE]` | Report findings on lines changed vs BASE (default `HEAD`), plus findings anywhere that name a diff-touched symbol (rename fallout on untouched lines). Full tree is still scanned; reporting is filtered. Errors outside git (exit `2`). |
 | `--cache [FILE]` | Reuse per-file results keyed by mtime and size (default `.grounded-cache.json`). Corrupt or mismatched caches fall back silently. |
 | `--jobs N` | Parallel workers. Auto by file count (serial below 512 files); output identical either way. |
 | `--config FILE` | Explicit config file instead of discovery. |
