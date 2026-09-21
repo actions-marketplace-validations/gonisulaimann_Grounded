@@ -3,6 +3,12 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.1] - 2026-09-21
+
+### Fixed
+- Config files work on Python 3.10 via a strict built-in TOML subset
+  reader (parity-tested against tomllib; verified on real 3.10).
+
 ## [0.10.0] - 2026-09-21
 
 ### Added
