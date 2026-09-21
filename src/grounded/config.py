@@ -89,11 +89,19 @@ class Config:
 
 
 def _read_toml(path: Path) -> dict:
-    if tomllib is None:
-        return {}
+    if tomllib is not None:
+        try:
+            with open(path, "rb") as fh:
+                val = tomllib.load(fh)
+                return val if isinstance(val, dict) else {}
+        except (OSError, ValueError):
+            return {}
+    # Python 3.10 has no tomllib: fall back to the strict subset reader
+    # (grounded/toml_compat.py). Anything outside the subset reads as
+    # unreadable, exactly like a corrupt file on newer Pythons.
+    from .toml_compat import loads as compat_loads
     try:
-        with open(path, "rb") as fh:
-            val = tomllib.load(fh)
-            return val if isinstance(val, dict) else {}
+        val = compat_loads(path.read_text(encoding="utf-8"))
+        return val if isinstance(val, dict) else {}
     except (OSError, ValueError):
         return {}

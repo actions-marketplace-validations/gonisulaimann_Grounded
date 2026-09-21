@@ -9,6 +9,9 @@ All notable changes to `grounded` are documented here. Format follows
 - JS/TS path-alias resolution: tsconfig `paths` auto-detected per
   directory (JSONC tolerant, `extends` chains, longest-prefix wins) plus
   manual `path_aliases` config. Unresolvable aliases report as drift.
+- Config files work on Python 3.10 via a strict built-in TOML subset
+  reader (parity-tested against tomllib; anything outside reads as
+  unreadable, never half-applied).
 
 ## [0.9.0] - 2026-09-21
 

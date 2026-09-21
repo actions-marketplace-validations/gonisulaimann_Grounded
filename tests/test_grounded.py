@@ -1426,5 +1426,46 @@ class TestInitAgent(unittest.TestCase):
                 os.chdir(cwd)
 
 
+class TestTomlCompat(unittest.TestCase):
+    SAMPLE = (
+        "# comment\n"
+        "fail_on = \"drift\"\n"
+        "disable = [\"fragile-anchor\", \"number-drift\"]\n"
+        "[tool.grounded]\n"
+        "ignore_dirs = [\"docs\"]\n"
+        "path_aliases = {\"@/\" = \"src/\", \"~/\" = [\"app/\", \"web/\"]}\n"
+    )
+
+    def test_parity_with_tomllib(self):
+        import importlib.util
+        if importlib.util.find_spec("tomllib") is None:
+            self.skipTest("tomllib unavailable (Python 3.10)")
+        import tomllib
+        from grounded import toml_compat
+        expected = tomllib.loads(self.SAMPLE)
+        self.assertEqual(toml_compat.loads(self.SAMPLE), expected)
+
+    def test_rejects_non_subset(self):
+        from grounded import toml_compat
+        for bad in ["a = 2026-09-21\n", "[a\n", "a = 'x\n", "a = [\n\"x\",\n]\n"]:
+            with self.assertRaises(ValueError, msg=bad):
+                toml_compat.loads(bad)
+
+    def test_config_loads_without_tomllib(self):
+        import grounded.config as config_mod
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "grounded.toml").write_text(
+                'fail_on = "drift"\npath_aliases = {"~/" = "src/"}\n',
+                encoding="utf-8")
+            saved, config_mod.tomllib = config_mod.tomllib, None
+            try:
+                cfg = config_mod.Config.load(root)
+            finally:
+                config_mod.tomllib = saved
+            self.assertEqual(cfg.fail_on, "drift")
+            self.assertEqual(cfg.path_aliases, {"~/": ["src/"]})
+
+
 if __name__ == "__main__":
     unittest.main()
