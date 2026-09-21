@@ -57,7 +57,13 @@ def main() -> int:
     failures = 0
     per_checker: dict[str, dict[str, int]] = {}
     for case in cases:
-        ok, missing, extra, info = run_case(case)
+        try:
+            ok, missing, extra, info = run_case(case)
+        except Exception as exc:
+            ok, missing, extra, info = False, [], [], {"enable": "?", "n": 0}
+            print(f"[FAIL] {case.name} (harness error: {exc})")
+            failures += 1
+            continue
         status = "PASS" if ok else "FAIL"
         print(f"[{status}] {case.name} (enable={info['enable']}, findings={info['n']})")
         for m in missing:

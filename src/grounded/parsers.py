@@ -641,6 +641,12 @@ def parse_markdown(path: Path, rel: str, text: str) -> FileFacts:
     return FileFacts(path=rel, language="markdown", lines=text.splitlines())
 
 
+def parse_config(path: Path, rel: str, text: str) -> FileFacts:
+    # Manifest files for stale-entrypoint: raw lines only, every other
+    # checker iterates comments/functions and stays silent.
+    return FileFacts(path=rel, language="config", lines=text.splitlines())
+
+
 def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
     suffix = path.suffix.lower()
     if suffix == ".py":
@@ -653,6 +659,8 @@ def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
         return parse_c(path, rel, text)
     if suffix in {".md", ".markdown"}:
         return parse_markdown(path, rel, text)
+    if suffix == ".toml" or (suffix == ".json" and path.name == "package.json"):
+        return parse_config(path, rel, text)
     return None
 
 

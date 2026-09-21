@@ -10,6 +10,9 @@
 | `stale-doc-ref` | lie (error), **experimental, opt-in only** | A fenced code example (explicit `python`/`js`/`ts`/`go`/`c` tag) calls a symbol bound nowhere in the example and defined nowhere in the repo. |
 | `stale-contract-ref` | lie/drift, **experimental, opt-in only** | A deprecation notice naming a nonexistent replacement, a lock-holder claim (`must hold X`) naming nothing, or a comment stating an env default the code contradicts. |
 | `ghost-export` | smell (note), **experimental, opt-in only** | A public symbol with no importers anywhere, no use in its own file, and no deliberate API marking (`__all__`, exports, `__init__`). |
+| `stale-entrypoint` | lie (error), **experimental, opt-in only** | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. |
+| `stale-mock-ref` | lie (error), **experimental, opt-in only** | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module (a test that errors at runtime). |
+| `phantom-package` | drift (warning), **experimental, opt-in only** | An absolute import declared in no manifest (`pyproject.toml`, `requirements*.txt`, `package.json`). |
 
 ## Experimental checkers
 
@@ -43,6 +46,28 @@ locals don't qualify. Known limitation: barrel re-exports
 (`export * from`) and aliased-module attribute use (`import pkg as p`
 + `p.mod.name()`) are not traced. C is excluded (no static info).
 
+`stale-entrypoint`: only `pyproject.toml` scripts and `package.json`
+`bin`/`main` are read (collected only when enabled). Malformed files
+stay silent. Build-output dirs (`dist/`, `build/`, …) stay silent —
+absent pre-publish is normal, not a lie. External (`bare-package`)
+targets stay silent.
+
+`stale-mock-ref`: decorator, call, and `with` forms of
+`patch`/`mocker.patch`/`mock.patch` plus `patch.object` (bare names
+resolve through imports; string targets verify the class, method-level
+gaps documented). `create=True` opts out; external module paths stay
+silent.
+
+`phantom-package`: union of every manifest flavor (project deps, all
+optional/PEP 735/Poetry groups, build-system requires,
+`requirements*.txt` with includes, all `package.json` dep flavors),
+nearest manifests walking up for monorepos, plus a curated
+import→distribution map (`yaml`→`pyyaml`, `PIL`→`pillow`, …). stdlib,
+in-repo modules, `@types/`-covered host modules, and Node builtins
+stay silent. Known limits: root manifests only for requirements files;
+an `@types/X` declaration hides a missing runtime `X` (deliberate,
+favors silence); this is hygiene drift, never supply-chain verdict.
+
 Measurement lives in [`corpus/`](https://github.com/gonisulaimann/Grounded/tree/main/corpus):
 planted-staleness fixtures with exact expected findings, run in CI with
 zero tolerance (a missing finding and an extra finding both fail). Current
@@ -60,6 +85,11 @@ numbers (2026-09-21):
   single reference repo-wide), **0 false positives** after the aliased-
   import fix. Default scans are byte-identical (Markdown is collected
   only when `stale-doc-ref` runs).
+* New checkers ride the same track: 14 corpus cases hold every checker
+  at 1.00 precision / 1.00 recall (`corpus/run.py`, CI-enforced), and
+  `stale-entrypoint`, `stale-mock-ref`, and `phantom-package` are
+  silent on this repo's real code (the only finding is a planted
+  corpus fixture).
 
 ## How a rule decides
 

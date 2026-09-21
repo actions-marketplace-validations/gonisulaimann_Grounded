@@ -735,6 +735,25 @@ class TestStaleImport(unittest.TestCase):
                          "pkg/use.py": "from . import _names\nfrom ._names import X\n"})
         self.assertEqual(out, [])
 
+    def test_src_layout_resolves(self):
+        out = self.imps({"src/mypkg/__init__.py": "",
+                         "src/mypkg/core.py": "def real():\n    return 1\n",
+                         "src/mypkg/views.py": "from mypkg.core import gone_thing\n"})
+        self.assertTrue(any("gone_thing" in f.title for f in out))
+
+    def test_src_layout_valid_silent(self):
+        out = self.imps({"src/mypkg/__init__.py": "",
+                         "src/mypkg/core.py": "def real():\n    return 1\n",
+                         "src/mypkg/views.py": "from mypkg.core import real\n"})
+        self.assertEqual(out, [])
+
+    def test_src_layout_root_package_wins(self):
+        out = self.imps({"mypkg/core.py": "OTHER = 1\n",
+                         "src/mypkg/__init__.py": "",
+                         "src/mypkg/core.py": "def real():\n    return 1\n",
+                         "use.py": "from mypkg.core import real\n"})
+        self.assertTrue(any("real" in f.title for f in out))
+
     def test_missing_module_is_lie(self):
         out = self.imps({"pkg/use.py": "from .deleted import thing\n"})
         self.assertTrue(any("deleted" in f.title for f in out))
@@ -1934,6 +1953,193 @@ class TestGhostExport(unittest.TestCase):
                 "helper = object()\nhelper.serve()\n", encoding="utf-8")
             rc, out = self._scan(td)
             self.assertIn("[ghost-export]", out)
+
+
+class TestStaleEntrypoint(unittest.TestCase):
+    def _scan(self, td):
+        from grounded.cli import main
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["scan", td, "--no-color", "--enable", "stale-entrypoint"])
+        return rc, buf.getvalue()
+
+    def test_pyproject_scripts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = root / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
+            (pkg / "cli.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "demo"\n[project.scripts]\n'
+                'demo = "pkg.cli:main"\nold = "pkg.gone:run"\n'
+                'renamed = "pkg.cli:execute"\n',
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 1)
+            self.assertIn("pkg.gone", out)
+            self.assertIn("execute", out)
+            self.assertNotIn("[stale-entrypoint] Entry point `demo`", out)
+
+    def test_package_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            js = root / "js"
+            js.mkdir()
+            (js / "cli.js").write_text("module.exports = {};\n", encoding="utf-8")
+            (js / "package.json").write_text(
+                '{"name": "demo", "bin": {"demo": "./cli.js", "old": "./missing.js"},'
+                ' "main": "./dist/index.js"}\n',
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertIn("missing.js", out)
+            self.assertNotIn("dist/index.js", out)
+
+    def test_off_by_default(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "demo"\n[project.scripts]\nold = "pkg.gone:run"\n',
+                encoding="utf-8")
+            self.assertEqual(main(["scan", td, "--no-color"]), 0)
+
+
+class TestStaleMockRef(unittest.TestCase):
+    def _scan(self, td):
+        from grounded.cli import main
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["scan", td, "--no-color", "--enable", "stale-mock-ref"])
+        return rc, buf.getvalue()
+
+    def _tree(self, root):
+        app = root / "app"
+        (app / "services").mkdir(parents=True)
+        (app / "__init__.py").write_text("", encoding="utf-8")
+        (app / "services" / "__init__.py").write_text("", encoding="utf-8")
+        (app / "services" / "billing.py").write_text(
+            "def process_payment(amount):\n    return amount\n", encoding="utf-8")
+        tests = root / "tests"
+        tests.mkdir(exist_ok=True)
+        return tests
+
+    def test_stale_patch_fires(self):
+        with tempfile.TemporaryDirectory() as td:
+            tests = self._tree(Path(td))
+            (tests / "test_billing.py").write_text(
+                'from unittest.mock import patch\n'
+                '@patch("app.services.billing.charge_card")\n'
+                "def test_old(mock_c):\n    pass\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 1)
+            self.assertIn("[stale-mock-ref]", out)
+            self.assertIn("charge_card", out)
+
+    def test_valid_external_create_silent(self):
+        with tempfile.TemporaryDirectory() as td:
+            tests = self._tree(Path(td))
+            (tests / "test_billing.py").write_text(
+                'from unittest.mock import patch\n'
+                '@patch("app.services.billing.process_payment")\n'
+                "def test_new(mock_p):\n    pass\n"
+                '@patch("requests.get")\n'
+                "def test_ext(mock_g):\n    pass\n"
+                "def test_create():\n"
+                '    with patch("app.services.billing.nope", create=True):\n'
+                "        pass\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("stale-mock-ref", out)
+
+    def test_patch_object(self):
+        with tempfile.TemporaryDirectory() as td:
+            tests = self._tree(Path(td))
+            (tests / "test_billing.py").write_text(
+                'from unittest.mock import patch\n'
+                'from app.services.billing import process_payment\n'
+                'patch.object(process_payment, "nope")\n',
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 1)
+            self.assertIn("nope", out)
+
+    def test_off_by_default(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            tests = self._tree(Path(td))
+            (tests / "test_billing.py").write_text(
+                '@patch("app.services.billing.charge_card")\nX = 1\n', encoding="utf-8")
+            self.assertEqual(main(["scan", td, "--no-color"]), 0)
+
+
+class TestPhantomPackage(unittest.TestCase):
+    def _scan(self, td):
+        from grounded.cli import main
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["scan", td, "--no-color", "--enable", "phantom-package"])
+        return rc, buf.getvalue()
+
+    def test_undeclared_is_drift(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "demo"\ndependencies = ["requests"]\n', encoding="utf-8")
+            pkg = root / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
+            (pkg / "a.py").write_text(
+                "import requests\nimport yaml\nimport os\n", encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 0)  # drift sits below the lie gate
+            self.assertIn("[phantom-package]", out)
+            self.assertIn("yaml", out)
+            self.assertNotIn("`requests` is imported", out)
+            self.assertNotIn("`os` is imported", out)
+
+    def test_requirements_extras_markers_includes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "requirements-base.txt").write_text("pyyaml>=6\n", encoding="utf-8")
+            (root / "requirements.txt").write_text(
+                "# comment\n-r requirements-base.txt\npydantic[email]>=2; python_version > '3.9'\n",
+                encoding="utf-8")
+            (root / "a.py").write_text(
+                "import yaml\nfrom pydantic import BaseModel\nprint(BaseModel)\n", encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertNotIn("phantom-package", out)
+
+    def test_js_deps_and_builtins(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "package.json").write_text(
+                '{"dependencies": {"express": "^5"}}', encoding="utf-8")
+            (root / "a.js").write_text(
+                'import express from "express";\n'
+                'import fs from "fs";\n'
+                'import _ from "lodash";\n'
+                'console.log(express, fs, _);\n',
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertIn("lodash", out)
+            self.assertNotIn("`express` is imported", out)
+            self.assertNotIn("`fs` is imported", out)
+
+    def test_off_by_default(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("import yaml\nprint(yaml)\n", encoding="utf-8")
+            self.assertEqual(main(["scan", td, "--no-color"]), 0)
 
 
 class TestSkillSync(unittest.TestCase):

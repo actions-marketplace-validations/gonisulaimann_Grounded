@@ -140,7 +140,9 @@ def collect_files(root: Path, config: Config) -> list[Path]:
                     # Markdown is collected only when its checker runs:
                     # default scans stay byte-identical.
                     suffixes = DEFAULT_SUFFIXES | {".md", ".markdown"}
-                if e.suffix.lower() in suffixes:
+                want_cfg = "stale-entrypoint" in (config.enabled or ())
+                if e.suffix.lower() in suffixes or (want_cfg and (
+                        e.suffix.lower() == ".toml" or e.name == "package.json")):
                     # skip minified bundles
                     if e.suffix.lower() == ".js" and (name.endswith(".min.js") or name.endswith(".bundle.js")):
                         continue

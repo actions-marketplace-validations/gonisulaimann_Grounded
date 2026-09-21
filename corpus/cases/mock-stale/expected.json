@@ -1,0 +1,1 @@
+{"enable": ["stale-mock-ref"], "expect": [{"checker": "stale-mock-ref", "path": "tests/test_billing.py", "line": 3, "contains": "charge_card"}]}

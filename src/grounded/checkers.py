@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import ast
 import difflib
+import json
 import posixpath
 import re
 import sys
 
 from .models import Comment, FileFacts, Finding
-from .repo_index import RepoIndex
+from .repo_index import RepoIndex, _norm_dist
 
 # ---------------------------------------------------------------- shared
 
@@ -578,9 +579,15 @@ def _resolve_py_target(index: RepoIndex, claimer: str, module: str | None, level
         if not module:
             return None
         segs = module.split(".")
-        if segs[0] not in index.top_names:
+        if segs[0] in index.top_names:
+            prefix = "/".join(segs)
+        elif segs[0] in index.py_prefixes:
+            # src/ and lib/ layouts: `import mypkg.x` lives at
+            # `src/mypkg/x.py`. Without this, whole layouts resolve as
+            # third-party and skip silently.
+            prefix = index.py_prefixes[segs[0]] + "/" + "/".join(segs)
+        else:
             return None
-        prefix = "/".join(segs)
     if not prefix:
         return None
     return [prefix + ".py", prefix + "/__init__.py"]
@@ -1482,6 +1489,382 @@ def check_ghost_export(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     return _dedupe(findings)
 
 
+# ---------------------------------------------------------------- stale-entrypoint
+# EXPERIMENTAL, opt-in only. Install-time strings rot silently:
+# pyproject [project.scripts] targets and package.json bin/main paths.
+# Only in-repo claims are judged; build-output dirs (dist/, build/)
+# stay silent (absent pre-publish is normal, not a lie).
+
+_ENTRY_BUILD_DIRS = {"dist", "build", "out", "target", "esm", "cjs", "umd"}
+
+
+def _entry_toml(text: str):
+    try:
+        import tomllib  # py3.11+
+        return tomllib.loads(text)
+    except ImportError:
+        pass
+    except ValueError:
+        return None
+    try:
+        from .toml_compat import loads as _compat_loads
+        return _compat_loads(text)
+    except Exception:
+        return None
+
+
+def _entry_line(lines: list[str], needle: str) -> int:
+    for i, line in enumerate(lines, start=1):
+        if needle and needle in line:
+            return i
+    return 1
+
+
+def check_stale_entrypoint(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """Manifest entry points that point nowhere.
+
+    pyproject.toml `[project.scripts]`/`[project.gui-scripts]`
+    `name = "mod:func"`: the module must exist and define the function.
+    package.json `bin`/`main`: the relative file must exist (outside
+    build-output dirs). Malformed manifests stay silent, never guess.
+    """
+    if facts.language != "config":
+        return []
+    findings: list[Finding] = []
+    base = posixpath.basename(facts.path)
+    parent = posixpath.dirname(facts.path)
+    if base == "pyproject.toml":
+        data = _entry_toml("\n".join(facts.lines))
+        if not isinstance(data, dict):
+            return []
+        scripts: dict = {}
+        proj = data.get("project")
+        if isinstance(proj, dict):
+            for section in ("scripts", "gui-scripts"):
+                part = proj.get(section)
+                if isinstance(part, dict):
+                    scripts.update(part)
+        for name, target in scripts.items():
+            if not isinstance(target, str):
+                continue
+            ref = target.split("[")[0].strip()
+            mod, _, func = ref.partition(":")
+            mod, func = mod.strip(), func.strip()
+            if not mod or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", mod):
+                continue
+            targets = _resolve_py_target(index, facts.path, mod, 0)
+            if targets is None:
+                continue  # external package
+            existing = [t for t in targets if t in index.rel_paths]
+            lineno = _entry_line(facts.lines, target)
+            if not existing:
+                findings.append(Finding(
+                    path=facts.path, line=lineno, end_line=lineno,
+                    checker="stale-entrypoint", severity="lie",
+                    title=f"Entry point `{name}` targets missing module `{mod}`",
+                    claim=target,
+                    evidence=f"No `{mod}` module file exists in this repo.",
+                    fix="Fix the module path or remove the entry point.",
+                    confidence=0.85,
+                ))
+                continue
+            if func:
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", func):
+                    continue
+                provided = any(func in _effective_symbols(index, t) for t in existing)
+                dynamic = any("__getattr__" in index.file_symbols.get(t, set())
+                              or t in index.file_dynamic_ns for t in existing)
+                if provided or dynamic:
+                    continue
+                findings.append(Finding(
+                    path=facts.path, line=lineno, end_line=lineno,
+                    checker="stale-entrypoint", severity="lie",
+                    title=f"Entry point `{name}` targets `{mod}:{func}`, which is not defined there",
+                    claim=target,
+                    evidence=f"`{existing[0]}` exists but defines no `{func}`.",
+                    fix=f"Fix the function name or remove the entry point.",
+                    confidence=0.8,
+                ))
+    elif base == "package.json":
+        try:
+            data = json.loads("\n".join(facts.lines))
+        except ValueError:
+            return []
+        if not isinstance(data, dict):
+            return []
+        jobs: list[tuple[str, str]] = []
+        b = data.get("bin")
+        if isinstance(b, str):
+            jobs.append(("bin", b))
+        elif isinstance(b, dict):
+            for k, v in b.items():
+                if isinstance(v, str):
+                    jobs.append((f"bin:{k}", v))
+        m = data.get("main")
+        if isinstance(m, str):
+            jobs.append(("main", m))
+        for label, target in jobs:
+            t = target.strip()
+            if not t or t.startswith(("http://", "https://")):
+                continue
+            if not (t.startswith("./") or t.startswith("../") or t.startswith("/")):
+                continue  # bare package ref: external
+            norm = posixpath.normpath(posixpath.join(parent, t.lstrip("/")) if parent else t)
+            norm = norm[2:] if norm.startswith("./") else norm
+            if norm in index.rel_paths:
+                continue
+            local = posixpath.normpath(t)
+            local = local[2:] if local.startswith("./") else local
+            if local.split("/")[0] in _ENTRY_BUILD_DIRS:
+                continue  # build output absent pre-publish is normal
+            lineno = _entry_line(facts.lines, target)
+            findings.append(Finding(
+                path=facts.path, line=lineno, end_line=lineno,
+                checker="stale-entrypoint", severity="lie",
+                title=f"package.json `{label}` points at missing file `{t}`",
+                claim=target,
+                evidence=f"No such file exists in this repo.",
+                fix="Fix the path or remove the entry.",
+                confidence=0.8,
+            ))
+    return _dedupe(findings)
+
+
+# ---------------------------------------------------------------- stale-mock-ref
+# EXPERIMENTAL, opt-in only. Test doubles rot silently: @patch("a.b.C")
+# names a symbol that no longer exists, and nothing fails until that
+# test runs. Only in-repo module paths are judged; external strings,
+# create=True, and unresolvable targets stay silent.
+
+_MOCK_PATCH_STR = re.compile(
+    r"(?:^|[\s(@.])(?:[A-Za-z_][A-Za-z0-9_.]*\.)?patch\s*\(\s*[\"']([^\"']+)[\"']")
+_MOCK_PATCH_OBJECT = re.compile(
+    r"(?:^|[\s(@.])(?:[A-Za-z_][A-Za-z0-9_.]*\.)?patch\.object\s*\(\s*"
+    r"(?:[\"']([^\"']+)[\"']|([A-Za-z_][A-Za-z0-9_.]*))\s*,\s*[\"']([^\"']+)[\"']")
+
+
+def _mock_split(path: str) -> tuple[str, str] | None:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", path or ""):
+        return None
+    parts = path.split(".")
+    if len(parts) < 2:
+        return None
+    return (".".join(parts[:-1]), parts[-1])
+
+
+def _mock_provided(index: RepoIndex, target: str, symbol: str) -> bool:
+    provided = symbol in _effective_symbols(index, target)
+    dynamic = ("__getattr__" in index.file_symbols.get(target, set())
+               or target in index.file_dynamic_ns)
+    return provided or dynamic
+
+
+def check_stale_mock_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """@patch / patch.object strings naming absent in-repo symbols.
+
+    A mocked path that resolves to a real module file but names nothing
+    there is a test that errors at runtime. Module paths that resolve
+    nowhere stay silent (external); create=True opts out explicitly.
+    """
+    if facts.language != "python":
+        return []
+    findings: list[Finding] = []
+    skip: set[int] = set()
+    for c in facts.comments:
+        for ln in range(c.line, c.end_line + 1):
+            skip.add(ln)
+    for idx, line in enumerate(facts.lines, start=1):
+        if idx in skip or not line.strip():
+            continue
+        jobs: list[tuple[str, str]] = []  # (module, symbol)
+        for m in _MOCK_PATCH_STR.finditer(line):
+            split = _mock_split(m.group(1))
+            if split:
+                jobs.append(split)
+        for m in _MOCK_PATCH_OBJECT.finditer(line):
+            str_target, bare_target, attr = m.group(1), m.group(2), m.group(3)
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", attr or ""):
+                continue
+            if str_target:
+                # patch.object("app.Foo", "meth"): verify the class;
+                # method-level renames on string targets are a known gap.
+                split = _mock_split(str_target)
+                if split:
+                    jobs.append(split)
+            elif bare_target:
+                mod = facts.imports.get(bare_target.split(".")[0], None)
+                if mod:
+                    jobs.append((mod, attr))
+        if not jobs:
+            continue
+        if re.search(r"\bcreate\s*=\s*True\b", line):
+            continue
+        for mod, symbol in jobs:
+            if len(symbol) < 3 or _is_dunder(symbol):
+                continue
+            targets = _resolve_py_target(index, facts.path, mod, 0)
+            if targets is None:
+                continue  # external module path
+            existing = [t for t in targets if t in index.rel_paths]
+            if not existing:
+                findings.append(Finding(
+                    path=facts.path, line=idx, end_line=idx,
+                    checker="stale-mock-ref", severity="lie",
+                    title=f"Mock patches `{mod}.{symbol}` but module `{mod}` does not exist",
+                    claim=f'"{mod}.{symbol}"',
+                    evidence=f"No `{mod}` module file exists in this repo.",
+                    fix="Fix the mock path or remove the test double.",
+                    confidence=0.8,
+                ))
+                continue
+            if any(_mock_provided(index, t, symbol) for t in existing):
+                continue
+            findings.append(Finding(
+                path=facts.path, line=idx, end_line=idx,
+                checker="stale-mock-ref", severity="lie",
+                title=f"Mock patches `{mod}.{symbol}` which is not defined there",
+                claim=f'"{mod}.{symbol}"',
+                evidence=f"`{existing[0]}` exists but defines no `{symbol}`.",
+                fix="Update the mock to the current name.",
+                confidence=0.8,
+            ))
+    return _dedupe(findings)
+
+
+# ---------------------------------------------------------------- phantom-package
+# EXPERIMENTAL, opt-in only. Imports that run locally (installed in the
+# author's environment) but are declared nowhere: dead on clean CI and
+# fertile ground for dependency confusion. Only absolute imports of
+# names missing from every manifest flavor are flagged; stdlib,
+# in-repo modules, and test-scoped groups (unioned) stay silent.
+# Monorepos: root manifests only. This is hygiene drift, never a lie.
+
+_NODE_BUILTINS = frozenset({
+    "assert", "async_hooks", "buffer", "child_process", "cluster",
+    "console", "constants", "crypto", "dgram", "diagnostics_channel",
+    "dns", "domain", "events", "fs", "http", "http2", "https",
+    "inspector", "module", "net", "os", "path", "perf_hooks", "process",
+    "punycode", "querystring", "readline", "repl", "stream",
+    "string_decoder", "sys", "timers", "tls", "trace_events", "tty",
+    "url", "util", "v8", "vm", "wasi", "worker_threads", "zlib",
+})
+
+
+# Import name -> distribution name for the notorious mismatches
+# (import yaml lives in distribution pyyaml). Curated, unambiguous
+# only; ambiguous cases (Crypto, magic) stay silent via... nothing:
+# they report, and the docs list this map. Keep it short on purpose.
+_IMPORT_TO_DIST = {
+    "yaml": "pyyaml",
+    "PIL": "pillow",
+    "cv2": "opencv-python",
+    "sklearn": "scikit-learn",
+    "bs4": "beautifulsoup4",
+    "dateutil": "python-dateutil",
+    "gi": "pygobject",
+    "wx": "wxpython",
+    "serial": "pyserial",
+    "usb": "pyusb",
+    "attr": "attrs",
+    "jwt": "pyjwt",
+    "jose": "python-jose",
+    "dns": "dnspython",
+    "nmap": "python-nmap",
+    "ldap": "python-ldap",
+    "consul": "python-consul",
+    "socks": "pysocks",
+    "rest_framework": "djangorestframework",
+    "corsheaders": "django-cors-headers",
+    "git": "gitpython",
+    "jenkins": "python-jenkins",
+    "magic": "python-magic",
+}
+
+
+def _phantom_py(facts: FileFacts, index: RepoIndex, declared: set[str]) -> list[Finding]:
+    findings: list[Finding] = []
+    seen: set[str] = set()
+    _norm = _norm_dist
+    jobs: list[tuple[str, int]] = []  # (top module, lineno)
+    for module, level, _names, _guarded, lineno in facts.from_imports:
+        if module and not level:
+            jobs.append((module.split(".")[0], lineno))
+    for _alias, root in facts.imports.items():
+        if root:
+            jobs.append((root.split(".")[0], 1))
+    for top, lineno in jobs:
+        if not top or top in _STDLIB_MODULES or top in seen:
+            continue
+        seen.add(top)
+        targets = _resolve_py_target(index, facts.path, top, 0)
+        if targets is not None and any(t in index.rel_paths for t in targets):
+            continue  # first-party (src-layout aware)
+        if _norm(top) in declared or _norm(_IMPORT_TO_DIST.get(top, top)) in declared:
+            continue
+        line = lineno if lineno > 1 else _import_line(facts, top)
+        findings.append(Finding(
+            path=facts.path, line=line, end_line=line,
+            checker="phantom-package", severity="drift",
+            title=f"`{top}` is imported but declared in no manifest",
+            claim=f"import {top}",
+            evidence=f"`{top}` is not stdlib, not in-repo, and matches no "
+                     f"dependency in pyproject.toml, requirements files, or package.json.",
+            fix=f"Declare it (or remove the import if the environment lied to you).",
+            confidence=0.65,
+        ))
+    return findings
+
+
+def _import_line(facts: FileFacts, top: str) -> int:
+    for i, line in enumerate(facts.lines, start=1):
+        s = line.strip()
+        if re.match(r"(?:from|import)\s+", s) and top in s:
+            return i
+    return 1
+
+
+def _phantom_js(facts: FileFacts, index: RepoIndex, declared: set[str]) -> list[Finding]:
+    findings: list[Finding] = []
+    _norm = _norm_dist
+    for spec, _kind, _default, _named, lineno in facts.js_imports:
+        if spec.startswith(("./", "../", "/", "node:")):
+            continue
+        if spec.startswith("#"):
+            continue  # package imports-map: unresolvable statically
+        pkg = "/".join(spec.split("/")[:2]) if spec.startswith("@") else spec.split("/")[0]
+        base = pkg[5:] if pkg.startswith("node:") else pkg
+        if base in _NODE_BUILTINS:
+            continue
+        if _norm(pkg) in declared or _norm(base) in declared:
+            continue
+        # @types/X declares the host-provided module X (vscode, chrome):
+        # unactionable as a runtimedep, so it stays silent. Trade-off, made
+        # explicit: @types/lodash without lodash is missed the same way.
+        type_pkg = "@types/" + (pkg[1:].replace("/", "__") if pkg.startswith("@") else pkg)
+        if _norm(type_pkg) in declared:
+            continue
+        findings.append(Finding(
+            path=facts.path, line=lineno, end_line=lineno,
+            checker="phantom-package", severity="drift",
+            title=f"`{pkg}` is imported but declared in no manifest",
+            claim=f"import {pkg}",
+            evidence=f"`{pkg}` matches no dependency in package.json.",
+            fix=f"Declare it (or remove the import if the environment lied to you).",
+            confidence=0.65,
+        ))
+    return findings
+
+
+def check_phantom_package(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """Imports declared in no manifest (pyproject, requirements, package.json)."""
+    if facts.language not in ("python", "javascript"):
+        return []
+    declared = index.declared_dependencies(facts.path)
+    if facts.language == "python":
+        return _dedupe(_phantom_py(facts, index, declared))
+    return _dedupe(_phantom_js(facts, index, declared))
+
+
 CHECKERS = {
     "stale-symbol-ref": check_stale_symbol,
     "stale-file-ref": check_stale_file,
@@ -1491,6 +1874,9 @@ CHECKERS = {
     "stale-doc-ref": check_stale_doc_ref,
     "stale-contract-ref": check_stale_contract_ref,
     "ghost-export": check_ghost_export,
+    "stale-entrypoint": check_stale_entrypoint,
+    "stale-mock-ref": check_stale_mock_ref,
+    "phantom-package": check_phantom_package,
 }
 
 CHECKER_DESCRIPTIONS = {
@@ -1502,12 +1888,16 @@ CHECKER_DESCRIPTIONS = {
     "stale-doc-ref": "EXPERIMENTAL, opt-in only: fenced Markdown code example calls a symbol defined nowhere in the repo.",
     "stale-contract-ref": "EXPERIMENTAL, opt-in only: deprecation target, lock-holder claim, or env default in a comment that contradicts the repo.",
     "ghost-export": "EXPERIMENTAL, opt-in only: public symbol with no importers, no in-file use, and no deliberate API marking.",
+    "stale-entrypoint": "EXPERIMENTAL, opt-in only: pyproject scripts or package.json bin/main pointing at nothing in the repo.",
+    "stale-mock-ref": "EXPERIMENTAL, opt-in only: @patch/patch.object strings naming symbols absent from the in-repo module.",
+    "phantom-package": "EXPERIMENTAL, opt-in only: imports declared in no manifest (pyproject, requirements, package.json).",
 }
 
 # Opt-in checkers are registered (so --enable/explain work) but excluded
 # from every default set. A checker graduates by measured precision, not
 # by age: see docs/rules.md.
-OPT_IN_CHECKERS = frozenset({"stale-doc-ref", "stale-contract-ref", "ghost-export"})
+OPT_IN_CHECKERS = frozenset({"stale-doc-ref", "stale-contract-ref", "ghost-export", "stale-entrypoint",
+                             "stale-mock-ref", "phantom-package"})
 DEFAULT_ENABLED = frozenset(CHECKERS) - OPT_IN_CHECKERS
 
 # Intentionally unimplemented: docstring contracts and commented-out code

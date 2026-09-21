@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -67,6 +68,12 @@ class RepoIndex:
         self.rel_paths: set[str] = set()
         self.basenames: set[str] = set()
         self.dirs: set[str] = set()
+        # Absolute-import source roots: top segment -> path prefix, for
+        # src/ and lib/ layouts (`src/mypkg/...` imported as `mypkg`).
+        # Root-level packages win on collision. Presence-based: content
+        # edits never affect it, file add/remove recomputes it.
+        self.py_prefixes: dict[str, str] = {}
+        self._deps_cache: dict | None = None
         # v2: top-level names (repo root entries) for the "claims about this
         # repo" rule: file refs whose first segment is not a repo top-level
         # name (and not ./ ../ /) are external/framework namespaces, not lies.
@@ -106,6 +113,31 @@ class RepoIndex:
                     continue
             self._index_one(rel, suffix, text, rebuild=False)
         self._rebuild_unions()
+        self._compute_py_prefixes()
+
+    def _compute_py_prefixes(self) -> None:
+        prefixes: dict[str, str] = {}
+        clean = {r for r in self.rel_paths if not r.startswith("./")}
+        for src_root in ("src", "lib"):
+            if src_root not in self.top_names:
+                continue
+            for rel in sorted(clean):
+                if not rel.startswith(src_root + "/"):
+                    continue
+                rest = rel[len(src_root) + 1:]
+                pkg = rest.split("/")[0] if "/" in rest else rest.rsplit(".", 1)[0]
+                if not pkg or pkg in prefixes:
+                    continue
+                if (f"{src_root}/{pkg}/__init__.py" in clean
+                        or f"{src_root}/{pkg}.py" in clean
+                        or f"{src_root}/{pkg}" in self.dirs):
+                    prefixes[pkg] = src_root
+        # Root-level packages win: drop shadowed entries.
+        for pkg in [p for p in prefixes
+                    if p + ".py" in clean or f"{p}/__init__.py" in clean]:
+            del prefixes[pkg]
+        self.py_prefixes = prefixes
+
 
     def _record(self, target: set[str], name: str, rel: str) -> None:
         target.add(name)
@@ -191,6 +223,85 @@ class RepoIndex:
         """Drop every index contribution from rel (rename/delete/close)."""
         self._forget_no_rebuild(rel)
         self._rebuild_unions()
+        self._compute_py_prefixes()
+
+    def declared_dependencies(self, rel: str | None = None) -> set[str]:
+        """Distribution names from manifests (normalized), mtime-cached.
+
+        Root manifests plus, when rel is given, the nearest package.json
+        and pyproject.toml walking up from its directory (monorepos).
+        Union of everything installable: project dependencies, all
+        optional groups, PEP 735 groups, Poetry deps/groups, build-system
+        requires, requirements*.txt (includes followed), and package.json
+        dep flavors. Union-everything is deliberate: a name missing here
+        is declared nowhere, which is exactly the claim.
+        """
+        dirs: list[Path] = [self.root]
+        if rel:
+            chain: list[Path] = []
+            d = (self.root / rel).parent
+            while True:
+                chain.append(d)
+                if d == self.root:
+                    break
+                parent = d.parent
+                if parent == d:
+                    break
+                d = parent
+            dirs = chain
+        manifests: list[tuple[str, float]] = []
+        for d in dirs:
+            for name in ("pyproject.toml", "package.json"):
+                try:
+                    manifests.append((str(d / name), (d / name).stat().st_mtime))
+                except OSError:
+                    continue
+        try:
+            reqs = sorted(self.root.glob("requirements*.txt"))
+            reqdir = self.root / "requirements"
+            if reqdir.is_dir():
+                reqs += sorted(reqdir.glob("*.txt"))
+        except OSError:
+            reqs = []
+        for p in reqs:
+            try:
+                manifests.append((str(p), p.stat().st_mtime))
+            except OSError:
+                continue
+        key = (tuple(str(d) for d in dirs), tuple(manifests))
+        cached = (self._deps_cache or {}).get(key)
+        if cached is not None:
+            mtime_key, deps = cached
+            if mtime_key == tuple(manifests):
+                return set(deps)
+        deps: set[str] = set()
+        for d in dirs:
+            try:
+                pyproject = d / "pyproject.toml"
+                if pyproject.exists():
+                    data = _read_manifest_toml(pyproject)
+                    if isinstance(data, dict):
+                        _collect_py_deps(data, deps)
+            except OSError:
+                pass
+            try:
+                package_json = d / "package.json"
+                if package_json.exists():
+                    data = json.loads(package_json.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        for section in ("dependencies", "devDependencies",
+                                        "peerDependencies", "optionalDependencies"):
+                            part = data.get(section)
+                            if isinstance(part, dict):
+                                deps.update(_norm_dist(k) for k in part if isinstance(k, str))
+            except (OSError, ValueError):
+                pass
+        for p in reqs:
+            _collect_requirements(p, deps, seen=set())
+        if self._deps_cache is None:
+            self._deps_cache = {}
+        self._deps_cache[key] = (tuple(manifests), set(deps))
+        return deps
 
     def _forget_no_rebuild(self, rel: str) -> None:
         old = self.file_symbols.pop(rel, set())
@@ -406,3 +517,104 @@ class RepoIndex:
         """Repo-relative paths sharing the referenced basename, sorted."""
         base = ref.strip().split("/")[-1]
         return sorted(p for p in self.rel_paths if p.split("/")[-1] == base and not p.startswith("./"))
+
+
+def _norm_dist(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _req_name(req: str) -> str:
+    req = req.split(";")[0].strip()
+    if " @ " in req:
+        req = req.split(" @ ")[0].strip()
+    m = re.match(r"[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?", req or "")
+    return _norm_dist(m.group(0)) if m else ""
+
+
+def _read_manifest_toml(path: Path):
+    try:
+        import tomllib  # py3.11+
+        with open(path, "rb") as fh:
+            return tomllib.load(fh)
+    except ImportError:
+        pass
+    except (OSError, ValueError):
+        return None
+    try:
+        from .toml_compat import loads as _compat_loads
+        return _compat_loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+
+
+def _collect_py_deps(data: dict, deps: set[str]) -> None:
+    def add_list(items) -> None:
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, str):
+                    name = _req_name(item)
+                    if name:
+                        deps.add(name)
+
+    proj = data.get("project")
+    if isinstance(proj, dict):
+        add_list(proj.get("dependencies"))
+        opt = proj.get("optional-dependencies")
+        if isinstance(opt, dict):
+            for items in opt.values():
+                add_list(items)
+    groups = data.get("dependency-groups")
+    if isinstance(groups, dict):
+        for items in groups.values():
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, str):
+                        name = _req_name(item)
+                        if name:
+                            deps.add(name)
+    build = data.get("build-system")
+    if isinstance(build, dict):
+        add_list(build.get("requires"))
+    tool = data.get("tool")
+    if isinstance(tool, dict):
+        poetry = tool.get("poetry")
+        if isinstance(poetry, dict):
+            for key, val in poetry.items():
+                if key == "dependencies" and isinstance(val, dict):
+                    for dep in val:
+                        if isinstance(dep, str) and dep.lower() != "python":
+                            deps.add(_norm_dist(dep))
+                if key == "group":
+                    groups = val if isinstance(val, dict) else {}
+                    for grp in groups.values():
+                        if isinstance(grp, dict):
+                            sub = grp.get("dependencies")
+                            if isinstance(sub, dict):
+                                for dep in sub:
+                                    if isinstance(dep, str) and dep.lower() != "python":
+                                        deps.add(_norm_dist(dep))
+
+
+def _collect_requirements(path: Path, deps: set[str], seen: set[str]) -> None:
+    key = str(path.resolve()) if hasattr(path, "resolve") else str(path)
+    if key in seen:
+        return
+    seen.add(key)
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(("-r ", "--requirement ", "-c ", "--constraint ")):
+            target = line.split(None, 1)[1].strip().split()[0]
+            _collect_requirements(path.parent / target, deps, seen)
+            continue
+        if line.startswith("-"):
+            continue
+        name = _req_name(line)
+        if name:
+            deps.add(name)
+

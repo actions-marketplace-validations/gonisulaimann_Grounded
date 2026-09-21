@@ -13,6 +13,9 @@ Condensed checker semantics for agents. Full prose lives in the
 | `stale-doc-ref` | lie, opt-in only (`--enable stale-doc-ref`) | fenced code example calls a symbol defined nowhere in the repo | bare fences, console blocks, `...` blocks, placeholders, bound locals |
 | `stale-contract-ref` | lie/drift, opt-in only | deprecation target / lock claim / env default contradicting the repo | bare prose, ticketed claims, matching defaults |
 | `ghost-export` | smell, opt-in only | public symbol with no importers, no in-file use, no API marking | methods, dunders, `__init__`, `__all__`, exports, Go-exported names |
+| `stale-entrypoint` | lie, opt-in only | scripts/bin/main pointing at nothing in-repo | malformed files, build-output dirs, external targets |
+| `stale-mock-ref` | lie, opt-in only | @patch string naming an absent in-repo symbol | external paths, create=True |
+| `phantom-package` | drift, opt-in only | import declared in no manifest | stdlib, in-repo, all dep groups, @types-covered hosts |
 
 Exit codes: `0` clean, `1` a finding at or above `--fail-on` (default
 `lie`), `2` usage or environment error.

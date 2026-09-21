@@ -5,6 +5,24 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- `stale-entrypoint` (experimental, opt-in): `pyproject.toml`
+  `[project.scripts]` targets and `package.json` `bin`/`main` paths
+  pointing at nothing in the repo. Manifest files are collected only
+  when it runs.
+- `stale-mock-ref` (experimental, opt-in): `@patch`/`patch.object`
+  strings naming symbols absent from the in-repo module.
+- `phantom-package` (experimental, opt-in): absolute imports declared
+  in no manifest, with unioned manifest closure (all dep groups,
+  requirements includes, monorepo-aware) and an import→distribution
+  map for the notorious mismatches.
+
+### Fixed
+- `src/` and `lib/` layout packages resolve in absolute imports (was:
+  entire layouts silently skipped as third-party).
+
+## [Unreleased]
+
 ### Version policy
 - Single version across channels: the VS Code extension tracks the
   product version (Open VSX briefly served an independent 0.13.2
