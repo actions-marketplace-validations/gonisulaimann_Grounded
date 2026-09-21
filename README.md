@@ -2,24 +2,36 @@
     <a href="https://grounded.readthedocs.io">
         <picture>
           <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/logo_white.png">
-          <img alt="Grounded Logo" src="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/logo_black.png" width="260">
+          <img alt="Grounded Logo" src="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/logo_black.png" width="280">
         </picture>
     </a>
     <br>
-    <small>The 0.6ms Reference &amp; Import Integrity Firewall for AI Coding Agents</small>
+    The 1-Click Firewall That Stops AI Coding Agents from Hallucinating in Your Repo
 </h1>
 
 <p align="center">
-    <a href="https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml"><img src="https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-    <a href="https://badge.fury.io/py/grounded-lint"><img src="https://badge.fury.io/py/grounded-lint.svg" alt="PyPI version"></a>
-    <a href="https://grounded.readthedocs.io/en/latest/"><img src="https://readthedocs.org/projects/grounded/badge/?version=latest" alt="Documentation Status"></a>
-    <a href="https://github.com/gonisulaimann/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-gonisulaimann%2Ftap-blue.svg?logo=homebrew" alt="Homebrew"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-    <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi"></a>
+    <a href="docs/README_AR.md"><img alt="README بالعربية" title="README بالعربية" src="https://img.shields.io/badge/Arabic-DFE0E5"></a>
+    <a href="docs/README_ES.md"><img alt="README en Español" src="https://img.shields.io/badge/Español-DFE0E5"></a>
+    <a href="docs/README_PT-BR.md"><img alt="README em Português (Brasil)" src="https://img.shields.io/badge/Português%20(Brasil)-DFE0E5"></a>
+    <a href="docs/README_FR.md"><img alt="README en Français" src="https://img.shields.io/badge/Français-DFE0E5"></a>
+    <a href="docs/README_DE.md"><img alt="README auf Deutsch" src="https://img.shields.io/badge/Deutsch-DFE0E5"></a>
+    <a href="docs/README_CN.md"><img alt="简体中文版自述文件" src="https://img.shields.io/badge/简体中文-DFE0E5"></a>
+    <a href="docs/README_JP.md"><img alt="日本語のREADME" src="https://img.shields.io/badge/日本語-DFE0E5"></a>
+    <a href="docs/README_RU.md"><img alt="Русская версия README" src="https://img.shields.io/badge/Русский-DFE0E5"></a>
+    <a href="docs/README_KR.md"><img alt="한국어 README" src="https://img.shields.io/badge/한국어-DFE0E5"></a>
     <br/>
-    <a href="https://pypi.org/project/grounded-lint/"><img src="https://img.shields.io/pypi/pyversions/grounded-lint.svg" alt="Python Versions"></a>
-    <img src="https://img.shields.io/badge/Dependencies-0%20(stdlib)-brightgreen" alt="Zero Dependencies">
+    <a href="https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml"><img src="https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
+    <a href="https://pypi.org/project/grounded-lint/"><img src="https://img.shields.io/pypi/v/grounded-lint.svg?color=brightgreen&label=pypi%20package" alt="PyPI package"></a>
+    <a href="https://github.com/gonisulaimann/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-gonisulaimann%2Ftap-blue.svg?logo=homebrew" alt="Homebrew"></a>
+    <a href="https://grounded.readthedocs.io/en/latest/"><img src="https://readthedocs.org/projects/grounded/badge/?version=latest" alt="Documentation Status"></a>
+    <a href="docs/agent-skill.md"><img src="https://img.shields.io/badge/Skill-black?style=flat&label=Agent" alt="AI Agent Skill"></a>
+    <br/>
+    <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi"></a>
     <img src="https://img.shields.io/badge/Scan%20Latency-0.6ms-blueviolet" alt="0.6ms Latency">
+    <img src="https://img.shields.io/badge/Dependencies-0%20(stdlib)-brightgreen" alt="Zero Dependencies">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+    <br/>
+    <a href="https://pypi.org/project/grounded-lint/"><img src="https://img.shields.io/pypi/pyversions/grounded-lint.svg" alt="Supported Python versions"></a>
 </p>
 
 <p align="center">
@@ -29,29 +41,11 @@
     &middot;
     <a href="https://grounded.readthedocs.io/en/latest/rules/"><strong>Rules &amp; Checkers</strong></a>
     &middot;
-    <a href="https://grounded.readthedocs.io/en/latest/agents-lsp/"><strong>Agent Setup (LSP / MCP)</strong></a>
+    <a href="https://grounded.readthedocs.io/en/latest/agents/"><strong>Agent Setup (LSP / MCP)</strong></a>
+    &middot;
+    <a href="https://grounded.readthedocs.io/en/latest/agent-skill/"><strong>Agent Skill</strong></a>
     &middot;
     <a href="https://grounded.readthedocs.io/en/latest/benchmarks/"><strong>Benchmarks</strong></a>
-</p>
-
-<p align="center">
-    <a href="docs/README_AR.md">العربية</a>
-    &middot;
-    <a href="docs/README_ES.md">Español</a>
-    &middot;
-    <a href="docs/README_PT-BR.md">Português (BR)</a>
-    &middot;
-    <a href="docs/README_FR.md">Français</a>
-    &middot;
-    <a href="docs/README_DE.md">Deutsch</a>
-    &middot;
-    <a href="docs/README_CN.md">中文</a>
-    &middot;
-    <a href="docs/README_JP.md">日本語</a>
-    &middot;
-    <a href="docs/README_RU.md">Русский</a>
-    &middot;
-    <a href="docs/README_KR.md">한국어</a>
 </p>
 
 ---
