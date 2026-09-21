@@ -135,7 +135,12 @@ def collect_files(root: Path, config: Config) -> list[Path]:
             elif e.is_file():
                 if name in config.ignore_files:
                     continue
-                if e.suffix.lower() in DEFAULT_SUFFIXES:
+                suffixes = DEFAULT_SUFFIXES
+                if "stale-doc-ref" in (config.enabled or ()):
+                    # Markdown is collected only when its checker runs:
+                    # default scans stay byte-identical.
+                    suffixes = DEFAULT_SUFFIXES | {".md", ".markdown"}
+                if e.suffix.lower() in suffixes:
                     # skip minified bundles
                     if e.suffix.lower() == ".js" and (name.endswith(".min.js") or name.endswith(".bundle.js")):
                         continue

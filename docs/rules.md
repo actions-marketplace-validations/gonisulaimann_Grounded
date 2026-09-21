@@ -7,6 +7,28 @@
 | `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, or untracked markers (`HACK`, `XXX`, `FIXME`, `workaround`) with no ticket or expiry condition. |
+| `stale-doc-ref` | lie (error), **experimental, opt-in only** | A fenced code example (explicit `python`/`js`/`ts`/`go`/`c` tag) calls a symbol bound nowhere in the example and defined nowhere in the repo. |
+
+## Experimental checkers
+
+`stale-doc-ref` is registered but excluded from every default set: run
+it with `--enable stale-doc-ref` (or `enable = ["stale-doc-ref"]`). A
+checker graduates to default-on by measured precision, not by age.
+
+Checked, skipped, and why: only fenced blocks with a supported language
+tag are read. Bare fences, `console`/`bash` transcripts, data formats,
+comment lines inside examples, decorator roots (framework surface), and
+any block containing `...` or placeholder names (`foo`, `my_*`,
+`<key>`) are skipped. Doc examples are illustrative by default; only a
+call with no local binding and no repo-wide definition is reported.
+
+Measurement so far (2026-09-21, v0.12.x codebase as corpus): 60 files
+scanned, 9 checkable blocks, **0 findings, 0 false positives** — every
+silence individually justified (comment-only blocks, imported names,
+bound locals). Recall beyond fixtures is unmeasured: the corpus
+contains no known-stale doc example. The bar for default-on is a second
+corpus with planted staleness plus a real-world repo showing no new
+false-positive class.
 
 ## How a rule decides
 

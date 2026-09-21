@@ -8,7 +8,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     tomllib = None  # type: ignore
 
-from .checkers import CHECKERS
+from .checkers import CHECKERS, DEFAULT_ENABLED
 
 DEFAULT_IGNORE_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv", ".tox",
@@ -33,7 +33,7 @@ class Config:
         fail_on: str = "lie",
         path_aliases: dict[str, list[str]] | None = None,
     ):
-        self.enabled = set(enabled) if enabled else set(CHECKERS)
+        self.enabled = set(enabled) if enabled else set(DEFAULT_ENABLED)
         self.ignore_dirs = set(ignore_dirs) if ignore_dirs else set(DEFAULT_IGNORE_DIRS)
         self.ignore_files = set(ignore_files) if ignore_files else set(DEFAULT_IGNORE_FILES)
         self.fail_on = fail_on
@@ -64,9 +64,9 @@ class Config:
             enabled = {str(x) for x in data["enabled"]}
         if "disable" in data:
             dis = {str(x) for x in data["disable"]}
-            enabled = (enabled or set(CHECKERS)) - dis
+            enabled = (enabled or set(DEFAULT_ENABLED)) - dis
         if enabled is not None:
-            enabled = {e for e in enabled if e in CHECKERS} or set(CHECKERS)
+            enabled = {e for e in enabled if e in CHECKERS} or set(DEFAULT_ENABLED)
         ignore_dirs = set(DEFAULT_IGNORE_DIRS)
         if "ignore_dirs" in data:
             ignore_dirs |= {str(x) for x in data["ignore_dirs"]}

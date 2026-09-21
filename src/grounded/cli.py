@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .checkers import CHECKER_DESCRIPTIONS, CHECKERS, REMOVED_CHECKERS
+from .checkers import CHECKER_DESCRIPTIONS, CHECKERS, DEFAULT_ENABLED, REMOVED_CHECKERS
 from .config import Config
 from .delta import (
     DEFAULT_BASELINE_NAME,
@@ -108,7 +108,7 @@ def _resolve_enable_disable(config: Config, enable: str | None, disable: str | N
         drop = {x.strip() for x in disable.split(",") if x.strip()}
         config.enabled -= drop
     if not config.enabled:
-        config.enabled = set(CHECKERS)
+        config.enabled = set(DEFAULT_ENABLED)
     return config
 
 

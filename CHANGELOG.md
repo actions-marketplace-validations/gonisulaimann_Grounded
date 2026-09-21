@@ -13,6 +13,13 @@ All notable changes to `grounded` are documented here. Format follows
   checkout. Bare `init-agent` behavior is unchanged.
 - ClawHub publish path documented (`docs/agent-skill.md`); skill
   frontmatter name is now `grounded` to match its directory.
+- `stale-doc-ref` (experimental, opt-in): fenced Markdown code examples
+  calling symbols defined nowhere in the repo. Excluded from every
+  default set; run with `--enable stale-doc-ref`. Markdown files are
+  collected only when it runs, so default scans are unchanged.
+- VS Code / Cursor extension scaffold (`editors/vscode/`): thin LSP
+  client with explicit server resolution (PATH, `serverPath`, or
+  consent-gated uvx). Not yet published; install from VSIX.
 
 ## [0.12.1] - 2026-09-21
 

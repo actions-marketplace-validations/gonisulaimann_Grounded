@@ -12,6 +12,9 @@ Covered here (no exact incumbent found):
   does not exist (namespace- and placeholder-aware).
 - number-drift: magic number in a comment disagrees with adjacent code.
 - fragile-anchor: line anchors and untracked workaround markers.
+- stale-doc-ref (EXPERIMENTAL, opt-in only): fenced code example in
+  Markdown calls a symbol defined nowhere in the repo. Off by default;
+  enable explicitly. Precision is still being measured (see docs).
 
 A finding is emitted only with positive evidence of contradiction.
 """
@@ -1037,12 +1040,186 @@ def check_fragile_anchor(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     return _dedupe(findings)
 
 
+# ---------------------------------------------------------------- stale-doc-ref
+# EXPERIMENTAL, opt-in only (see OPT_IN_CHECKERS). Doc examples are dense
+# with illustrative, pseudo, and version-skewed code; this checker stays
+# narrow on purpose: fenced blocks with an explicit supported language
+# tag, calls only, illustrative blocks skipped wholesale.
+
+_DOC_FENCE_LANGS = {
+    "python": "python", "py": "python", "pycon": "python", "python3": "python",
+    "js": "javascript", "javascript": "javascript", "jsx": "javascript",
+    "ts": "javascript", "typescript": "javascript", "tsx": "javascript",
+    "go": "go", "golang": "go",
+    "c": "c",
+}
+
+_DOC_CALL = re.compile(r"(?<![A-Za-z0-9_$.])([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)*)\s*\(")
+
+_DOC_PLACEHOLDER_NAMES = {
+    "foo", "bar", "baz", "qux", "quux", "example", "sample", "demo",
+    "placeholder", "something", "anything", "whatever", "todo",
+}
+
+_DOC_PLACEHOLDER_RES = [
+    re.compile(r"\b(my|your|our|test|testing|dummy|mock|fake)[A-Za-z_]*\b", re.IGNORECASE),
+    re.compile(r"<[^<>\n]*>"),  # <placeholder>, <your-key>
+]
+
+
+def _doc_fence_blocks(lines: list[str]) -> list[tuple[str, int, int]]:
+    """(language, start_lineno_1based, end_lineno_exclusive) for fenced
+    code blocks with a supported language tag. Unclosed fences are
+    ignored; inner fences of greater depth are treated as content."""
+    out: list[tuple[str, int, int]] = []
+    i, n = 0, len(lines)
+    while i < n:
+        m = re.match(r"^(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)\s*$", lines[i])
+        if not m:
+            i += 1
+            continue
+        fence, tag = m.group(1), m.group(2).lower()
+        lang = _DOC_FENCE_LANGS.get(tag)
+        j = i + 1
+        while j < n and not re.match(r"^" + re.escape(fence[0]) + r"{3,}\s*$", lines[j]):
+            j += 1
+        if j < n and lang:
+            out.append((lang, i + 2, j + 1))
+        i = j + 1 if j < n else n
+    return out
+
+
+def _doc_block_is_illustrative(block: list[str]) -> bool:
+    text = "\n".join(block)
+    if "..." in text or "…" in text:
+        return True
+    for line in block:
+        s = line.strip()
+        if s.startswith("$") or s.startswith("# ") or s.startswith(">>> ") and "Traceback" in text:
+            return True
+    return False
+
+
+def _doc_block_known(block: list[str], language: str) -> set[str]:
+    """Names bound inside the example itself (definitions, assignments,
+    imports, decorator roots): using them proves nothing about the repo."""
+    known: set[str] = set()
+    pats: list[str] = []
+    if language == "python":
+        pats = [
+            r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)",
+            r"^\s*class\s+([A-Za-z_]\w*)",
+            r"^\s*([A-Za-z_]\w*)\s*=(?!=)",
+            r"^\s*for\s+([A-Za-z_]\w*)\s+in\b",
+            r"^\s*@([A-Za-z_][\w.]*)",
+            r"\bas\s+([A-Za-z_]\w*)\b",
+        ]
+    elif language == "javascript":
+        pats = [
+            r"(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)",
+            r"^\s*function\s+([A-Za-z_$][\w$]*)",
+            r"^\s*@([A-Za-z_$][\w$.]*)",
+        ]
+    elif language == "go":
+        pats = [
+            r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)",
+            r"^\s*var\s+([A-Za-z_]\w*)",
+            r"(?<![A-Za-z0-9_.])([A-Za-z_]\w*)\s*:=",
+        ]
+    elif language == "c":
+        pats = [
+            r"^\s*#\s*define\s+([A-Za-z_]\w*)",
+            r"^\s*(?:struct|enum|union)\s+([A-Za-z_]\w*)",
+            r"^\s*typedef\b.*?([A-Za-z_]\w*)\s*;",
+        ]
+    for pat in pats:
+        for line in block:
+            m = re.search(pat, line)
+            if m:
+                known.add(m.group(1).split(".")[0])
+                if language == "javascript" and "." in m.group(1):
+                    known.add(m.group(1).split(".")[-1])
+    for line in block:
+        m = re.match(r"^\s*(?:from\s+(\S+)\s+import\s+(.+)|import\s+(.+))$", line)
+        if m and language in ("python", "javascript"):
+            for part in [p for p in (m.group(2), m.group(3)) if p]:
+                for name in part.split(","):
+                    base = name.strip().split(" as ")[-1].strip().split(".")[0]
+                    if re.fullmatch(r"[A-Za-z_]\w*", base or ""):
+                        known.add(base)
+        if language == "go":
+            m2 = re.match(r"^\s*(?:[A-Za-z_.]+\s+)?\"([\w./-]+)\"\s*$", line)
+            if m2:
+                known.add(m2.group(1).rstrip("/").split("/")[-1])
+    return known
+
+
+def _strip_doc_strings(line: str) -> str:
+    return re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", '""', line)
+
+
+def check_stale_doc_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """Fenced code example calls a symbol defined nowhere in the repo.
+
+    Markdown only, and only fenced blocks with an explicit supported
+    language tag. Bare fences, console/shell blocks, data formats, and
+    any block containing ellipsis are skipped: examples are illustrative
+    by default, and only calls with no local binding and no repo-wide
+    definition are reported.
+    """
+    if facts.language != "markdown":
+        return []
+    findings: list[Finding] = []
+    for lang, start, end in _doc_fence_blocks(facts.lines):
+        block = facts.lines[start - 1:end - 1]
+        if _doc_block_is_illustrative(block):
+            continue
+        known = _doc_block_known(block, lang)
+        for off, line in enumerate(block):
+            lineno = start + off
+            s = line.strip()
+            if not s or s.startswith("#") or s.startswith("$") or s.startswith("//"):
+                continue
+            code = _strip_doc_strings(line)
+            for m in _DOC_CALL.finditer(code):
+                full = m.group(1)
+                base = full.split(".")[-1].lstrip("$")
+                full_root = full.split(".")[0].lstrip("$")
+                if len(base) < 3 or _is_dunder(base):
+                    continue
+                if base.lower() in _DOC_PLACEHOLDER_NAMES:
+                    continue
+                if any(p.search(full) for p in _DOC_PLACEHOLDER_RES):
+                    continue
+                if _is_reserved(base, lang):
+                    continue
+                if full_root in known or base in known:
+                    continue
+                if lang == "python" and full_root in _STDLIB_MODULES:
+                    continue
+                if index.has_symbol(full) or index.has_symbol(base):
+                    continue
+                hint = _suggest(base, index)
+                findings.append(Finding(
+                    path=facts.path, line=lineno, end_line=lineno,
+                    checker="stale-doc-ref", severity="lie",
+                    title=f"Doc example calls `{full}()` which is not defined in this repo",
+                    claim=f"`{full}()`",
+                    evidence=f"`{full_root}` is not bound in the example, and no "
+                             f"definition of `{base}` was found in {len(index.files)} indexed source files.",
+                    fix=f"Update the example to the current name, or remove the call.{hint}",
+                    confidence=0.75,
+                ))
+    return _dedupe(findings)
+
+
 CHECKERS = {
     "stale-symbol-ref": check_stale_symbol,
     "stale-file-ref": check_stale_file,
     "stale-import": check_stale_import,
     "number-drift": check_number_drift,
     "fragile-anchor": check_fragile_anchor,
+    "stale-doc-ref": check_stale_doc_ref,
 }
 
 CHECKER_DESCRIPTIONS = {
@@ -1051,7 +1228,14 @@ CHECKER_DESCRIPTIONS = {
     "stale-import": "Resolvable `from M import N` where the module is missing or N is not defined, re-exported, or a submodule there.",
     "number-drift": "Comment states a magic number (timeout/port/limit) that disagrees with adjacent code.",
     "fragile-anchor": "Line-number anchors, see-above/below, or untracked HACK/WORKAROUND markers.",
+    "stale-doc-ref": "EXPERIMENTAL, opt-in only: fenced Markdown code example calls a symbol defined nowhere in the repo.",
 }
+
+# Opt-in checkers are registered (so --enable/explain work) but excluded
+# from every default set. A checker graduates by measured precision, not
+# by age: see docs/rules.md.
+OPT_IN_CHECKERS = frozenset({"stale-doc-ref"})
+DEFAULT_ENABLED = frozenset(CHECKERS) - OPT_IN_CHECKERS
 
 # Intentionally unimplemented: docstring contracts and commented-out code
 # are covered more precisely by darglint/pydoclint, eslint-plugin-jsdoc,

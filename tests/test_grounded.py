@@ -1576,6 +1576,78 @@ class TestInitAgent(unittest.TestCase):
                     os.environ["HOME"] = old_home
 
 
+class TestStaleDocRef(unittest.TestCase):
+    DOC = (
+        "# Demo\n\n```python\nfrom pkg.core import get_account\n\n"
+        "client = get_account(1)\nghost = fetch_user(2)\n```\n"
+    )
+
+    def _tree(self, root, readme=None):
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "core.py").write_text(
+            "def get_account(uid):\n    return uid\n", encoding="utf-8")
+        (root / "README.md").write_text(
+            readme if readme is not None else self.DOC, encoding="utf-8")
+
+    def test_off_by_default(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            import os
+            self._tree(Path(td))
+            self.assertEqual(main(["scan", td, "--no-color"]), 0)
+
+    def test_opt_in_finds_stale_call(self):
+        from grounded.cli import main
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td))
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["scan", td, "--no-color", "--enable", "stale-doc-ref"])
+            self.assertEqual(rc, 1)
+            self.assertIn("[stale-doc-ref]", buf.getvalue())
+            self.assertIn("fetch_user", buf.getvalue())
+            self.assertNotIn("get_account(1)", buf.getvalue())
+
+    def test_skips_uncheckable_blocks(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), readme=(
+                "# Demo\n\n```console\nghost_tool --run\n```\n\n"
+                "```\nfoo(bar)\n```\n\n"
+                "```python\nresult = compute_total(...)\n```\n\n"
+                "```python\nx = my_widget.render()\n```\n\n"
+                "```python\nimport os\nprint(os.getcwd())\n```\n"))
+            self.assertEqual(
+                main(["scan", td, "--no-color", "--enable", "stale-doc-ref"]), 0)
+
+    def test_enable_via_config_file(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            import os
+            root = Path(td)
+            self._tree(root)
+            (root / "grounded.toml").write_text(
+                'enable = ["stale-doc-ref"]\n', encoding="utf-8")
+            cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                self.assertEqual(main(["scan", ".", "--no-color"]), 1)
+            finally:
+                os.chdir(cwd)
+
+    def test_default_set_excludes_opt_in(self):
+        from grounded.checkers import CHECKERS, DEFAULT_ENABLED, OPT_IN_CHECKERS
+        self.assertIn("stale-doc-ref", CHECKERS)
+        self.assertIn("stale-doc-ref", OPT_IN_CHECKERS)
+        self.assertNotIn("stale-doc-ref", DEFAULT_ENABLED)
+        from grounded.config import Config
+        self.assertNotIn("stale-doc-ref", Config().enabled)
+
+
 class TestSkillSync(unittest.TestCase):
     def test_packaged_skill_matches_registry_source(self):
         repo = Path(__file__).resolve().parent.parent

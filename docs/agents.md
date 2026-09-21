@@ -88,7 +88,9 @@ vim.api.nvim_create_autocmd("FileType", {
 ```
 
 Any editor with a generic LSP client (VS Code, Cursor, Zed, Emacs
-eglot) can point at the same command.
+eglot) can point at the same command. For a packaged VS Code / Cursor
+extension (built from source until marketplace listing), see
+[Editor setup](editors.md).
 
 ## Agent skill
 

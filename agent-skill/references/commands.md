@@ -30,6 +30,8 @@ Contracts:
 * `impact` never writes. `mcp` and `lsp` never write.
 * Machine output: `--format json` (scripts), `--format sarif` (code
   scanning). Terminal output is for humans; parse JSON instead.
+* `stale-doc-ref` is opt-in: `--enable stale-doc-ref`. Never assume it
+  ran; default scans exclude it.
 * `init-agent --skill` installs this skill to `~/.claude/skills/grounded`
   (all projects); `--skill-project` installs to `.claude/skills/grounded`
   (this repo only). Bare `init-agent` never writes outside the repo.

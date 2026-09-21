@@ -626,6 +626,13 @@ def _js_body_signals(lines: list[str], start: int) -> tuple[bool, list[str]]:
     return has_value_return, raises
 
 
+def parse_markdown(path: Path, rel: str, text: str) -> FileFacts:
+    # No comment/import/function extraction: the stale-doc-ref checker
+    # reads fenced blocks straight from lines. facts carry the text so
+    # other checkers (which iterate comments/functions) stay silent.
+    return FileFacts(path=rel, language="markdown", lines=text.splitlines())
+
+
 def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
     suffix = path.suffix.lower()
     if suffix == ".py":
@@ -636,6 +643,8 @@ def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
         return parse_go(path, rel, text)
     if suffix in {".c", ".h"}:
         return parse_c(path, rel, text)
+    if suffix in {".md", ".markdown"}:
+        return parse_markdown(path, rel, text)
     return None
 
 

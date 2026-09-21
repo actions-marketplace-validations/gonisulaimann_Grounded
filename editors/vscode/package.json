@@ -1,0 +1,74 @@
+{
+  "name": "grounded",
+  "displayName": "Grounded",
+  "description": "Reference and import integrity diagnostics for code comments (stale symbols, imports, file paths) via the grounded LSP server.",
+  "version": "0.12.1",
+  "publisher": "gonisulaimann",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gonisulaimann/Grounded"
+  },
+  "homepage": "https://github.com/gonisulaimann/Grounded",
+  "bugs": {
+    "url": "https://github.com/gonisulaimann/Grounded/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters"
+  ],
+  "keywords": [
+    "linter",
+    "comments",
+    "references",
+    "agents"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:javascriptreact",
+    "onLanguage:typescriptreact",
+    "onLanguage:go",
+    "onLanguage:c"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Grounded",
+      "properties": {
+        "grounded.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Exact path to the grounded binary. Empty means: use `grounded` from PATH, else offer uvx."
+        },
+        "grounded.allowUvx": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the server via `uvx --from grounded-lint grounded lsp` when no binary is found (downloads on first use)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "grounded.restartServer",
+        "title": "Grounded: Restart Server"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.4.0"
+  }
+}

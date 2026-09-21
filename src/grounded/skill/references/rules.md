@@ -10,6 +10,7 @@ Condensed checker semantics for agents. Full prose lives in the
 | `stale-file-ref` | lie | comment claims an in-repo path that does not exist | external paths, placeholders, examples, ticketed history |
 | `number-drift` | drift | magic number disagreeing with adjacent code | matching numbers, example sentences |
 | `fragile-anchor` | smell | line anchors, bare see-above/below, untracked workarounds | ticketed or conditioned markers |
+| `stale-doc-ref` | lie, opt-in only (`--enable stale-doc-ref`) | fenced code example calls a symbol defined nowhere in the repo | bare fences, console blocks, `...` blocks, placeholders, bound locals |
 
 Exit codes: `0` clean, `1` a finding at or above `--fail-on` (default
 `lie`), `2` usage or environment error.
