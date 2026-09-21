@@ -53,7 +53,7 @@
 ---
 
 <p align="center">
-  <img src="demo/firewall.gif" alt="30-second demo: an agent renames a function in one file; grounded scan --changed catches the stale import in another file pre-commit" width="900">
+  <img src="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/demo/firewall.gif" alt="30-second demo: an agent renames a function in one file; grounded scan --changed catches the stale import in another file pre-commit" width="900">
 </p>
 <p align="center"><em>30 seconds, offline, self-checking — reproduce it: <a href="demo/firewall.sh">demo/firewall.sh</a></em></p>
 
