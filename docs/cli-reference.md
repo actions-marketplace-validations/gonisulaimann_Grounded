@@ -28,7 +28,7 @@ unambiguous findings. Everything else is read-only by construction.
 | `--format terminal\|json\|sarif\|html` | Output shape (default `terminal`). |
 | `--output FILE`, `-o` | Write the report to a file instead of stdout. |
 | `--fail-on lie\|drift\|smell\|never` | Minimum severity that exits `1` (default from config, else `lie`). |
-| `--enable ID,...` / `--disable ID,...` | Run a subset of checkers. Unknown ids are dropped; an emptied set falls back to all. Opt-in checkers (`stale-doc-ref`) run only when named. |
+| `--enable ID,...` / `--disable ID,...` | Run a subset of checkers. Unknown ids are dropped; an emptied set falls back to all. Opt-in checkers (`stale-doc-ref`, `stale-contract-ref`, `ghost-export`) run only when named. |
 | `--baseline FILE` | Report only findings not recorded in FILE. `--show-baselined` also lists suppressed findings on stderr. |
 | `--changed [BASE]` | Report only findings on lines changed vs BASE (default `HEAD`). Full tree is still scanned; reporting is filtered. Errors outside git (exit `2`). |
 | `--cache [FILE]` | Reuse per-file results keyed by mtime and size (default `.grounded-cache.json`). Corrupt or mismatched caches fall back silently. |

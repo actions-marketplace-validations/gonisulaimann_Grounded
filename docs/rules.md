@@ -8,27 +8,52 @@
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, or untracked markers (`HACK`, `XXX`, `FIXME`, `workaround`) with no ticket or expiry condition. |
 | `stale-doc-ref` | lie (error), **experimental, opt-in only** | A fenced code example (explicit `python`/`js`/`ts`/`go`/`c` tag) calls a symbol bound nowhere in the example and defined nowhere in the repo. |
+| `stale-contract-ref` | lie/drift, **experimental, opt-in only** | A deprecation notice naming a nonexistent replacement, a lock-holder claim (`must hold X`) naming nothing, or a comment stating an env default the code contradicts. |
+| `ghost-export` | smell (note), **experimental, opt-in only** | A public symbol with no importers anywhere, no use in its own file, and no deliberate API marking (`__all__`, exports, `__init__`). |
 
 ## Experimental checkers
 
-`stale-doc-ref` is registered but excluded from every default set: run
-it with `--enable stale-doc-ref` (or `enable = ["stale-doc-ref"]`). A
-checker graduates to default-on by measured precision, not by age.
+Opt-in checkers are registered but excluded from every default set: run
+them with `--enable <id>` (or `enable = [...]`). A checker graduates
+to default-on by measured precision, not by age. Silence is the point:
+a clean scan means the repo earned it (smoke detectors don't invent
+fires), so a new trigger class stays opt-in until its false-positive
+rate is measured near zero.
 
-Checked, skipped, and why: only fenced blocks with a supported language
-tag are read. Bare fences, `console`/`bash` transcripts, data formats,
-comment lines inside examples, decorator roots (framework surface), and
-any block containing `...` or placeholder names (`foo`, `my_*`,
-`<key>`) are skipped. Doc examples are illustrative by default; only a
-call with no local binding and no repo-wide definition is reported.
+`stale-doc-ref`: only fenced blocks with a supported language tag are
+read. Bare fences, `console`/`bash` transcripts, data formats, comment
+lines inside examples, decorator roots (framework surface), and any
+block containing `...` or placeholder names (`foo`, `my_*`, `<key>`)
+are skipped.
 
-Measurement so far (2026-09-21, v0.12.x codebase as corpus): 60 files
-scanned, 9 checkable blocks, **0 findings, 0 false positives** — every
-silence individually justified (comment-only blocks, imported names,
-bound locals). Recall beyond fixtures is unmeasured: the corpus
-contains no known-stale doc example. The bar for default-on is a second
-corpus with planted staleness plus a real-world repo showing no new
-false-positive class.
+`stale-contract-ref`: only narrow frames report — deprecation sentences
+with a replacement name, `must hold`/`guarded by`-style lock claims on
+lock-like names (`_lock`, `mutex`, …), and same-file comments stating a
+default for an env var read with a different default in code. Known
+limitation: an external successor (`use requests instead`) reads as a
+missing symbol; ticket-link the comment to silence it. Bare prose never
+reports.
+
+`ghost-export`: methods, dunders, `__init__` modules, `__all__` members,
+JS exports / `module.exports`, Go-exported (capitalized) names, and
+`main`/`init` are never candidates. Aliased imports (`import x as y`)
+count as importers of `x`. Known limitation: barrel re-exports
+(`export * from`) are not traced. C is excluded (no static info).
+
+Measurement so far (2026-09-21, this repo as corpus):
+
+* `stale-doc-ref`: 60 files, 9 checkable blocks, **0 findings, 0 false
+  positives** — every silence individually justified. Recall beyond
+  fixtures unmeasured.
+* `stale-contract-ref`: violation fixtures fire; a valid-claims corpus
+  (matching env default, existing replacement, present lock) is silent.
+  This repo contains no trigger instances, so the measurement is thin —
+  the bar for default-on is a real-world repo with deprecation traffic.
+* `ghost-export`: 4 findings — 3 true positives on deliberately-stale
+  demo fixtures plus **1 real dead helper** (`path_to_uri` in `lsp.py`,
+  single reference repo-wide), **0 false positives** after the aliased-
+  import fix. Default scans are byte-identical (Markdown is collected
+  only when `stale-doc-ref` runs).
 
 ## How a rule decides
 

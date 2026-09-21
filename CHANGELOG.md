@@ -20,6 +20,14 @@ All notable changes to `grounded` are documented here. Format follows
 - VS Code / Cursor extension scaffold (`editors/vscode/`): thin LSP
   client with explicit server resolution (PATH, `serverPath`, or
   consent-gated uvx). Not yet published; install from VSIX.
+- `stale-contract-ref` (experimental, opt-in): deprecation targets,
+  lock-holder claims, and env-var defaults in comments that contradict
+  the repo. Narrow frames only; bare prose never reports.
+- `ghost-export` (experimental, opt-in): public symbols with no
+  importers, no in-file use, and no API marking. Dogfooding found one
+  real dead helper (`path_to_uri`).
+- Index records original names alongside import aliases (`import x as
+  y` counts as a dependency on `x`).
 
 ## [0.12.1] - 2026-09-21
 

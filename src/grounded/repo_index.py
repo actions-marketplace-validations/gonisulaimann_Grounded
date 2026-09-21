@@ -182,7 +182,12 @@ class RepoIndex:
                     if a.name == "*":
                         self.file_stars.setdefault(rel, []).append((node.module, node.level or 0))
                     else:
+                        # Both: the alias is the local binding, the original
+                        # is the cross-file dependency (ghost-export and
+                        # re-export chains resolve through it).
                         self.file_imports.setdefault(rel, set()).add(a.asname or a.name)
+                        if a.asname and a.asname != a.name:
+                            self.file_imports[rel].add(a.name)
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -191,6 +196,8 @@ class RepoIndex:
                 for a in node.names:
                     if a.name != "*":
                         self.file_imports.setdefault(rel, set()).add(a.asname or a.name)
+                        if a.asname and a.asname != a.name:
+                            self.file_imports[rel].add(a.name)
         # Module-level bindings: direct body plus recursive descent into
         # try/if bodies (compat shims nest try blocks and assign/import
         # there constantly). Never descends into functions or classes, so

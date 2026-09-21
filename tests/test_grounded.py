@@ -1648,6 +1648,168 @@ class TestStaleDocRef(unittest.TestCase):
         self.assertNotIn("stale-doc-ref", Config().enabled)
 
 
+class TestStaleContractRef(unittest.TestCase):
+    def _tree(self, root, files):
+        pkg = root / "pkg"
+        pkg.mkdir(exist_ok=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        for name, text in files.items():
+            (pkg / name).write_text(text, encoding="utf-8")
+
+    def _scan(self, td, *enable):
+        from grounded.cli import main
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["scan", td, "--no-color", "--enable", ",".join(enable)])
+        return rc, buf.getvalue()
+
+    def test_deprecation_target_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "core.py": "def get_account(uid):\n    return uid\n",
+                "notes.py": "# DEPRECATED: use fetch_user_v2(user) instead.\nX = 1\n",
+            })
+            rc, out = self._scan(td, "stale-contract-ref")
+            self.assertEqual(rc, 1)
+            self.assertIn("[stale-contract-ref]", out)
+            self.assertIn("fetch_user_v2", out)
+
+    def test_deprecation_target_present_and_prose_silent(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "core.py": "def get_account(uid):\n    return uid\n",
+                "notes.py": ("# DEPRECATED: use get_account(uid) instead.\n"
+                             "# Just some prose about use instead of things.\n"
+                             "# See https://example.com/t/1 for history.\nX = 1\n"),
+            })
+            rc, out = self._scan(td, "stale-contract-ref")
+            self.assertEqual(rc, 0)
+            self.assertNotIn("stale-contract-ref", out)
+
+    def test_lock_holder(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "core.py": ("# Caller must hold _state_lock.\n"
+                             "# Caller must hold a reference.\n"
+                             "class Store:\n"
+                             "    def __init__(self):\n"
+                             "        self._lock = 1\n"),
+            })
+            rc, out = self._scan(td, "stale-contract-ref")
+            self.assertEqual(rc, 1)
+            self.assertIn("_state_lock", out)
+            self.assertNotIn("a reference", out)
+
+    def test_lock_present_is_silent(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "core.py": ("# Caller must hold _lock.\n"
+                             "class Store:\n"
+                             "    def __init__(self):\n"
+                             "        self._lock = 1\n"),
+            })
+            rc, out = self._scan(td, "stale-contract-ref")
+            self.assertEqual(rc, 0)
+
+    def test_env_default_drift_and_match(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "core.py": ('import os\n\n# Default port is 8080 (override with PORT).\n'
+                             'port = int(os.getenv("PORT", 3000))\n'),
+            })
+            rc, out = self._scan(td, "stale-contract-ref")
+            self.assertEqual(rc, 0)  # drift sits below the default lie gate
+            self.assertIn("[stale-contract-ref]", out)
+            self.assertIn("PORT", out)
+            self.assertIn("8080", out)
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "core.py": ('import os\n\n# Default port is 3000 (override with PORT).\n'
+                             'port = int(os.getenv("PORT", 3000))\n'),
+            })
+            rc, out = self._scan(td, "stale-contract-ref")
+            self.assertEqual(rc, 0)
+
+    def test_off_by_default(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "notes.py": "# DEPRECATED: use fetch_user_v2(user) instead.\nX = 1\n",
+            })
+            self.assertEqual(main(["scan", td, "--no-color"]), 0)
+
+
+class TestGhostExport(unittest.TestCase):
+    def _scan(self, td):
+        from grounded.cli import main
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["scan", td, "--no-color", "--enable", "ghost-export"])
+        return rc, buf.getvalue()
+
+    def test_unused_public_function_flagged(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "def validate_legacy_token(tok):\n    return tok\n", encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 0)  # smell never fails the default gate
+            self.assertIn("[ghost-export]", out)
+            self.assertIn("validate_legacy_token", out)
+
+    def test_used_imported_and_private_silent(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "def used():\n    return 1\n\ndef _private():\n    return 2\n\n"
+                "class K:\n    def method(self):\n        return used()\n"
+                "def aliased():\n    return 3\n",
+                encoding="utf-8")
+            (root / "b.py").write_text("from a import used, aliased as other\nprint(used(), other())\n",
+                                       encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertNotIn("ghost-export", out)
+
+    def test_dunder_all_and_init_exempt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = root / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text(
+                'def helper():\n    return 1\n__all__ = ["listed"]\n', encoding="utf-8")
+            (pkg / "core.py").write_text(
+                'def listed():\n    return 1\n__all__ = ["listed"]\n', encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertNotIn("ghost-export", out)
+
+    def test_js_export_exempt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.js").write_text(
+                "export function shipped() { return 1; }\n"
+                "function internal() { return 2; }\n", encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertIn("internal", out)
+            self.assertNotIn("shipped", out)
+
+    def test_go_exported_and_methods_exempt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.go").write_text(
+                "package p\n\nfunc Exported() int { return 1 }\n\n"
+                "func helper() int { return 2 }\n\n"
+                "type S struct{}\nfunc (s S) Method() int { return 3 }\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertIn("helper", out)
+            self.assertNotIn("Exported", out)
+            self.assertNotIn("Method", out)
+
+
 class TestSkillSync(unittest.TestCase):
     def test_packaged_skill_matches_registry_source(self):
         repo = Path(__file__).resolve().parent.parent
