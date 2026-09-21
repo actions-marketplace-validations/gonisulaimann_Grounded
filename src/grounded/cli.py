@@ -78,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     ag.add_argument("--aider", action="store_true", help="only .aider.conf.yml lint loop")
     ag.add_argument("--force", action="store_true", help="overwrite existing generated files")
     ag.add_argument("--dry-run", action="store_true", help="print actions without writing")
+    ag.add_argument("--skill", action="store_true",
+                    help="install the grounded agent skill to ~/.claude/skills/grounded (all projects)")
+    ag.add_argument("--skill-project", action="store_true",
+                    help="install the grounded agent skill to .claude/skills/grounded (this project only)")
 
     ls = sub.add_parser("lsp", help="serve grounded over stdio as an LSP server for editors")
 
@@ -336,19 +340,62 @@ def _init_aider(root: Path, force: bool, dry_run: bool) -> str:
     return f"wrote {target}"
 
 
+_SKILL_DIR_NAME = "grounded"
+
+
+def _skill_source() -> Path | None:
+    src = Path(__file__).resolve().parent / "skill"
+    if (src / "SKILL.md").exists():
+        return src
+    return None
+
+
+def _install_skill(dest: Path, force: bool, dry_run: bool) -> tuple[str, bool]:
+    src = _skill_source()
+    if src is None:
+        return ("skill source missing from install (reinstall grounded-lint)", False)
+    files = sorted(p for p in src.rglob("*") if p.is_file())
+    if dry_run:
+        return (f"would install skill ({len(files)} files) to {dest}", True)
+    kept, wrote = 0, 0
+    for path in files:
+        target = dest / path.relative_to(src)
+        if target.exists() and not force:
+            kept += 1
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(path.read_bytes())
+        wrote += 1
+    if wrote == 0:
+        return (f"skill already installed, kept (use --force): {dest}", True)
+    extra = f", {kept} kept" if kept else ""
+    return (f"installed skill to {dest} ({wrote} files{extra})", True)
+
+
 def cmd_init_agent(args: argparse.Namespace) -> int:
     root = Path.cwd()
-    want_all = not (args.claude or args.cursor or args.aider)
+    want_all = not (args.claude or args.cursor or args.aider or args.skill or args.skill_project)
     results = []
+    ok = True
     if args.claude or want_all:
         results.append(_init_claude(root, args.force, args.dry_run))
     if args.cursor or want_all:
         results.append(_init_cursor(root, args.force, args.dry_run))
     if args.aider or want_all:
         results.append(_init_aider(root, args.force, args.dry_run))
+    if args.skill:
+        msg, good = _install_skill(
+            Path.home() / ".claude" / "skills" / _SKILL_DIR_NAME, args.force, args.dry_run)
+        results.append(msg)
+        ok = ok and good
+    if args.skill_project:
+        msg, good = _install_skill(
+            root / ".claude" / "skills" / _SKILL_DIR_NAME, args.force, args.dry_run)
+        results.append(msg)
+        ok = ok and good
     for line in results:
         print(f"grounded init-agent: {line}")
-    return 0
+    return 0 if ok else 2
 
 
 def cmd_impact(args: argparse.Namespace) -> int:

@@ -1,0 +1,25 @@
+# ClawHub skill publish. Manual only: publishing needs a registry
+# account, so this never runs on push. Maintainer flow:
+#   1. `npm i -g clawhub && clawhub login` (once, on your laptop).
+#   2. First publish from the laptop to control the slug:
+#      `clawhub skill publish ./agent-skill --slug grounded --name "Grounded"`
+#   3. Later releases: run this workflow (dry_run off) or re-run the CLI.
+name: ClawHub skill (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview without publishing"
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    uses: openclaw/clawhub/.github/workflows/skill-publish.yml@main
+    with:
+      owner: gonisulaimann
+      skill_path: agent-skill
+      dry_run: ${{ inputs.dry_run }}
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}

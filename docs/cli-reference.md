@@ -14,7 +14,7 @@ Generated from `grounded --help`; if this page and `--help` disagree,
 | `list [PATH]` | List files that would be scanned. Never writes. |
 | `explain [CHECKER]` | Describe a checker (or where a removed one went). Never writes. |
 | `init` | Write a starter `grounded.toml`. Refuses to overwrite without `--force`. |
-| `init-agent` | Write Claude/Cursor/Aider configs. Refuses invalid JSON, never merges YAML blindly. |
+| `init-agent` | Write Claude/Cursor/Aider configs, or install the agent skill (`--skill` for all projects, `--skill-project` for this repo). Refuses invalid JSON, never merges YAML blindly, never writes outside the repo without `--skill`. |
 | `mcp` | Serve MCP over stdio. Never writes. |
 | `lsp` | Serve LSP 3.17 over stdio. Never writes. |
 

@@ -3,6 +3,17 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- `grounded init-agent --skill` installs the agent skill to
+  `~/.claude/skills/grounded/` (all projects); `--skill-project`
+  installs to `.claude/skills/grounded/` (this repo only). Skill files
+  ship inside the package, so pip/uvx/brew installs work with no repo
+  checkout. Bare `init-agent` behavior is unchanged.
+- ClawHub publish path documented (`docs/agent-skill.md`); skill
+  frontmatter name is now `grounded` to match its directory.
+
 ## [0.12.1] - 2026-09-21
 
 ### Changed

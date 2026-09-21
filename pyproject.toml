@@ -33,7 +33,7 @@ Changelog = "https://github.com/gonisulaimann/Grounded/blob/main/CHANGELOG.md"
 where = ["src"]
 
 [tool.setuptools.package-data]
-grounded = ["py.typed"]
+grounded = ["py.typed", "skill/SKILL.md", "skill/references/*.md", "skill/examples/*.md"]
 
 [tool.grounded]
 fail_on = "lie"

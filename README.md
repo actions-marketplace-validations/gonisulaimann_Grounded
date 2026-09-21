@@ -111,7 +111,7 @@ grounded impact SYMBOL [PATH] [--format terminal|json]
 grounded list [PATH]       # show files that would be scanned
 grounded explain CHECKER   # describe a checker (including removed ones)
 grounded init [--force]    # write a starter grounded.toml
-grounded init-agent [--claude|--cursor|--aider] [--force] [--dry-run]
+grounded init-agent [--claude|--cursor|--aider] [--skill] [--skill-project] [--force] [--dry-run]
 grounded mcp [--root .]    # MCP server over stdio for coding agents
 grounded lsp               # LSP 3.17 server over stdio for editors
 ```
@@ -305,8 +305,9 @@ Cursor rules are generated, not hand-written (`.md` files in
 loads):
 
 ```console
-grounded init-agent            # Claude hook + Cursor rule + Aider config
-grounded init-agent --cursor   # just .cursor/rules/grounded.mdc
+grounded init-agent                 # Claude hook + Cursor rule + Aider config
+grounded init-agent --cursor        # just .cursor/rules/grounded.mdc
+grounded init-agent --skill         # teach every project: ~/.claude/skills/grounded
 ```
 
 Or write the rule by hand (agent-requested mode: description, no globs):

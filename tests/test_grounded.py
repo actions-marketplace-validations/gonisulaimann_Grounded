@@ -1491,6 +1491,108 @@ class TestInitAgent(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    def test_skill_project_installs_and_keeps(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td)
+            import os
+            cwd = Path.cwd()
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent", "--skill-project"]), 0)
+                dest = target / ".claude" / "skills" / "grounded"
+                self.assertTrue((dest / "SKILL.md").exists())
+                self.assertTrue((dest / "references" / "rules.md").exists())
+                self.assertTrue((dest / "references" / "commands.md").exists())
+                self.assertTrue((dest / "examples" / "sessions.md").exists())
+                (dest / "SKILL.md").write_text("mine\n", encoding="utf-8")
+                self.assertEqual(main(["init-agent", "--skill-project"]), 0)
+                self.assertEqual((dest / "SKILL.md").read_text(), "mine\n")
+                self.assertEqual(main(["init-agent", "--skill-project", "--force"]), 0)
+                self.assertNotEqual((dest / "SKILL.md").read_text(), "mine\n")
+            finally:
+                os.chdir(cwd)
+
+    def test_skill_user_dir_uses_home(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target, home = Path(td) / "proj", Path(td) / "home"
+            target.mkdir()
+            import os
+            cwd, old_home = Path.cwd(), os.environ.get("HOME")
+            os.environ["HOME"] = str(home)
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent", "--skill"]), 0)
+                dest = home / ".claude" / "skills" / "grounded"
+                self.assertTrue((dest / "SKILL.md").exists())
+                self.assertFalse((target / ".claude" / "skills").exists())
+            finally:
+                os.chdir(cwd)
+                if old_home is None:
+                    del os.environ["HOME"]
+                else:
+                    os.environ["HOME"] = old_home
+
+    def test_skill_dry_run_writes_nothing(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target, home = Path(td) / "proj", Path(td) / "home"
+            target.mkdir()
+            import os
+            cwd, old_home = Path.cwd(), os.environ.get("HOME")
+            os.environ["HOME"] = str(home)
+            os.chdir(target)
+            try:
+                self.assertEqual(
+                    main(["init-agent", "--skill", "--skill-project", "--dry-run"]), 0)
+                self.assertFalse((target / ".claude").exists())
+                self.assertFalse((home / ".claude").exists())
+            finally:
+                os.chdir(cwd)
+                if old_home is None:
+                    del os.environ["HOME"]
+                else:
+                    os.environ["HOME"] = old_home
+
+    def test_bare_init_agent_touches_no_skill(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target, home = Path(td) / "proj", Path(td) / "home"
+            target.mkdir()
+            import os
+            cwd, old_home = Path.cwd(), os.environ.get("HOME")
+            os.environ["HOME"] = str(home)
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent"]), 0)
+                self.assertFalse((target / ".claude" / "skills").exists())
+                self.assertFalse((home / ".claude").exists())
+            finally:
+                os.chdir(cwd)
+                if old_home is None:
+                    del os.environ["HOME"]
+                else:
+                    os.environ["HOME"] = old_home
+
+
+class TestSkillSync(unittest.TestCase):
+    def test_packaged_skill_matches_registry_source(self):
+        repo = Path(__file__).resolve().parent.parent
+        for rel in ("agent-skill", "src/grounded/skill"):
+            self.assertTrue((repo / rel / "SKILL.md").exists(), rel)
+        left = sorted(p.relative_to(repo / "agent-skill")
+                      for p in (repo / "agent-skill").rglob("*") if p.is_file())
+        right = sorted(p.relative_to(repo / "src/grounded/skill")
+                       for p in (repo / "src/grounded/skill").rglob("*") if p.is_file())
+        self.assertEqual(left, right)
+        for rel in left:
+            self.assertEqual(
+                (repo / "agent-skill" / rel).read_bytes(),
+                (repo / "src/grounded/skill" / rel).read_bytes(), str(rel))
+        self.assertIn("name: grounded",
+                      (repo / "agent-skill" / "SKILL.md").read_text().splitlines()[1])
+
 
 class TestTomlCompat(unittest.TestCase):
     SAMPLE = (
