@@ -92,27 +92,89 @@ def _exc_name(exc: ast.expr | None) -> str | None:
     return None
 
 
+def _py_comments_tolerant(text: str) -> list[Comment]:
+    """Best-effort `#` extraction for syntactically broken buffers
+    (mid-typing editor state). Tracks single/double-quoted and triple-quoted
+    spans crudely; a `#` inside a string is skipped when detected. May miss
+    exotic cases; it only ever feeds comment checkers, never code facts."""
+    comments: list[Comment] = []
+    triple: str | None = None
+    for i, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line
+        if triple is not None:
+            end = line.find(triple)
+            if end == -1:
+                continue
+            line = line[end + 3:]
+            triple = None
+        # strip triple-quoted spans opening on this line
+        while True:
+            d = line.find('"""')
+            s = line.find("'''")
+            if d == -1 and s == -1:
+                break
+            if d != -1 and (s == -1 or d < s):
+                q = '"""'
+            else:
+                q = "'''"
+            rest = line.split(q, 1)[1] if q in line else ""
+            if q in rest:
+                line = line[:line.find(q)] + rest.split(q, 1)[1]
+            else:
+                line = line[:line.find(q)]
+                triple = q
+                break
+        # find # outside single/double-quoted spans
+        in_q: str | None = None
+        pos = 0
+        found = -1
+        while pos < len(line):
+            ch = line[pos]
+            if in_q is not None:
+                if ch == "\\":
+                    pos += 2
+                    continue
+                if ch == in_q:
+                    in_q = None
+            elif ch in ("\"", "'"):
+                in_q = ch
+            elif ch == "#":
+                found = pos
+                break
+            pos += 1
+        if found != -1:
+            inner = line[found + 1:]
+            if inner.startswith("!"):
+                continue
+            if inner.startswith(" "):
+                inner = inner[1:]
+            comments.append(Comment(text=inner, raw=line[found:], line=i, end_line=i))
+    return comments
+
+
 def parse_python(path: Path, rel: str, text: str) -> FileFacts:
     lines = text.splitlines()
     facts = FileFacts(path=rel, language="python", lines=lines)
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        tree = None
-    if tree is not None:
-        facts.imports = _py_imports(tree)
-        facts.from_imports = _py_from_imports(tree)
-        # is_method detection: need parent tracking
-        parents: dict[int, ast.AST] = {}
-        for node in ast.walk(tree):
-            for child in ast.iter_child_nodes(node):
-                parents[id(child)] = node
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                info = _py_func_info(node, text)
-                parent = parents.get(id(node))
-                info.is_method = isinstance(parent, ast.ClassDef)
-                facts.functions.append(info)
+        # Incomplete buffer (mid-typing): functions are unknowable, but
+        # comments are still checkable. Diagnostics degrade, never vanish.
+        facts.comments = _py_comments_tolerant(text)
+        return facts
+    facts.imports = _py_imports(tree)
+    facts.from_imports = _py_from_imports(tree)
+    # is_method detection: need parent tracking
+    parents: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            info = _py_func_info(node, text)
+            parent = parents.get(id(node))
+            info.is_method = isinstance(parent, ast.ClassDef)
+            facts.functions.append(info)
     facts.comments = _py_comments(text)
     return facts
 

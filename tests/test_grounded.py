@@ -298,6 +298,22 @@ class TestScannerV2(unittest.TestCase):
             findings, _, _ = scan_root(root, Config())
             self.assertIsInstance(findings, list)
 
+    def test_broken_buffer_keeps_comment_findings(self):
+        # Mid-typing syntax error: comment diagnostics degrade, never vanish.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "def calculate_total(items):\n    # Calls `ghost_fn()`.\n    for item in items:\n",
+                encoding="utf-8")
+            findings, _, _ = scan_root(root, Config())
+            self.assertTrue(any(f.checker == "stale-symbol-ref" for f in findings))
+
+    def test_tolerant_extractor_skips_string_hashes(self):
+        from grounded.parsers import _py_comments_tolerant
+        out = _py_comments_tolerant('x = "not # a comment"\n# real `ghost_fn()`.\n')
+        self.assertEqual(len(out), 1)
+        self.assertIn("ghost_fn", out[0].text)
+
     def test_empty_dir(self):
         with tempfile.TemporaryDirectory() as td:
             self.assertEqual(scan_root(Path(td), Config())[0], [])
@@ -1247,6 +1263,26 @@ class TestLsp(unittest.TestCase):
             pubs = [r for r in rs if r.get("method") == "textDocument/publishDiagnostics"]
             last = [p for p in pubs if p["params"]["uri"].endswith("views.py")][-1]
             self.assertEqual(last["params"]["diagnostics"], [])
+
+    def test_broken_buffer_keeps_diagnostics(self):
+        # Mid-typing syntax error: diagnostics degrade, never vanish.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("X = 1\n", encoding="utf-8")
+            uri = root.as_uri() + "/a.py"
+            rs = self._framed_session(root, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"rootUri": root.as_uri(), "capabilities": {}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                 "params": {"textDocument": {"uri": uri, "languageId": "python",
+                                             "version": 1,
+                                             "text": "# Calls `ghost_fn()`.\nX = 1\n"}}},
+                {"jsonrpc": "2.0", "method": "textDocument/didChange",
+                 "params": {"textDocument": {"uri": uri, "version": 2},
+                            "contentChanges": [{"text": "# Calls `ghost_fn()`.\ndef broken(:\n"}]}},
+            ])
+            pubs = [r for r in rs if r.get("method") == "textDocument/publishDiagnostics"]
+            self.assertTrue(all(len(p["params"]["diagnostics"]) == 1 for p in pubs))
 
 
 class TestFileScope(unittest.TestCase):

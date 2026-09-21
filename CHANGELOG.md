@@ -3,6 +3,20 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.11.0] - 2026-09-21
+
+### Added
+- Alias refinements: node_modules mappings skipped, unresolvable aliases
+  report as drift (generated files stay out of the default gate),
+  `export type` recognized, bare `export *` marks export sets unknowable.
+- Mid-typing tolerance: broken Python buffers still yield comment
+  diagnostics; editor flicker test pins it.
+
+### Changed
+- Memory optimization declined after measurement: index heap 31 MB on
+  2,977 files (~10 KB/file); interning moved nothing. Documented as the
+  scaling ceiling instead (~500 MB at 50k files).
+
 ## [0.10.1] - 2026-09-21
 
 ### Fixed
