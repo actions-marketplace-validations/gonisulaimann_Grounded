@@ -19,3 +19,9 @@ Runs in about a second (dominated by half a dozen Python startups);
 the 30-second budget leaves room to read the output aloud. Exits 0
 with `DEMO PASS` only if the lie is caught, 1 otherwise. Requires
 `git` (the `--changed` gate refuses to guess outside a repo).
+
+The README animation (`firewall.gif`, 74 KiB) is rendered from live
+output by `render_gif.py` (stdlib + Pillow + ffmpeg), never staged:
+it aborts unless the lie is caught. Regenerate with
+`python3 demo/render_gif.py`; the tape (`firewall.tape`) documents the
+paced steps for VHS users.

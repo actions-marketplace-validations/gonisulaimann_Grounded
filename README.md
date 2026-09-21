@@ -52,6 +52,11 @@
 
 ---
 
+<p align="center">
+  <img src="demo/firewall.gif" alt="30-second demo: an agent renames a function in one file; grounded scan --changed catches the stale import in another file pre-commit" width="900">
+</p>
+<p align="center"><em>30 seconds, offline, self-checking — reproduce it: <a href="demo/firewall.sh">demo/firewall.sh</a></em></p>
+
 **Grounded** is a reference integrity firewall that handles everything from a single-line agent edit to a full-scale monorepo scan.
 
 Its scanner catches hallucinated APIs, phantom imports, and stale code references in **0.6 milliseconds** before your test runner even boots. Its agent firewalls plug directly into Cursor, Claude Code, Windsurf, and Aider to stop AI coding agents from quietly committing plausible-looking lies. And its ClaimGraph traces symbol definitions, callers, and documentation references across your entire repository to calculate blast radius before you refactor — all across Python, JavaScript/TypeScript, Go, and C with zero dependencies. One tool, zero compromises.
