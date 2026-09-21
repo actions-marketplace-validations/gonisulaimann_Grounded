@@ -1941,6 +1941,24 @@ class TestImpact(unittest.TestCase):
                                  "params": {"name": "blast_radius", "arguments": {}}})
             self.assertEqual(bad["error"]["code"], -32602)
 
+    def test_mcp_honors_project_config(self):
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("# Calls `ghost_fn()`.\nX = 1\n", encoding="utf-8")
+            (root / "grounded.toml").write_text(
+                'disable = ["stale-symbol-ref"]\n', encoding="utf-8")
+            from grounded.mcp import McpServer
+            server = McpServer(root)
+            server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                           "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                                      "clientInfo": {"name": "t", "version": "0"}}})
+            resp = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                  "params": {"name": "check_path", "arguments": {"path": "."}}})
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertFalse(payload["failed"])
+            self.assertEqual(payload["summary"]["findings"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

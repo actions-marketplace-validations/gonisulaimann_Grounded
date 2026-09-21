@@ -160,7 +160,7 @@ class McpServer:
         fail_on = str(args.get("fail_on", "lie"))
         if fail_on not in ("lie", "drift", "smell", "never"):
             return _error(req_id, -32602, f"bad fail_on: {fail_on}")
-        findings, facts, _index = scan_root(root, Config())
+        findings, facts, _index = scan_root(root, Config.load(root))
         facts_by_path = {f.path: f for f in facts}
         findings, n_suppressed = apply_suppressions(findings, facts_by_path)
         from .models import SEVERITY_RANK
@@ -199,7 +199,7 @@ class McpServer:
         if not symbol:
             return _error(req_id, -32602, "symbol is required")
         root = target if target.is_dir() else target.parent
-        _, facts, index = scan_root(root, Config())
+        _, facts, index = scan_root(root, Config.load(root))
         result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(symbol)
         return _ok(req_id, {
             "content": [{"type": "text", "text": json.dumps(result)}],

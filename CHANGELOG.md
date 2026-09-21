@@ -28,6 +28,11 @@ All notable changes to `grounded` are documented here. Format follows
   real dead helper (`path_to_uri`).
 - Index records original names alongside import aliases (`import x as
   y` counts as a dependency on `x`).
+- MCP `check_path` and `blast_radius` honor the `grounded.toml` in the
+  scanned root (previously bare defaults: agents saw different results
+  than the CLI).
+- Removed dead helper `path_to_uri` (found by `ghost-export`
+  dogfooding).
 
 ## [0.12.1] - 2026-09-21
 

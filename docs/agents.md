@@ -59,7 +59,8 @@ aider --lint-cmd "sh -c 'for f; do grounded scan \"$f\" --quiet || exit 1; done'
 `grounded mcp` serves stdio JSON-RPC for coding agents. Three tools:
 `check_path` (scan a path under the server root; paths cannot escape it),
 `explain_checker`, and `blast_radius` (definers, importers, and comment
-claims for a symbol: ask before renaming).
+claims for a symbol: ask before renaming). Both scan tools honor the
+`grounded.toml` in the scanned root (same results as the CLI).
 
 ```json
 {

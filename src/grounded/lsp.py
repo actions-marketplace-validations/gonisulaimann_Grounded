@@ -32,12 +32,6 @@ def uri_to_path(uri: str) -> Path:
     return Path(uri)
 
 
-def path_to_uri(path: Path) -> str:
-    from urllib.parse import quote
-    from urllib.request import pathname2url
-    return "file://" + quote(pathname2url(str(path.resolve())))
-
-
 class LspServer:
     def __init__(self) -> None:
         self.root: Path | None = None
