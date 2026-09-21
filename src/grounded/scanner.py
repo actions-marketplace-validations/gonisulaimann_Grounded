@@ -47,6 +47,51 @@ def apply_suppressions(findings: list[Finding], facts_by_path: dict[str, FileFac
     return kept, suppressed
 
 
+def collect_tsconfigs(root: Path, config: Config) -> list[Path]:
+    """tsconfig.json files under root (honoring ignore dirs)."""
+    out: list[Path] = []
+    root = root.resolve()
+    stack = [root]
+    while stack:
+        cur = stack.pop()
+        try:
+            entries = sorted(cur.iterdir())
+        except OSError:
+            continue
+        for e in entries:
+            if e.is_dir():
+                if e.name in config.ignore_dirs or e.name in {".git", "__pycache__", "node_modules", ".venv"}:
+                    continue
+                stack.append(e)
+            elif e.is_file() and e.name == "tsconfig.json":
+                out.append(e)
+    return sorted(out)
+
+
+def build_alias_zones(root: Path, tsconfigs: list[Path],
+                      manual: dict[str, list[str]]) -> list[tuple[str, list[tuple[str, list[str]]]]]:
+    """[(zone dir rel, [(alias prefix, [replacement prefixes])])].
+
+    tsconfig zones apply to their subtree (longest dir first at lookup);
+    manual config aliases apply repo-wide as fallback.
+    """
+    from .tsconfig import alias_map, load_tsconfig
+    zones: list[tuple[str, list[tuple[str, list[str]]]]] = []
+    for cfg in tsconfigs:
+        try:
+            rel = cfg.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        zone_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        mapping = alias_map(load_tsconfig(cfg))
+        if mapping:
+            zones.append((zone_dir, mapping))
+    zones.sort(key=lambda z: -len(z[0]))
+    if manual:
+        zones.append(("", sorted(manual.items(), key=lambda kv: -len(kv[0]))))
+    return zones
+
+
 def collect_files(root: Path, config: Config) -> list[Path]:
     out: list[Path] = []
     root = root.resolve()
@@ -211,7 +256,9 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
             continue
         rels[str(f)] = rel
         stats[str(f)] = (st.st_mtime, st.st_size)
-    index = RepoIndex(resolved, [f for f in files if str(f) in texts], texts)
+    index = RepoIndex(resolved, [f for f in files if str(f) in texts], texts,
+                      build_alias_zones(resolved, collect_tsconfigs(resolved, config),
+                                        config.path_aliases))
     facts_list: list[FileFacts] = []
     findings: list[Finding] = []
     # fresh[rel] holds JSON-ready finding dicts for the cache write-back.

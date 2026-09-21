@@ -23,7 +23,8 @@ _JS_METHOD_HINT = re.compile(r"^\s*(?:async\s+|static\s+|get\s+|set\s+)?([A-Za-z
 
 
 class RepoIndex:
-    def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None):
+    def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None,
+                 alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] | None = None):
         self.root = root
         self.files = files  # absolute paths
         self.py_symbols: set[str] = set()
@@ -45,9 +46,13 @@ class RepoIndex:
         # default export) and star re-export specifiers.
         self.file_exports: dict[str, set[str]] = {}
         self.file_export_stars: dict[str, list[str]] = {}
+        # Files with a bare `export *` (external re-export): export set unknown.
+        self.file_export_unknown: set[str] = set()
         # Optional pre-read contents (abs path string -> text) so callers
         # that already read the tree skip a second disk pass.
         self._texts = texts or {}
+        # tsconfig/manual path-alias zones: [(zone dir rel, [(prefix, [replacements])])].
+        self.alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] = list(alias_zones or [])
         # relative posix paths + basenames for file-ref resolution
         self.rel_paths: set[str] = set()
         self.basenames: set[str] = set()
@@ -129,6 +134,7 @@ class RepoIndex:
         self.file_stars.pop(rel, None)
         self.file_exports.pop(rel, None)
         self.file_export_stars.pop(rel, None)
+        self.file_export_unknown.discard(rel)
         for name in old:
             holders = self.symbol_files.get(name)
             if holders is not None:
@@ -236,8 +242,8 @@ class RepoIndex:
                 self.file_exports.setdefault(rel, set()).add(em.group(1))
             if re.match(r"^\s*export\s+default\b", line):
                 self.file_exports.setdefault(rel, set()).add("default")
-        # export { a, b as c } / export * from './x'
-        for m in re.finditer(r"export\s*\{\s*([^}]+)\}", text):
+        # export { a, b as c } / export type { T } / export * from './x'
+        for m in re.finditer(r"export\s+(?:type\s+)?\{\s*([^}]+)\}", text):
             for part in m.group(1).split(","):
                 part = part.strip()
                 if not part:
@@ -248,7 +254,13 @@ class RepoIndex:
                     self._record(self.js_symbols, bits[0].split(":")[0].strip() or alias, rel)
                     self.file_exports.setdefault(rel, set()).add(alias)
         for m in re.finditer(r"export\s*\*\s*from\s*['\"]([^'\"]+)['\"]", text):
-            self.file_export_stars.setdefault(rel, []).append(m.group(1))
+            spec = m.group(1)
+            self.file_export_stars.setdefault(rel, []).append(spec)
+            if not spec.startswith("./") and not spec.startswith("../"):
+                # Bare re-export (external package): this module's export
+                # set is unknowable from the snapshot. Recorded so name
+                # checks against it stay silent instead of guessing.
+                self.file_export_unknown.add(rel)
         for m in re.finditer(r"module\.exports\s*=\s*\{([^}]+)\}", text):
             for part in m.group(1).split(","):
                 name = part.strip().split(":")[0].strip()

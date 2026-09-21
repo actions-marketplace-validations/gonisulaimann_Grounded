@@ -158,7 +158,17 @@ disable = ["fragile-anchor"]
 fail_on = "lie"
 ignore_dirs = ["docs", "sandbox"]
 ignore_files = ["generated.py"]
+
+# JS/TS path aliases, repo-root-relative (tsconfig `paths` are picked
+# up automatically per directory; these are the fallback).
+# path_aliases = { "@/" = "src/", "~/" = "app/" }
 ```
+
+Path aliases (`@/`, `~/`, and any tsconfig `paths` entries) resolve
+against the nearest `tsconfig.json` (which may use comments and
+`extends`). Unresolvable alias targets report as drift, never as lies:
+they are often build-generated. Mappings into `node_modules` are
+always skipped.
 
 Suppress a single accepted finding where it sits (reviewable, local):
 
@@ -176,7 +186,7 @@ Gate pull requests with the first-party Action (inline PR annotations
 included via problem matchers):
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.7.0
+- uses: gonisulaimann/Grounded@v0.9.0
   with:
     changed-base: origin/main   # new findings on edited lines only
     fail-on: lie
@@ -185,7 +195,7 @@ included via problem matchers):
 Or with a baseline file for whole-tree delta gating:
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.7.0
+- uses: gonisulaimann/Grounded@v0.9.0
   with:
     baseline: .grounded-baseline.json
 ```
@@ -195,7 +205,7 @@ As a pre-commit hook (runs on uncommitted changes):
 ```yaml
 repos:
   - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.7.0
+    rev: v0.9.0
     hooks:
       - id: grounded
 ```
@@ -329,7 +339,7 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 118 tests, stdlib only, no extras
+python -m unittest discover -s tests   # 124 tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
 ```

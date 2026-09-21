@@ -691,36 +691,65 @@ _JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
 def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] | None:
     """Candidate module rel paths for a JS/TS specifier.
 
-    Only relative specifiers (./, ../) resolve: bare imports live in
-    node_modules and absolute specs need bundler config, both outside
-    snapshot analysis. Returns None (skip) or a possibly-empty list
-    (empty = module does not exist)."""
-    if not spec.startswith("./") and not spec.startswith("../"):
-        return None
-    base = posixpath.normpath(posixpath.join(posixpath.dirname(claimer), spec))
-    cands = [base] if posixpath.splitext(base)[1].lower() in _JS_EXTS else []
-    cands += [base + e for e in _JS_EXTS]
-    cands += [base + "/index" + e for e in _JS_EXTS]
+    Relative (./, ../) resolves directly. Alias prefixes (@/, ~/ and
+    tsconfig/manual mappings) resolve through the longest matching zone;
+    a matched-but-unresolvable alias is a missing module (lie), while a
+    specifier matching nothing stays silent. Bare imports live in
+    node_modules: outside snapshot analysis, always silent. Returns None
+    (skip) or a possibly-empty list (empty = module does not exist).
+    """
+    if spec.startswith("./") or spec.startswith("../"):
+        return _js_candidates(index, posixpath.normpath(
+            posixpath.join(posixpath.dirname(claimer), spec)))
+    for zone_dir, mapping in index.alias_zones:
+        if zone_dir and not (claimer == zone_dir or claimer.startswith(zone_dir + "/")):
+            continue
+        for prefix, repls in mapping:
+            if not spec.startswith(prefix):
+                continue
+            rest = spec[len(prefix):]
+            found: list[str] = []
+            external_only = True
+            for repl in repls:
+                if "node_modules" in repl.split("/"):
+                    continue  # types-only or dep mappings: outside the snapshot
+                external_only = False
+                base = posixpath.normpath(posixpath.join(zone_dir, repl, rest)) if zone_dir else posixpath.normpath(repl + rest)
+                found.extend(_js_candidates(index, base))
+            if found:
+                return found
+            if external_only:
+                continue  # mapping declares externality: like a bare specifier
+            return []
+    return None
+
+
+def _js_candidates(index: RepoIndex, base: str) -> list[str]:
+    cands = ([base] if posixpath.splitext(base)[1].lower() in _JS_EXTS else []
+             + [base + e for e in _JS_EXTS] + [base + "/index" + e for e in _JS_EXTS])
     return [c for c in cands if c in index.rel_paths]
 
 
 def _effective_js_exports(index: RepoIndex, rel: str, depth: int = 0,
-                          seen: frozenset[str] | None = None) -> set[str]:
+                          seen: frozenset[str] | None = None) -> tuple[set[str], bool]:
+    """(exported names, complete?). Bare `export *` makes the set
+    unknowable: callers must stay silent rather than guess."""
     seen = seen or frozenset()
     if rel in seen or depth > 2:
-        return set()
+        return set(), True
     seen = seen | {rel}
     out = set(index.file_exports.get(rel, set()))
+    complete = rel not in index.file_export_unknown
     for spec in index.file_export_stars.get(rel, []):
-        if not spec.startswith("./") and not spec.startswith("../"):
+        targets = _resolve_js_target(index, rel, spec)
+        if targets is None:
+            complete = False
             continue
-        base = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
-        cands = ([base] if posixpath.splitext(base)[1].lower() in _JS_EXTS else []
-                 + [base + e for e in _JS_EXTS] + [base + "/index" + e for e in _JS_EXTS])
-        for t in cands:
-            if t in index.rel_paths:
-                out |= _effective_js_exports(index, t, depth + 1, seen)
-    return out
+        for t in targets:
+            names, ok = _effective_js_exports(index, t, depth + 1, seen)
+            out |= names
+            complete = complete and ok
+    return out, complete
 
 
 def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
@@ -745,21 +774,32 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         if targets is None:
             continue
         if not targets:
+            # Relative misses are lies (relative paths are always local).
+            # Alias misses are drift: the target may be generated at build
+            # time (registry outputs) or live outside the scanned tree.
+            # Either way they never fail a default gate.
+            is_relative = spec.startswith("./") or spec.startswith("../")
             findings.append(Finding(
                 path=facts.path, line=lineno, end_line=lineno,
-                checker="stale-import", severity="lie",
+                checker="stale-import",
+                severity="lie" if is_relative else "drift",
                 title=f"imports from `{spec}`, which does not exist",
                 claim=spec,
                 evidence="No such module file exists in this repo.",
                 fix="Fix the specifier or remove the import.",
-                confidence=0.85,
+                confidence=0.85 if is_relative else 0.6,
             ))
             continue
         if kind in ("sideeffect", "namespace"):
             continue
-        provided = set()
+        provided: set[str] = set()
+        complete = True
         for t in targets:
-            provided |= _effective_js_exports(index, t)
+            names, ok = _effective_js_exports(index, t)
+            provided |= names
+            complete = complete and ok
+        if not complete:
+            continue  # unknowable export surface: stay silent, never guess
         if default is not None and "default" not in provided:
             findings.append(Finding(
                 path=facts.path, line=lineno, end_line=lineno,

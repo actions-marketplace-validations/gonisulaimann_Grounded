@@ -31,11 +31,13 @@ class Config:
         ignore_dirs: set[str] | None = None,
         ignore_files: set[str] | None = None,
         fail_on: str = "lie",
+        path_aliases: dict[str, list[str]] | None = None,
     ):
         self.enabled = set(enabled) if enabled else set(CHECKERS)
         self.ignore_dirs = set(ignore_dirs) if ignore_dirs else set(DEFAULT_IGNORE_DIRS)
         self.ignore_files = set(ignore_files) if ignore_files else set(DEFAULT_IGNORE_FILES)
         self.fail_on = fail_on
+        self.path_aliases = dict(path_aliases) if path_aliases else {}
 
     @classmethod
     def load(cls, root: Path, explicit: str | None = None) -> "Config":
@@ -74,7 +76,16 @@ class Config:
         fail_on = str(data.get("fail_on", data.get("fail-on", "lie")))
         if fail_on not in ("lie", "drift", "smell", "never"):
             fail_on = "lie"
-        return cls(enabled=enabled, ignore_dirs=ignore_dirs, ignore_files=ignore_files, fail_on=fail_on)
+        path_aliases: dict[str, list[str]] = {}
+        raw_aliases = data.get("path_aliases", data.get("path-aliases", {}))
+        if isinstance(raw_aliases, dict):
+            for key, val in raw_aliases.items():
+                if isinstance(val, str):
+                    path_aliases[str(key)] = [val]
+                elif isinstance(val, list):
+                    path_aliases[str(key)] = [str(v) for v in val if isinstance(v, (str, int, float))]
+        return cls(enabled=enabled, ignore_dirs=ignore_dirs, ignore_files=ignore_files, fail_on=fail_on,
+                   path_aliases=path_aliases)
 
 
 def _read_toml(path: Path) -> dict:

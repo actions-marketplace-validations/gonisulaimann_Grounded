@@ -737,6 +737,70 @@ class TestStaleImportJs(unittest.TestCase):
         self.assertEqual(out, [])
 
 
+class TestJsAliases(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def scan(self, files: dict[str, str], config_text: str | None = None):
+        for rel, text in files.items():
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        if config_text is not None:
+            (self.root / "grounded.toml").write_text(config_text, encoding="utf-8")
+        return scan_root(self.root, Config.load(self.root))[0]
+
+    def imps(self, files, config_text=None):
+        return [f for f in self.scan(files, config_text) if f.checker == "stale-import"]
+
+    def test_tsconfig_alias_resolves(self):
+        out = self.imps({
+            "tsconfig.json": '{"compilerOptions": {"paths": {"@/*": ["./src/*"]}}}',
+            "src/util.ts": "export function real() {}\n",
+            "src/app.ts": "import { gone } from '@/util';\n",
+        })
+        self.assertTrue(any("gone" in f.title for f in out))
+
+    def test_tsconfig_alias_ok_silent(self):
+        out = self.imps({
+            "tsconfig.json": '{"compilerOptions": {"paths": {"@/*": ["./src/*"]}}}',
+            "src/util.ts": "export function real() {}\n",
+            "src/app.ts": "import { real } from '@/util';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_alias_miss_is_drift_not_lie(self):
+        out = self.imps({
+            "tsconfig.json": '{"compilerOptions": {"paths": {"@/*": ["./src/*"]}}}',
+            "src/app.ts": "import { x } from '@/nope';\n",
+        })
+        self.assertTrue(all(f.severity == "drift" for f in out))
+        self.assertTrue(len(out) == 1)
+
+    def test_node_modules_mapping_silent(self):
+        out = self.imps({
+            "tsconfig.json": '{"compilerOptions": {"paths": {"react": ["./node_modules/@types/react"]}}}',
+            "src/app.ts": "import React from 'react';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_manual_alias_config(self):
+        out = self.imps({
+            "src/util.ts": "export function real() {}\n",
+            "src/app.ts": "import { gone } from '~/util';\n",
+        }, config_text='path_aliases = {"~/" = "src/"}\n')
+        self.assertTrue(any("gone" in f.title for f in out))
+
+    def test_export_type_recognized(self):
+        out = self.imps({"lib/t.ts": "export type { T };\ntype T = string;\n",
+                         "lib/a.ts": "import type { T } from './t';\n"})
+        self.assertEqual(out, [])
+
+
 class TestRepoFiles(unittest.TestCase):
     def test_action_files_parse(self):
         import json
