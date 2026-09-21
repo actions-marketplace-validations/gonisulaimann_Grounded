@@ -23,7 +23,7 @@ from grounded.config import Config
 from grounded.parsers import parse_file
 from grounded.repo_index import RepoIndex
 from grounded.reporters import to_html, to_json, to_sarif
-from grounded.scanner import scan_root
+from grounded.scanner import collect_files, scan_root
 
 
 class TestImportsParsing(unittest.TestCase):
@@ -39,6 +39,56 @@ class TestImportsParsing(unittest.TestCase):
         self.assertEqual(got.get("axios"), "axios")
         self.assertEqual(got.get("helper"), "")
         self.assertEqual(got.get("fs"), "fs")
+
+
+class TestFileCollection(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _collect(self):
+        return {p.relative_to(self.root.resolve()).as_posix()
+                for p in collect_files(self.root.resolve(), Config())[0]}
+
+    def test_symlinked_dir_not_followed(self):
+        # Workspace-alias symlink (seen: OmniRoute's `@omniroute/` ->
+        # `open-sse/`): following it scans the same files twice under two
+        # rel paths, doubling findings and poisoning alias resolution.
+        (self.root / "open-sse").mkdir()
+        (self.root / "open-sse" / "a.ts").write_text("export const a = 1;\n",
+                                                     encoding="utf-8")
+        try:
+            (self.root / "@omniroute").symlink_to("open-sse", target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks unavailable on this filesystem")
+        out = self._collect()
+        self.assertIn("open-sse/a.ts", out)
+        self.assertNotIn("@omniroute/a.ts", out)
+
+    def test_agent_worktrees_dir_skipped(self):
+        # `.claude/worktrees/` holds full second copies of the repo from
+        # parallel agent sessions (seen: 4,027 of 4,458 findings on a
+        # OmniRoute scan were worktree duplicates). Working state, not the
+        # tree the repo ships.
+        for rel, text in (("src/a.ts", "export const a = 1;\n"),
+                          (".claude/worktrees/fix-1/src/a.ts", "export const a = 2;\n")):
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        out = self._collect()
+        self.assertIn("src/a.ts", out)
+        self.assertNotIn(".claude/worktrees/fix-1/src/a.ts", out)
+
+    def test_other_dotted_dirs_still_scanned(self):
+        # The skip is precisely `.claude/worktrees`, not every dotted dir:
+        # `.github/` configs remain scannable.
+        p = self.root / ".github" / "x.ts"
+        p.parent.mkdir(parents=True)
+        p.write_text("export const x = 1;\n", encoding="utf-8")
+        self.assertIn(".github/x.ts", self._collect())
 
 
 class TestSymbolV2(unittest.TestCase):
@@ -938,6 +988,68 @@ class TestJsAliases(unittest.TestCase):
     def test_export_type_recognized(self):
         out = self.imps({"lib/t.ts": "export type { T };\ntype T = string;\n",
                          "lib/a.ts": "import type { T } from './t';\n"})
+        self.assertEqual(out, [])
+
+    def test_self_name_import_silent(self):
+        # svelte fixture: the package maps its own name in tsconfig paths
+        # (`svelte` -> `./src/index.d.ts`, a types-only surface excluded
+        # from the scan). The import is resolved at runtime by the package
+        # exports map / bundler self-reference — invisible to snapshot
+        # analysis, so claiming it "does not exist" was 1235 false drift
+        # findings on sveltejs/svelte. Self-name bare imports are silent.
+        out = self.imps({
+            "package.json": '{"name": "svelte"}',
+            "tsconfig.json": json.dumps({"compilerOptions": {"paths": {
+                "svelte": ["./src/index.d.ts"],
+                "svelte/compiler": ["./src/compiler/public.d.ts"]}}}),
+            "src/index.d.ts": "export function mount() {}\n",
+            "tests/test.ts": "import { mount } from 'svelte';\n"
+                             "import { compile } from 'svelte/compiler';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_bare_external_types_mapping_silent(self):
+        # Same shape as the svelte fixture with the self-name swapped for a
+        # dependency: an alias whose every replacement is a `.d.ts` surface
+        # excluded from the scan is not falsifiable from a snapshot.
+        out = self.imps({
+            "package.json": '{"name": "mylib", "dependencies": {"left-pad": "^1.0.0"}}',
+            "tsconfig.json": json.dumps({"compilerOptions": {"paths": {
+                "left-pad": ["./types/left-pad/index.d.ts"]}}}),
+            "types/left-pad/index.d.ts": "export function pad(): void\n",
+            "src/app.ts": "import { pad } from 'left-pad';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_in_tree_alias_mapping_still_checked(self):
+        # The suppression must not swallow the decidable case: an alias
+        # mapped onto the scanned tree still reports named/missing verdicts.
+        out = self.imps({
+            "tsconfig.json": '{"compilerOptions": {"paths": {"@/*": ["./src/*"]}}}',
+            "src/util.ts": "export function real() {}\n",
+            "src/app.ts": "import { gone } from '@/util';\n",
+        })
+        self.assertTrue(any("gone" in f.title for f in out))
+
+    def test_bare_unmapped_still_silent(self):
+        # Plain bare external packages (node_modules surface) stay silent.
+        out = self.imps({
+            "package.json": '{"name": "mylib"}',
+            "src/app.ts": "import React from 'react';\nimport x from 'lodash/merge';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_other_workspaces_name_still_checked(self):
+        # Monorepo: the root package's name is a self-name for every file
+        # in the tree, but a *sibling* workspace's name is not silent when
+        # nothing maps it — it is a cross-workspace import resolved by the
+        # package manager. Here the name is unmapped and in no manifest:
+        # silent (phantom-package's surface), never an import lie.
+        out = self.imps({
+            "package.json": '{"name": "root"}',
+            "packages/a/package.json": '{"name": "a-pkg"}',
+            "packages/b/index.ts": "import { thing } from 'a-pkg';\n",
+        })
         self.assertEqual(out, [])
 
 

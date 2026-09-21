@@ -113,16 +113,33 @@ def build_alias_zones(root: Path, tsconfigs: list[Path],
     return zones
 
 
-def collect_files(root: Path, config: Config, include_claim_surfaces: bool = False) -> list[Path]:
-    """All scannable files. Markdown and manifests ride along only for
-    rename mapping (impact/MCP blast_radius: query paths that never
-    gate) or when their checkers run; default scans stay byte-identical."""
+def collect_files(root: Path, config: Config, include_claim_surfaces: bool = False,
+                  ) -> tuple[list[Path], set[str]]:
+    """All scannable files, plus the ambient declaration paths.
+
+    Markdown and manifests ride along only for rename mapping
+    (impact/MCP blast_radius: query paths that never gate) or when their
+    checkers run; default scans stay byte-identical. Declaration files
+    (.d.ts/.d.mts/.d.cts) are never parsed as source — comment heuristics
+    misfire on them (proven: axios index.d.ts) — but their *existence* is
+    returned as rel paths so import checks can stay silent about ambient
+    type modules without treating declarations as implementation."""
     out: list[Path] = []
+    decls: set[str] = set()
     root = root.resolve()
     stack = [root]
     while stack:
         cur = stack.pop()
         try:
+            # A symlinked directory is never followed: inside the root it
+            # is a duplicate of a directory scanned under its own name
+            # (workspace-alias symlinks — seen: OmniRoute's `@omniroute/`
+            # -> `open-sse/`, doubling findings and poisoning alias
+            # resolution), and outside the root it would pull a foreign
+            # tree into the snapshot. A repo whose only copy of code sits
+            # behind a symlink is out of scope by the same snapshot rule.
+            if cur.resolve() != cur:
+                continue
             entries = sorted(cur.iterdir())
         except OSError:
             continue
@@ -133,6 +150,13 @@ def collect_files(root: Path, config: Config, include_claim_surfaces: bool = Fal
                     continue
                 # always skip hidden cache-ish dirs
                 if name in {".git", "__pycache__", "node_modules", ".venv"}:
+                    continue
+                # Agent worktrees: full second copies of the repo with
+                # their own drifted docs and half-finished edits (seen:
+                # OmniRoute's `.claude/worktrees/`, 4,027 of 4,458 findings
+                # were duplicates). They are working state, not the tree
+                # the repo ships.
+                if name == "worktrees" and cur.name == ".claude":
                     continue
                 stack.append(e)
             elif e.is_file():
@@ -156,11 +180,13 @@ def collect_files(root: Path, config: Config, include_claim_surfaces: bool = Fal
                         continue
                     # v2: TypeScript declaration files are ambient type
                     # surface, not implementation; comment heuristics
-                    # misfire on them (proven: axios index.d.ts).
+                    # misfire on them (proven: axios index.d.ts). Track
+                    # their paths only (existence evidence, no parsing).
                     if name.endswith(".d.ts") or name.endswith(".d.cts") or name.endswith(".d.mts"):
+                        decls.add(e.relative_to(root).as_posix())
                         continue
                     out.append(e)
-    return sorted(out)
+    return sorted(out), decls
 
 
 _INDEX: RepoIndex | None = None
@@ -267,7 +293,7 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
               ) -> tuple[list[Finding], list[FileFacts], RepoIndex]:
     global _INDEX
     from . import __version__
-    files = collect_files(root, config, include_claim_surfaces=include_claim_surfaces)
+    files, decls = collect_files(root, config, include_claim_surfaces=include_claim_surfaces)
     resolved = root.resolve()
     if jobs is None:
         jobs = default_jobs(len(files))
@@ -295,7 +321,8 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
         stats[str(f)] = (st.st_mtime, st.st_size)
     index = RepoIndex(resolved, [f for f in files if str(f) in texts], texts,
                       build_alias_zones(resolved, collect_tsconfigs(resolved, config),
-                                        config.path_aliases))
+                                        config.path_aliases),
+                      decl_paths=decls)
     facts_list: list[FileFacts] = []
     findings: list[Finding] = []
     # fresh[rel] holds JSON-ready finding dicts for the cache write-back.

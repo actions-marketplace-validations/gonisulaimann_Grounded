@@ -469,7 +469,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
 def cmd_list(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
     config = Config.load(root, explicit=args.config)
-    for f in collect_files(root, config):
+    for f in collect_files(root, config)[0]:
         try:
             print(f.relative_to(root).as_posix())
         except ValueError:

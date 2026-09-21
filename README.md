@@ -84,7 +84,7 @@ Measured 2026-09-21 (harness: `bench/run.py`; full tables in
 | Tree | Files | Scan | Result (all classified) |
 |---|---|---|---|
 | django | 2,977 | 16.7 s | 1 true lie (stale test cross-reference) + fixture noise |
-| cpython | 3,078 | 47.2 s | true moved-file references + fixture noise |
+| cpython | 3,049 | 47.2 s | true moved-file references + fixture noise |
 | grpc-go | 1,068 | 4.4 s | true missing implementation (`NewContextWithHandshakeInfo`) |
 | express | 141 | 0.6 s | clean (was 101 false alarms before the CJS-interop fix) |
 
@@ -283,7 +283,12 @@ Path aliases (`@/`, `~/`, and any tsconfig `paths` entries) resolve
 against the nearest `tsconfig.json` (which may use comments and
 `extends`). Unresolvable alias targets report as drift, never as lies:
 they are often build-generated. Mappings into `node_modules` are
-always skipped.
+always skipped. Bare specifiers whose only visible resolution is
+external — a package's own name (self-import through its exports map)
+or any alias whose replacements are types-only `.d.ts` surfaces — are
+also silent: the scan cannot see the real resolution, so it never
+claims a lie about it. Only aliases that map onto the scanned tree
+stay fully checked.
 
 Suppress a single accepted finding where it sits (reviewable, local):
 

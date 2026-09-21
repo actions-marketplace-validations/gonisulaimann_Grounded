@@ -35,7 +35,7 @@ median reported). Repos are shallow clones at 2026-09-21 main.
 | Tree | Files | Median | Throughput | Peak RSS | Findings |
 |---|---|---|---|---|---|
 | django | 2,977 | 16.7 s | 178 files/s | 468 MB | 33 smells, 5 lies |
-| cpython (3.13) | 3,078 | 47.2 s | 65 files/s | 1,251 MB | 1,221 smells, 68 lies, 7 drifts |
+| cpython (3.13) | 3,049 | 47.2 s | 65 files/s | 1,251 MB | 1,216 smells, 60 lies, 7 drifts |
 | grpc-go | 1,068 | 4.4 s | 242 files/s | 250 MB | 5 smells, 5 lies |
 | axios | 246 | 1.0 s | 255 files/s | 39 MB | 1 lie |
 | express | 141 | 0.6 s | 229 files/s | 33 MB | 0 |
@@ -51,7 +51,7 @@ files; repeat scans reuse per-file results with `scan --cache`.
 | Repository | Findings | Standing |
 |---|---|---|
 | django | 33 smells, 5 lies | 4 lies in deliberately-broken test fixtures (`broken_app`, `import_error`, `broken_tag`, staticfiles test data); **1 true lie**: `test_fallback.py` references `CookieTests.test_cookie_max_length()`, which exists nowhere |
-| cpython | 1,221 smells, 68 lies, 7 drifts | smells are stdlib `XXX`/`TODO` markers; sampled lies are moved/removed files (**true**: `Include/code.h` → `Include/cpython/code.h`, `Tools/scripts/*` reorg, `Lib/distutils/msvccompiler.py` removal) and deliberately-broken `test_import` fixtures; residual lies are platform APIs (documented limitation) plus one cross-branch number comparison (known `number-drift` weakness) |
+| cpython | 1,216 smells, 60 lies, 7 drifts | smells are stdlib `XXX`/`TODO` markers; sampled lies are moved/removed files (**true**: `Include/code.h` → `Include/cpython/code.h`, `Tools/scripts/*` reorg, `Lib/distutils/msvccompiler.py` removal) and deliberately-broken `test_import` fixtures; residual lies are platform APIs (documented limitation) plus one cross-branch number comparison (known `number-drift` weakness) |
 | grpc-go | 5 smells, 5 lies | **true**: `NewContextWithHandshakeInfo()` documented but defined nowhere; suspected-true `toLoadReport()`; FPs: inlined-copy provenance mention, one cross-file local |
 | axios | 1 lie | known FP: import from a `tsc`-generated `declarations/` dir that exists only during tests |
 | express | 0 | was 101 stale-import lies before the CJS-interop and `./`-normalization fixes (same run) |

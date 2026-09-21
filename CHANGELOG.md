@@ -5,6 +5,25 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- `collect_files`: symlinked directories are no longer followed — inside
+  the root they duplicated whole trees under a second rel path (seen:
+  OmniRoute's `@omniroute/` -> `open-sse/` workspace-alias symlink,
+  doubling findings and poisoning alias resolution), and outside the
+  root they pulled foreign trees into the snapshot.
+- `collect_files`: `.claude/worktrees/` (agent-session worktrees holding
+  full second copies of the repo) is skipped. Seen on OmniRoute: 4,027
+  of 4,458 findings were worktree duplicates of real files.
+- `stale-import` (JS/TS): bare specifiers whose resolution is invisible
+  to snapshot analysis no longer report. Two classes suppressed: the
+  repo's own package name (self-imports resolve through the package
+  exports map / bundler self-reference, not the tsconfig paths shim) and
+  bare aliases whose every replacement is outside the scanned tree or a
+  types-only `.d.ts` surface. Fixture: sveltejs/svelte went from 1,253
+  `stale-import` findings (1,235 false drift on `svelte`/`svelte/*`
+  self-imports) to 18, all genuine. Aliases mapped onto the scanned tree
+  are unchanged and stay fully checked (regression-tested both ways).
+
 ### Added
 - Rename mapping across all claim surfaces: `impact` / MCP
   `blast_radius` now report claims from doc examples, mock strings,

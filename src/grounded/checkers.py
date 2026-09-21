@@ -30,6 +30,16 @@ import sys
 from .models import Comment, FileFacts, Finding
 from .repo_index import RepoIndex, _norm_dist
 
+# Directory names the scanner never walks (see config.DEFAULT_IGNORE_DIRS
+# plus the always-skipped cache dirs). A relative import pointing under
+# one of these has targets the snapshot cannot see: never a missing-module
+# verdict (see _js_target_in_ignored_dir).
+IGNORED_DIR_NAMES = frozenset({
+    ".git", "__pycache__", "node_modules", ".venv", "venv", ".tox",
+    "dist", "build", ".next", "out", "coverage", ".nyc_output",
+    ".mypy_cache", ".ruff_cache", ".pytest_cache", "vendor", "third_party",
+})
+
 # ---------------------------------------------------------------- shared
 
 PYTHON_BUILTINS = {
@@ -714,13 +724,119 @@ def _resolve_py_base(claimer: str, level: int) -> list[str]:
 
 _JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
 
+# TypeScript module resolution: a relative import written with a JS
+# extension (`./suite.js`) resolves the same-named TS file (`suite.ts`)
+# when no JS file exists. This is the default emitted by `tsc --init`
+# ("Allow importing TS files with .js extensions") and is universal in
+# TS test suites and ESM packages compiled from TS (seen: svelte's test
+# suites import `../suite.js`, `./shared.js` with only .ts files on
+# disk; OmniRoute's tests import `schemas.js` -> schemas.ts).
+_JS_TS_SIBLINGS = {
+    ".js": (".ts", ".tsx"),
+    ".mjs": (".mts",),
+    ".cjs": (".cts",),
+    ".jsx": (".tsx",),
+}
+
+
+def _js_self_names(index: RepoIndex, claimer: str) -> set[str]:
+    """Package names the claimer's own manifests say it ships (normalized).
+
+    Walks every package.json from the scan root down to the claimer's
+    directory (monorepo-aware: nearer manifests shadow nothing — a file
+    may import any workspace's self-name). A repo that names itself
+    (`"name": "svelte"`) resolves those imports through its exports map,
+    bundler self-reference, or workspaces — none visible to snapshot
+    analysis, so self-name bare imports are outside the decidable set.
+    """
+    rel = claimer.replace("\\", "/")
+    parts = rel.split("/")[:-1]
+    names: set[str] = set()
+    seen: set[str] = set()
+    for i in range(len(parts) + 1):
+        d = "/".join(parts[:i]) if i else ""
+        if d in seen:
+            continue
+        seen.add(d)
+        try:
+            data = json.loads((index.root / d / "package.json").read_text(
+                encoding="utf-8", errors="ignore"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = data.get("name")
+        if isinstance(name, str) and name:
+            names.add(_norm_dist(name))
+    return names
+
+
+def _js_bare_externally_resolved(index: RepoIndex, claimer: str, spec: str) -> bool:
+    """True when `spec` is a bare specifier whose resolution lies outside
+    the snapshot, so stale-import must stay silent.
+
+    A tsconfig/manual alias that maps a bare prefix onto the scanned tree
+    is decidable and stays checkable (that is the alias feature). But when
+    every replacement for the matched prefix resolves outside the tree,
+    or is a types-only `.d.ts` surface that the scan deliberately excludes,
+    the import is not falsifiable from a snapshot — most commonly the
+    package's own name mapped to its type declarations (seen: svelte maps
+    `svelte/*` -> `./src/*.d.ts`, which 1235 self-name imports then hit as
+    drift), and node_modules-style mappings. Without node_modules there is
+    no way to distinguish a lie from a resolution the scan cannot see.
+    """
+    for zone_dir, mapping in index.alias_zones:
+        if zone_dir and not (claimer == zone_dir or claimer.startswith(zone_dir + "/")):
+            continue
+        for prefix, repls in mapping:
+            if not spec.startswith(prefix):
+                continue
+            for repl in repls:
+                if "node_modules" in repl.split("/"):
+                    continue
+                base = posixpath.normpath(
+                    posixpath.join(zone_dir, repl, spec[len(prefix):])) if zone_dir \
+                    else posixpath.normpath(repl + spec[len(prefix):])
+                raw = _js_candidates_raw(base)
+                if any(c in index.rel_paths for c in raw) or any(
+                        not c.endswith(".d.ts") for c in raw):
+                    return False
+            return True
+    return True
+
+
+def _js_candidates_raw(base: str) -> list[str]:
+    """Candidate paths without existence filtering (d.ts visibility)."""
+    cands = ([base] if posixpath.splitext(base)[1].lower() in _JS_EXTS else []
+             + [base + e for e in _JS_EXTS] + [base + "/index" + e for e in _JS_EXTS])
+    stem, ext = posixpath.splitext(base)
+    for sibling in _JS_TS_SIBLINGS.get(ext.lower(), ()):
+        cands.append(stem + sibling)
+    return [(c[2:] if c.startswith("./") else c) for c in cands]
+
+
+def _js_target_in_ignored_dir(index: RepoIndex, claimer: str, spec: str) -> bool:
+    """True when a (relative) specifier's candidate targets sit under a
+    directory suffix the scan deliberately ignores (vendor, build, dist,
+    docs, coverage, ...). Their existence cannot be judged from the
+    snapshot: they may or may not be real files, so "does not exist" is
+    never positive evidence.
+    """
+    base = posixpath.normpath(
+        posixpath.join(posixpath.dirname(claimer), spec))
+    stem = base.split("/")[:-1]
+    for i in range(len(stem)):
+        if stem[i] in IGNORED_DIR_NAMES:
+            return True
+    return False
+
 
 def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] | None:
     """Candidate module rel paths for a JS/TS specifier.
 
     Relative (./, ../) resolves directly. Alias prefixes (@/, ~/ and
     tsconfig/manual mappings) resolve through the longest matching zone;
-    a matched-but-unresolvable alias is a missing module (lie), while a
+    a matched-but-unresolvable alias is a missing module (drift), while a
     specifier matching nothing stays silent. Bare imports live in
     node_modules: outside snapshot analysis, always silent. Returns None
     (skip) or a possibly-empty list (empty = module does not exist).
@@ -754,6 +870,11 @@ def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] |
 def _js_candidates(index: RepoIndex, base: str) -> list[str]:
     cands = ([base] if posixpath.splitext(base)[1].lower() in _JS_EXTS else []
              + [base + e for e in _JS_EXTS] + [base + "/index" + e for e in _JS_EXTS])
+    # TS-style JS-extension imports: `./x.js` also resolves `./x.ts` when
+    # no JS file exists (see _JS_TS_SIBLINGS).
+    stem, ext = posixpath.splitext(base)
+    for sibling in _JS_TS_SIBLINGS.get(ext.lower(), ()):
+        cands.append(stem + sibling)
     # rel_paths stores both `x` and `./x`; every other map (exports,
     # imports, symbols) uses the clean form, so normalize: a `./`-form
     # target otherwise misses every export lookup (seen: express examples).
@@ -793,6 +914,7 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     for c in facts.comments:
         for ln in range(c.line, c.end_line + 1):
             comment_lines.add(ln)
+    self_names = _js_self_names(index, facts.path)
     findings: list[Finding] = []
     for spec, kind, default, named, lineno in facts.js_imports:
         if lineno in comment_lines:
@@ -800,15 +922,47 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         ext = posixpath.splitext(spec)[1].lower()
         if ext and ext not in _JS_EXTS:
             continue  # asset imports (css, json, svg): bundler surface
+        if not spec.startswith(("./", "../", "/")):
+            # Bare specifier: the default case is a node_modules package —
+            # outside snapshot analysis, always silent. Two decidable
+            # exceptions remain: an alias mapping onto the scanned tree,
+            # and the repo's own package name (self-import). Both are
+            # suppressed here when their resolution is not visible to the
+            # snapshot (types-only targets, external mappings); only the
+            # in-tree alias case continues to verdicts below.
+            pkg = "/".join(spec.split("/")[:2]) if spec.startswith("@") else spec.split("/")[0]
+            if _norm_dist(pkg) in self_names or _js_bare_externally_resolved(
+                    index, facts.path, spec):
+                continue
         targets = _resolve_js_target(index, facts.path, spec)
         if targets is None:
             continue
         if not targets:
+            # Ambient type surface: an extensionless specifier whose exact
+            # .d.ts target exists (`./types` -> types.d.ts, seen: svelte's
+            # internal client tests) resolves in TypeScript's ambient space.
+            # Declaration files are never parsed as source, only tracked
+            # (index.decl_paths), so this silence is evidence-based.
+            if not posixpath.splitext(spec)[1]:
+                base = posixpath.normpath(
+                    posixpath.join(posixpath.dirname(facts.path), spec))
+                if base + ".d.ts" in index.decl_paths or base + "/index.d.ts" in index.decl_paths:
+                    continue
             # Relative misses are lies (relative paths are always local).
             # Alias misses are drift: the target may be generated at build
             # time (registry outputs) or live outside the scanned tree.
             # Either way they never fail a default gate.
             is_relative = spec.startswith("./") or spec.startswith("../")
+            # ...unless the target sits in a directory the scan deliberately
+            # ignores (vendor trees, build dirs, dist): then "does not exist"
+            # is knowingly wrong — the file is there, the scan just cannot
+            # index it (seen: OmniRoute's tracked open-sse/vendor/ and
+            # scripts/build/). The .d.ts exception keeps the one case where
+            # the checker has positive evidence of a shimmed lie.
+            if is_relative and _js_target_in_ignored_dir(index, facts.path, spec) \
+                    and not posixpath.splitext(spec)[1].lower() == ".d.ts" \
+                    and not spec.endswith((".d.ts", ".d.mts", ".d.cts")):
+                continue
             findings.append(Finding(
                 path=facts.path, line=lineno, end_line=lineno,
                 checker="stale-import",
@@ -833,6 +987,16 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         if default is not None and "default" not in provided:
             if not all(t in index.file_esm for t in targets):
                 continue  # CJS/script target: default interop always binds
+            if kind == "require" and not facts.path.endswith(
+                    (".mts", ".cts", ".mjs", ".cjs")):
+                # require() default-shape from a .js file: the require()d
+                # module is read at runtime; when the importer itself is
+                # not forcibly-ESM (.mjs), the file may run as CJS where
+                # `const mod = require('x')` binds any module.exports shape
+                # (seen: electron/loginManager.js requiring a TS-compiled
+                # service with only named exports). Not falsifiable from a
+                # snapshot.
+                continue
             findings.append(Finding(
                 path=facts.path, line=lineno, end_line=lineno,
                 checker="stale-import", severity="lie",

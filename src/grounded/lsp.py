@@ -50,7 +50,7 @@ class LspServer:
         root = self.root or (path.parent if path.suffix else Path.cwd())
         if self.index is None or getattr(self, "_root", None) != root:
             try:
-                files = collect_files(root, Config.load(root))
+                files, _decls = collect_files(root, Config.load(root))
             except OSError:
                 files = []
             texts: dict[str, str] = {}

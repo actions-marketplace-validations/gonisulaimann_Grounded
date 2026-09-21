@@ -25,7 +25,8 @@ _JS_METHOD_HINT = re.compile(r"^\s*(?:async\s+|static\s+|get\s+|set\s+)?([A-Za-z
 
 class RepoIndex:
     def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None,
-                 alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] | None = None):
+                 alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] | None = None,
+                 decl_paths: set[str] | None = None):
         self.root = root
         self.files = files  # absolute paths
         self.py_symbols: set[str] = set()
@@ -66,6 +67,13 @@ class RepoIndex:
         self.alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] = list(alias_zones or [])
         # relative posix paths + basenames for file-ref resolution
         self.rel_paths: set[str] = set()
+        # Ambient declaration files (.d.ts/.d.mts/.d.cts): deliberately not
+        # parsed as source, but their existence is real and an ambient
+        # module they define is importable (bare sibling specifiers, seen:
+        # svelte's `import type { Effect } from './types'` -> types.d.ts).
+        # Presence-only: lets import checks stay silent without treating
+        # declarations as indexed implementation surface.
+        self.decl_paths: set[str] = set(decl_paths or [])
         self.basenames: set[str] = set()
         self.dirs: set[str] = set()
         # Absolute-import source roots: top segment -> path prefix, for
@@ -95,6 +103,8 @@ class RepoIndex:
                 rel = f.name
             self.rel_paths.add(rel)
             self.rel_paths.add("./" + rel)
+            if f.name.endswith((".d.ts", ".d.mts", ".d.cts")):
+                self.decl_paths.add(rel)
             self.basenames.add(f.name)
             parent = str(Path(rel).parent)
             if parent and parent != ".":
@@ -222,6 +232,7 @@ class RepoIndex:
     def forget_file(self, rel: str) -> None:
         """Drop every index contribution from rel (rename/delete/close)."""
         self._forget_no_rebuild(rel)
+        self.decl_paths.discard(rel)
         self._rebuild_unions()
         self._compute_py_prefixes()
 
