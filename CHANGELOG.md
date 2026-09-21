@@ -3,19 +3,12 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.9.0] - 2026-09-21
+## [0.10.0] - 2026-09-21
 
 ### Added
 - JS/TS path-alias resolution: tsconfig `paths` auto-detected per
   directory (JSONC tolerant, `extends` chains, longest-prefix wins) plus
   manual `path_aliases` config. Unresolvable aliases report as drift.
-- `grounded init-agent`: generates Claude hook, Cursor rule, Aider config.
-- Disk cache (`scan --cache`): mtime+size keyed per-file findings.
-- LSP incremental index: buffer edits re-index the file, peer documents
-  re-diagnose, close reverts to disk. Single-file patch measured 9-22 ms.
-
-### Changed
-- Parallel threshold retuned to 512 files / 8 workers on measurements.
 
 ## [0.9.0] - 2026-09-21
 
