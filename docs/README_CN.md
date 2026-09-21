@@ -1,6 +1,6 @@
 # Grounded — 快速指南（中文）
 
-> 简要译文，以[英文 README](../README.md) 为准。
+> 简要译文，以[英文 README](https://github.com/gonisulaimann/Grounded#readme) 为准。
 
 **Grounded** 用于发现代码注释中的悬空引用：已不存在的函数、缺失的文件、损坏的导入。确定性、离线、零依赖。支持 Python、JavaScript/TypeScript、Go 和 C。
 

@@ -1,6 +1,6 @@
 # Grounded — Guide rapide (Français)
 
-> Traduction résumée. Le [README en anglais](../README.md) fait référence.
+> Traduction résumée. Le [README en anglais](https://github.com/gonisulaimann/Grounded#readme) fait référence.
 
 **Grounded** détecte les références pendantes dans les commentaires du code : fonctions disparues, fichiers manquants, imports cassés. Déterministe, hors ligne, zéro dépendance. Python, JavaScript/TypeScript, Go et C pris en charge.
 

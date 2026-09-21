@@ -1,54 +1,74 @@
-# Rules & Checkers
+# Rules
 
-Grounded emits findings with positive, mechanical proof of contradiction.
+| ID | Default severity | What it reports |
+|---|---|---|
+| `stale-symbol-ref` | lie (error) | A comment names a call that resolves nowhere: not defined in the repo, not imported in the file, not used in the file, not a builtin or keyword. Prints rename suggestions when a close match exists. |
+| `stale-import` | lie (error) | A resolvable import whose module is missing, or whose name is not defined, re-exported, or a submodule there. Python `from`/`import`, JS/TS relative imports with tsconfig aliases resolved. Guarded, stdlib, and external imports never report. |
+| `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
+| `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
+| `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, or untracked markers (`HACK`, `XXX`, `FIXME`, `workaround`) with no ticket or expiry condition. |
 
-Supported languages: Python, JavaScript/TypeScript, Go, C.
+## How a rule decides
 
----
+Imported names, standard library names, parameters, locals, attributes,
+docstring field lists (`:param:`, `@param`), and illustrative examples
+("For example …") never produce findings. Alias-prefixed JS/TS imports
+(`@/`, `~/`) resolve through the nearest `tsconfig.json` (comments and
+`extends` supported) or manual `path_aliases`; unresolvable alias targets
+report as drift, mappings into `node_modules` stay silent.
 
-## Active Checkers
+## Severities and exit codes
 
-| Rule ID | Severity | What It Enforces |
-| :--- | :--- | :--- |
-| `stale-import` | `lie` (Error) | Resolvable imports (`from M import N` in Python; relative `import {N} from './x'` in JS/TS) where the target module is missing or `N` is not defined, re-exported, or a submodule there. |
-| `stale-symbol-ref` | `lie` (Error) | A comment names a call (`foo()` or `` `foo()` ``) that resolves nowhere: not defined in the repo, not imported in the file, not used in the file, not a builtin or keyword. |
-| `stale-file-ref` | `lie` (Error) | A comment claims a file path inside this repo's tree that does not exist (namespace- and placeholder-aware). |
-| `number-drift` | `drift` (Warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
-| `fragile-anchor` | `smell` (Note) | Line anchors (`line 42`), `see above` / `see below` without a symbol, or untracked markers (`HACK`, `XXX`, `FIXME`, `workaround`) with no ticket or expiry condition. |
+* **`lie` (Error)**: provably false. Exits with code `1` when any finding
+  meets `--fail-on` (default `lie`).
+* **`drift` (Warning)**: mechanically stale by adjacent evidence.
+* **`smell` (Note)**: fragile pattern likely to rot over time.
 
----
-
-## Severities
-
-* **`lie` (Error)**: Provably false. The reference or import claims a contract that does not exist in the codebase. Exits with code `1`.
-* **`drift` (Warning)**: Mechanically stale by adjacent evidence.
-* **`smell` (Note)**: Fragile pattern likely to rot over time.
-
-Exit codes: `0` clean, `1` a finding at or above `--fail-on` (default
-`lie`), `2` a usage or environment error (bad path, unreadable baseline
-or config, unresolvable git base). A typo can never mask drift with a
-green build: misconfiguration fails loudly.
-
----
+Exit code `2` means a usage or environment error (bad path, unreadable
+baseline or config, unresolvable git base). A typo can never mask drift
+with a green build.
 
 ## Suppressions
 
-To suppress an accepted finding inline, place a comment marker directly on the offending line:
+Suppress a single accepted finding where it sits (reviewable, local):
 
-### Python
 ```python
-# Calls legacy_dump() for historical archives  # grounded-disable: stale-symbol-ref
+# Calls `legacy_parse()` for old dumps.  # grounded-disable: stale-symbol-ref
 ```
 
-### JavaScript / TypeScript
-```javascript
-// Calls legacyDump() for historical archives  // grounded-disable: stale-symbol-ref
+```js
+// Calls `legacyParse()` for old dumps.  // grounded-disable: stale-symbol-ref
 ```
 
-To suppress all checkers on a line:
-```python
-# Temporary patch  # grounded-disable: all
+```go
+// Calls `legacyParse()` for old dumps.  // grounded-disable: stale-symbol-ref
 ```
 
 Unknown checker ids in a marker warn on stderr (`unknown checker id`)
 without changing the exit code: a typo never silently disarms a gate.
+
+## Non-goals
+
+Docstring contracts (parameter lists, return sections, raised exceptions)
+are covered by [darglint](https://github.com/terrencepreilly/darglint)
+and [pydoclint](https://github.com/jsh9/pydoclint) for Python and
+[eslint-plugin-jsdoc](https://github.com/gajus/eslint-plugin-jsdoc) for
+JavaScript/TypeScript. Commented-out code is covered by
+[Ruff ERA001](https://docs.astral.sh/ruff/rules/commented-out-code/).
+`grounded explain <id>` points at the right tool for each removed check.
+
+## Limitations
+
+* Unformatted, unverbed name mentions are skipped. This trades recall for
+  precision.
+* Names imported from anywhere are treated as known elsewhere, including
+  cross-module renames.
+* Framework namespaces (template paths, URL names) are out of scope.
+* JavaScript/TypeScript, Go, and C analysis is syntactic (imports plus
+  identifiers), not a full type graph.
+* External references stay silent only when recognized (stdlib and POSIX
+  names, imports, same-file identifiers).
+* Rename suggestions use string similarity only; `grounded fix` applies a
+  symbol rename only with exactly one similar, same-directory candidate.
+* `grounded fix` rewrites stale file paths only on unambiguous
+  same-basename matches in comments (never docstrings, never ties).

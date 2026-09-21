@@ -44,5 +44,6 @@ nav:
   - Overview: index.md
   - Installation: installation.md
   - Rules & Checkers: rules.md
-  - Agent & Editor Setup: agents-lsp.md
+  - Agent & Editor Setup: agents.md
+  - Agent Skill: agent-skill.md
   - Benchmarks: benchmarks.md

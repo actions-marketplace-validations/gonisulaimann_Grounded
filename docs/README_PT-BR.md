@@ -1,6 +1,6 @@
 # Grounded — Guia rápido (Português BR)
 
-> Tradução resumida. O [README em inglês](../README.md) é a referência oficial.
+> Tradução resumida. O [README em inglês](https://github.com/gonisulaimann/Grounded#readme) é a referência oficial.
 
 **Grounded** encontra referências pendentes nos comentários do código: funções que não existem mais, arquivos faltantes e importações quebradas. Determinístico, offline, sem dependências. Funciona com Python, JavaScript/TypeScript, Go e C.
 

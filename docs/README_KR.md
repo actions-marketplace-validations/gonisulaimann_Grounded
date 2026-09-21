@@ -1,6 +1,6 @@
 # Grounded — 빠른 시작 (한국어)
 
-> 요약 번역입니다. [영어 README](../README.md)가 공식 문서입니다.
+> 요약 번역입니다. [영어 README](https://github.com/gonisulaimann/Grounded#readme)가 공식 문서입니다.
 
 **Grounded**는 코드 주석의 허공 참조를 찾습니다: 존재하지 않는 함수, 누락된 파일, 깨진 임포트. 결정적, 오프라인, 의존성 제로. Python, JavaScript/TypeScript, Go, C를 지원합니다.
 

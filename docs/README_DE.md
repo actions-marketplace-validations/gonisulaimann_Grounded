@@ -1,6 +1,6 @@
 # Grounded — Kurzanleitung (Deutsch)
 
-> Gekürzte Übersetzung. Die [englische README](../README.md) ist maßgeblich.
+> Gekürzte Übersetzung. Die [englische README](https://github.com/gonisulaimann/Grounded#readme) ist maßgeblich.
 
 **Grounded** findet baumelnde Referenzen in Code-Kommentaren: Funktionen, die nicht mehr existieren, fehlende Dateien, defekte Imports. Deterministisch, offline, keine Abhängigkeiten. Unterstützt Python, JavaScript/TypeScript, Go und C.
 

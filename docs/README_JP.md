@@ -1,6 +1,6 @@
 # Grounded — クイックガイド（日本語）
 
-> 要約翻訳です。[英語の README](../README.md)が正式なリファレンスです。
+> 要約翻訳です。[英語の README](https://github.com/gonisulaimann/Grounded#readme)が正式なリファレンスです。
 
 **Grounded** はコードコメント内の宙ぶらりん参照を検出します：存在しない関数、欠落ファイル、壊れたインポート。決定的、オフライン、依存関係ゼロ。Python、JavaScript/TypeScript、Go、C に対応。
 

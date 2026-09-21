@@ -1,81 +1,51 @@
 # Installation
 
-Grounded requires **Python 3.10+** and has **zero external runtime dependencies**.
+Requires Python 3.10 or later. Zero runtime dependencies in every method.
 
----
+## Homebrew (macOS and Linux)
 
-## macOS & Linux (Homebrew)
-
-The recommended installation method for macOS and Linux users:
-
-```bash
+```console
 brew install gonisulaimann/tap/grounded
-```
-
-Verify your installation:
-
-```bash
 grounded --version
 ```
 
----
+## pip
 
-## Python Package Managers
-
-### With `pip`
-```bash
+```console
 pip install grounded-lint
+grounded --version
 ```
 
-### With `uv` (Fastest)
-```bash
-# Install as a global CLI tool:
-uv tool install grounded-lint
+## uvx (no Python management)
 
-# Or run directly without installing:
-uvx grounded-lint scan .
+Runs without installing anything persistently:
+
+```console
+uvx --from grounded-lint grounded scan .
 ```
 
-### With `pipx`
-```bash
-pipx install grounded-lint
-```
+## From source
 
----
-
-## From Source
-
-```bash
+```console
 git clone https://github.com/gonisulaimann/Grounded.git
 cd Grounded
 pip install -e .
+python -m unittest discover -s tests
 ```
 
----
+## Verify
 
-## Pre-Commit Hook
+```console
+grounded scan --help
+grounded explain stale-symbol-ref
+```
 
-Add Grounded as a pre-commit hook to catch broken references and imports on every commit:
+## Pre-commit hook
 
 ```yaml
-# .pre-commit-config.yaml
 repos:
   - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.12.0
+    rev: v0.12.1
     hooks:
       - id: grounded
-```
-
----
-
-## GitHub Actions CI
-
-Gate pull requests in CI using the official GitHub Marketplace Action:
-
-```yaml
-# .github/workflows/ci.yml
-- uses: gonisulaimann/Grounded@v0.12.0
-  with:
-    changed-base: origin/main
-    fail-on: lie
 ```
