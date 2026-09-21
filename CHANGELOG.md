@@ -3,7 +3,7 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.14.0] - 2026-09-21
 
 ### Added
 - `--changed` rename-fallout expansion: findings off the diff still

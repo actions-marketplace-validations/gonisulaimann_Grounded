@@ -253,7 +253,7 @@ Gate pull requests with the first-party Action (inline PR annotations
 included via problem matchers):
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.13.0
+- uses: gonisulaimann/Grounded@v0.14.0
   with:
     changed-base: origin/main   # new findings on edited lines only
     fail-on: lie
@@ -262,7 +262,7 @@ included via problem matchers):
 Or with a baseline file for whole-tree delta gating:
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.13.0
+- uses: gonisulaimann/Grounded@v0.14.0
   with:
     baseline: .grounded-baseline.json
 ```
@@ -272,7 +272,7 @@ As a pre-commit hook (runs on uncommitted changes):
 ```yaml
 repos:
   - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.13.0
+    rev: v0.14.0
     hooks:
       - id: grounded
 ```
@@ -410,7 +410,7 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 162 tests, stdlib only, no extras
+python -m unittest discover -s tests   # 171 tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
 ```
