@@ -16,6 +16,7 @@ Condensed checker semantics for agents. Full prose lives in the
 | `stale-entrypoint` | lie, opt-in only | scripts/bin/main pointing at nothing in-repo | malformed files, build-output dirs, external targets |
 | `stale-mock-ref` | lie, opt-in only | @patch string naming an absent in-repo symbol | external paths, create=True |
 | `phantom-package` | drift, opt-in only | import declared in no manifest | stdlib, in-repo, all dep groups, @types-covered hosts |
+| `stale-cli-ref` | lie, opt-in only | documented `grounded` call with unknown subcommand/flag | prose mentions, synopsis meta-syntax, program output |
 
 Exit codes: `0` clean, `1` a finding at or above `--fail-on` (default
 `lie`), `2` usage or environment error.

@@ -225,30 +225,33 @@ class RepoIndex:
         self._rebuild_unions()
         self._compute_py_prefixes()
 
-    def declared_dependencies(self, rel: str | None = None) -> set[str]:
+    def declared_dependencies(self, rel: str | None = None) -> set[str] | None:
         """Distribution names from manifests (normalized), mtime-cached.
 
-        Root manifests plus, when rel is given, the nearest package.json
-        and pyproject.toml walking up from its directory (monorepos).
-        Union of everything installable: project dependencies, all
-        optional groups, PEP 735 groups, Poetry deps/groups, build-system
-        requires, requirements*.txt (includes followed), and package.json
-        dep flavors. Union-everything is deliberate: a name missing here
-        is declared nowhere, which is exactly the claim.
+        Project dir = nearest ancestor (from rel's dir, else scan root)
+        containing pyproject.toml or package.json; its manifests plus its
+        requirements files form the closure, unioned with nearer nested
+        manifests walking down. Returns None when no manifest exists
+        anywhere: without evidence the checker stays silent.
+        Union-everything is deliberate: a name missing here is declared
+        nowhere, which is exactly the claim.
         """
-        dirs: list[Path] = [self.root]
-        if rel:
-            chain: list[Path] = []
-            d = (self.root / rel).parent
-            while True:
-                chain.append(d)
-                if d == self.root:
-                    break
-                parent = d.parent
-                if parent == d:
-                    break
-                d = parent
-            dirs = chain
+        start = (self.root / rel).parent if rel else self.root
+        start = start if start.is_dir() else self.root
+        project = start
+        while not ((project / "pyproject.toml").exists()
+                   or (project / "package.json").exists()):
+            parent = project.parent
+            if parent == project:
+                return None
+            project = parent
+        dirs: list[Path] = []
+        d = start
+        while True:
+            dirs.append(d)
+            if d == project:
+                break
+            d = d.parent
         manifests: list[tuple[str, float]] = []
         for d in dirs:
             for name in ("pyproject.toml", "package.json"):
@@ -257,8 +260,8 @@ class RepoIndex:
                 except OSError:
                     continue
         try:
-            reqs = sorted(self.root.glob("requirements*.txt"))
-            reqdir = self.root / "requirements"
+            reqs = sorted(project.glob("requirements*.txt"))
+            reqdir = project / "requirements"
             if reqdir.is_dir():
                 reqs += sorted(reqdir.glob("*.txt"))
         except OSError:

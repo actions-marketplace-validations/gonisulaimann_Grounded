@@ -37,3 +37,8 @@ grounded = ["py.typed", "skill/SKILL.md", "skill/references/*.md", "skill/exampl
 
 [tool.grounded]
 fail_on = "lie"
+
+# Dev-only tools (benchmarks, GIF rendering). Declared so phantom-package
+# stays silent on purpose, not by accident.
+[dependency-groups]
+dev = ["pillow", "pytest"]

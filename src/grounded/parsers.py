@@ -657,7 +657,7 @@ def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
         return parse_go(path, rel, text)
     if suffix in {".c", ".h"}:
         return parse_c(path, rel, text)
-    if suffix in {".md", ".markdown"}:
+    if suffix in {".md", ".markdown", ".mdc"}:
         return parse_markdown(path, rel, text)
     if suffix == ".toml" or (suffix == ".json" and path.name == "package.json"):
         return parse_config(path, rel, text)

@@ -1954,6 +1954,16 @@ class TestGhostExport(unittest.TestCase):
             rc, out = self._scan(td)
             self.assertIn("[ghost-export]", out)
 
+    def test_framework_test_entry_silent_helper_flagged(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "test_thing.py").write_text(
+                "def test_old():\n    assert True\n\ndef make_ghost():\n    return 1\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertNotIn("test_old", out)
+            self.assertIn("make_ghost", out)
+
 
 class TestStaleEntrypoint(unittest.TestCase):
     def _scan(self, td):
@@ -2139,6 +2149,54 @@ class TestPhantomPackage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "a.py").write_text("import yaml\nprint(yaml)\n", encoding="utf-8")
+            self.assertEqual(main(["scan", td, "--no-color"]), 0)
+
+
+class TestStaleCliRef(unittest.TestCase):
+    def _scan(self, td):
+        from grounded.cli import main
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["scan", td, "--no-color", "--enable", "stale-cli-ref"])
+        return rc, buf.getvalue()
+
+    def test_bad_subcommand_and_flag_fire(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "# Demo\n\n```console\ngrounded scan . --changed --quiet\n"
+                "grounded frobnicate --yes\n```\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 1)
+            self.assertIn("frobnicate", out)
+
+    def test_valid_prose_synopsis_output_silent(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "# Demo\n\nRun `grounded init-agent --cursor` after edits.\n\n"
+                "```console\n$ grounded mcp [--root .]\n"
+                "grounded fix: 1 file(s) would change.\n```\n\n"
+                "The grounded skill teaches agents to verify first.\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("stale-cli-ref", out)
+
+    def test_python_m_form(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "```console\npython -m grounded.cli scan . --bogus-flag\n```\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertIn("--bogus-flag", out)
+
+    def test_off_by_default(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "```console\ngrounded frobnicate\n```\n", encoding="utf-8")
             self.assertEqual(main(["scan", td, "--no-color"]), 0)
 
 

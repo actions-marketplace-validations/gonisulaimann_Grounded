@@ -16,17 +16,13 @@ All notable changes to `grounded` are documented here. Format follows
   in no manifest, with unioned manifest closure (all dep groups,
   requirements includes, monorepo-aware) and an import→distribution
   map for the notorious mismatches.
+- `stale-cli-ref` (experimental, opt-in): documented `grounded`
+  invocations with unknown subcommands or flags, verified against the
+  live parser (undriftable by construction).
 
 ### Fixed
 - `src/` and `lib/` layout packages resolve in absolute imports (was:
   entire layouts silently skipped as third-party).
-
-## [Unreleased]
-
-### Version policy
-- Single version across channels: the VS Code extension tracks the
-  product version (Open VSX briefly served an independent 0.13.2
-  against 0.13.0 everywhere else; reunified at 0.14.0).
 
 ## [0.14.0] - 2026-09-21
 

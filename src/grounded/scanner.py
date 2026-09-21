@@ -136,10 +136,10 @@ def collect_files(root: Path, config: Config) -> list[Path]:
                 if name in config.ignore_files:
                     continue
                 suffixes = DEFAULT_SUFFIXES
-                if "stale-doc-ref" in (config.enabled or ()):
-                    # Markdown is collected only when its checker runs:
+                if {"stale-doc-ref", "stale-cli-ref"} & set(config.enabled or ()):
+                    # Markdown is collected only when its checkers run:
                     # default scans stay byte-identical.
-                    suffixes = DEFAULT_SUFFIXES | {".md", ".markdown"}
+                    suffixes = DEFAULT_SUFFIXES | {".md", ".markdown", ".mdc"}
                 want_cfg = "stale-entrypoint" in (config.enabled or ())
                 if e.suffix.lower() in suffixes or (want_cfg and (
                         e.suffix.lower() == ".toml" or e.name == "package.json")):

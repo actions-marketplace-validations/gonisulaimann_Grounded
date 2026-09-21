@@ -13,7 +13,7 @@
 | `stale-entrypoint` | lie (error), **experimental, opt-in only** | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. |
 | `stale-mock-ref` | lie (error), **experimental, opt-in only** | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module (a test that errors at runtime). |
 | `phantom-package` | drift (warning), **experimental, opt-in only** | An absolute import declared in no manifest (`pyproject.toml`, `requirements*.txt`, `package.json`). |
-
+| `stale-cli-ref` | lie (error), **experimental, opt-in only** | A documented `grounded` invocation with an unknown subcommand or flag (verified against the live parser). |
 ## Experimental checkers
 
 Opt-in checkers are registered but excluded from every default set: run
@@ -62,11 +62,21 @@ silent.
 optional/PEP 735/Poetry groups, build-system requires,
 `requirements*.txt` with includes, all `package.json` dep flavors),
 nearest manifests walking up for monorepos, plus a curated
-import→distribution map (`yaml`→`pyyaml`, `PIL`→`pillow`, …). stdlib,
+import→distribution map (`yaml`→`pyyaml`, `PIL`→`pillow`, …). Manifests
+are found by walking up to the nearest project dir, so subscans work;
+with no manifest anywhere the checker stays silent. stdlib,
 in-repo modules, `@types/`-covered host modules, and Node builtins
 stay silent. Known limits: root manifests only for requirements files;
 an `@types/X` declaration hides a missing runtime `X` (deliberate,
 favors silence); this is hygiene drift, never supply-chain verdict.
+
+`stale-cli-ref`: fenced console blocks, `$` lines, and backticked spans
+starting with `grounded` get full checking (unknown subcommands
+included); prose mentions are checked only when the next word is
+already a known subcommand or flag ("the grounded skill teaches" never
+reports). Synopsis meta-syntax, `cmd:`-style program output, and
+positionals never report. The spec is introspected from argparse, so
+checker and CLI cannot drift apart.
 
 Measurement lives in [`corpus/`](https://github.com/gonisulaimann/Grounded/tree/main/corpus):
 planted-staleness fixtures with exact expected findings, run in CI with

@@ -37,3 +37,21 @@ jobs:
           python-version: "3.13"
       - name: Precision corpus (exact-match, no slop)
         run: python3 corpus/run.py
+
+  self-verify:
+    # Dogfood: every opt-in checker over our own docs must stay clean.
+    # Corpus fixtures plant violations on purpose and are excluded.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: pip install -e .
+      - name: Docs integrity sweep (all opt-ins, must report clean)
+        run: |
+          OPTS=stale-doc-ref,stale-contract-ref,ghost-export,stale-entrypoint,stale-mock-ref,phantom-package,stale-cli-ref
+          for target in docs README.md agent-skill CHANGELOG.md bench demo editors; do
+            grounded scan "$target" --no-color --enable "$OPTS"
+          done

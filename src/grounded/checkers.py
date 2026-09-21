@@ -1418,6 +1418,7 @@ def check_stale_contract_ref(facts: FileFacts, index: RepoIndex) -> list[Finding
 # names, C without static info) is excluded, not flagged.
 
 _GHOST_ALL = re.compile(r"__all__\s*=\s*\[[^\]]*\]")
+_GHOST_TEST_FILE = re.compile(r"^(test_.*|.*_test)\.(py|go)$|\.(test|spec)\.[A-Za-z0-9]+$")
 
 
 def _ghost_importers(symbol: str, own: str, index: RepoIndex) -> bool:
@@ -1446,6 +1447,8 @@ def check_ghost_export(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         name = f.name
         if not name or name.startswith("_") or _is_dunder(name) or len(name) < 3:
             continue
+        if name.startswith("test_") and _GHOST_TEST_FILE.search(posixpath.basename(facts.path)):
+            continue  # framework-discovered entry points (pytest, go test)
         if getattr(f, "is_method", False):
             continue
         defline = facts.lines[f.lineno - 1] if 1 <= f.lineno <= len(facts.lines) else ""
@@ -1860,9 +1863,182 @@ def check_phantom_package(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     if facts.language not in ("python", "javascript"):
         return []
     declared = index.declared_dependencies(facts.path)
+    if declared is None:
+        return []  # no manifest anywhere: nothing to judge against
     if facts.language == "python":
         return _dedupe(_phantom_py(facts, index, declared))
     return _dedupe(_phantom_js(facts, index, declared))
+
+
+# ---------------------------------------------------------------- stale-cli-ref
+# EXPERIMENTAL, opt-in only. Documented `grounded` invocations that would
+# fail: unknown subcommands, unknown flags. The spec is introspected from
+# argparse itself, so the checker cannot drift from the CLI. Agent
+# instructions live or die by these lines.
+
+_CLI_SPEC: dict | None = None
+_CLI_SHELL_OPS = set("|&;><()#")
+
+
+def _cli_spec() -> dict:
+    global _CLI_SPEC
+    if _CLI_SPEC is not None:
+        return _CLI_SPEC
+    import argparse
+    from .cli import build_parser
+    parser = build_parser()
+    spec: dict = {"flags": {}, "cmds": {}}
+    for action in parser._actions:
+        for opt in action.option_strings:
+            spec["flags"][opt] = action
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, sub in action.choices.items():
+                flags: dict = {}
+                for sact in sub._actions:
+                    for opt in sact.option_strings:
+                        flags[opt] = sact
+                spec["cmds"][name] = flags
+    _CLI_SPEC = spec
+    return spec
+
+
+def _cli_argv_segments(line: str) -> list[list[str]]:
+    """Split a line into `grounded ...` argv lists (shell-aware)."""
+    import shlex
+    out: list[list[str]] = []
+    try:
+        tokens = shlex.split(line, posix=True)
+    except ValueError:
+        return out
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "grounded":
+            argv = ["grounded"]
+            i += 1
+            while i < len(tokens):
+                tok = tokens[i]
+                if (tok in _CLI_SHELL_OPS or tok.startswith("$")
+                        or tok.startswith("`") or "\\n" in tok):
+                    break
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tok):
+                    i += 1
+                    continue
+                argv.append(tok)
+                i += 1
+            out.append(argv)
+        elif tokens[i:i + 3] == ["python", "-m", "grounded.cli"]:
+            argv = ["grounded", *tokens[i + 3:]]
+            cut = len(argv)
+            for j in range(1, len(argv)):
+                if argv[j] in _CLI_SHELL_OPS:
+                    cut = j
+                    break
+            out.append(argv[:cut])
+            i += 3
+        else:
+            i += 1
+    return out
+
+
+def _cli_takes_value(action) -> bool:
+    import argparse as _ap
+    return not isinstance(action, (_ap._StoreTrueAction, _ap._StoreFalseAction,
+                                   _ap._CountAction, _ap._HelpAction, _ap._VersionAction))
+
+
+def _cli_check_argv(argv: list[str], spec: dict) -> str | None:
+    """None if valid, else the offending token."""
+    rest = argv[1:]
+    flags = spec["flags"]
+    if rest and not rest[0].startswith("-"):
+        if rest[0] not in spec["cmds"]:
+            return rest[0]
+        flags = spec["cmds"][rest[0]]
+        rest = rest[1:]
+    elif not rest:
+        return None
+    skip_next = False
+    for tok in rest:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == "--":
+            break
+        if not tok.startswith("-") or tok == "-":
+            continue  # positionals/values: not verifiable, never flagged
+        if tok in flags:
+            if _cli_takes_value(flags[tok]):
+                skip_next = True
+            continue
+        if tok.startswith("--"):
+            matches = [o for o in flags if o.startswith(tok)]
+            if len(matches) == 1:
+                continue  # unambiguous argparse prefix
+            return tok
+        return tok
+    return None
+
+
+def check_stale_cli_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """Documented `grounded` invocations with unknown subcommands/flags.
+
+    Markdown only. Strong contexts (fenced console blocks, `$` lines,
+    backticked spans starting with `grounded`) get full checking
+    including unknown subcommands. Weak contexts (prose mentions) are
+    checked only when the word after `grounded` is already a known
+    subcommand or flag: "the grounded skill teaches" is prose, not an
+    invocation, and never reports. Synopsis meta-syntax (`[--flag]`,
+    `UPPER` placeholders) is positional and never flagged.
+    """
+    if facts.language != "markdown":
+        return []
+    findings: list[Finding] = []
+    spec = _cli_spec()
+    in_fence = False
+    fence_tag = ""
+    for lineno, text in enumerate(facts.lines, start=1):
+        fm = re.match(r"^(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)\s*$", text.strip())
+        if fm:
+            if in_fence:
+                in_fence = False
+            else:
+                in_fence, fence_tag = True, fm.group(2).lower()
+            continue
+        segments: list[tuple[list[str], bool]] = []
+        for m in re.finditer(r"`([^`\n]+)`", text):
+            span = m.group(1)
+            if "grounded" in span:
+                for argv in _cli_argv_segments(span):
+                    segments.append((argv, span.strip().startswith("grounded")))
+        stripped = text.strip()
+        in_console = in_fence and fence_tag in ("", "console", "bash", "sh", "shell",
+                                                "text", "plaintext", "terminal", "zsh")
+        if stripped.startswith("$") or (in_console and "grounded" in text):
+            body = stripped[1:].strip() if stripped.startswith("$") else stripped
+            for argv in _cli_argv_segments(body):
+                if argv and argv[0] == "grounded":
+                    segments.append((argv, body.startswith("grounded")))
+        for argv, strong in segments:
+            if len(argv) < 2:
+                continue
+            if argv[1].endswith(":"):
+                continue  # program output (`grounded fix: ...`), not an invocation
+            if not strong and not (argv[1] in spec["cmds"] or argv[1].startswith("-")):
+                continue  # prose mention, not an invocation
+            bad = _cli_check_argv(argv, spec)
+            if bad is None:
+                continue
+            findings.append(Finding(
+                path=facts.path, line=lineno, end_line=lineno,
+                checker="stale-cli-ref", severity="lie",
+                title=f"Documented invocation uses unknown `{bad}`",
+                claim=" ".join(argv[:4]),
+                evidence=f"`{bad}` matches no subcommand or flag in this version of grounded.",
+                fix="Fix the invocation or remove the example.",
+                confidence=0.85,
+            ))
+    return _dedupe(findings)
 
 
 CHECKERS = {
@@ -1877,6 +2053,7 @@ CHECKERS = {
     "stale-entrypoint": check_stale_entrypoint,
     "stale-mock-ref": check_stale_mock_ref,
     "phantom-package": check_phantom_package,
+    "stale-cli-ref": check_stale_cli_ref,
 }
 
 CHECKER_DESCRIPTIONS = {
@@ -1891,13 +2068,14 @@ CHECKER_DESCRIPTIONS = {
     "stale-entrypoint": "EXPERIMENTAL, opt-in only: pyproject scripts or package.json bin/main pointing at nothing in the repo.",
     "stale-mock-ref": "EXPERIMENTAL, opt-in only: @patch/patch.object strings naming symbols absent from the in-repo module.",
     "phantom-package": "EXPERIMENTAL, opt-in only: imports declared in no manifest (pyproject, requirements, package.json).",
+    "stale-cli-ref": "EXPERIMENTAL, opt-in only: documented `grounded` invocations with unknown subcommands or flags.",
 }
 
 # Opt-in checkers are registered (so --enable/explain work) but excluded
 # from every default set. A checker graduates by measured precision, not
 # by age: see docs/rules.md.
 OPT_IN_CHECKERS = frozenset({"stale-doc-ref", "stale-contract-ref", "ghost-export", "stale-entrypoint",
-                             "stale-mock-ref", "phantom-package"})
+                             "stale-mock-ref", "phantom-package", "stale-cli-ref"})
 DEFAULT_ENABLED = frozenset(CHECKERS) - OPT_IN_CHECKERS
 
 # Intentionally unimplemented: docstring contracts and commented-out code
