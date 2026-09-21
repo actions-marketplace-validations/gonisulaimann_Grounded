@@ -1,0 +1,51 @@
+# CLI reference
+
+Generated from `grounded --help`; if this page and `--help` disagree,
+`--help` wins.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `scan [PATH]` | Scan a directory (or one file). Never writes. |
+| `baseline [PATH]` | Record findings to `.grounded-baseline.json`. |
+| `fix [PATH]` | Rewrite unambiguous findings. Prints without writing under `--dry-run`. |
+| `impact SYMBOL [PATH]` | Definers, importers, and comment claims for a symbol. Never writes. |
+| `list [PATH]` | List files that would be scanned. Never writes. |
+| `explain [CHECKER]` | Describe a checker (or where a removed one went). Never writes. |
+| `init` | Write a starter `grounded.toml`. Refuses to overwrite without `--force`. |
+| `init-agent` | Write Claude/Cursor/Aider configs. Refuses invalid JSON, never merges YAML blindly. |
+| `mcp` | Serve MCP over stdio. Never writes. |
+| `lsp` | Serve LSP 3.17 over stdio. Never writes. |
+
+Only `fix` (without `--dry-run`) writes, and only the lines of
+unambiguous findings. Everything else is read-only by construction.
+
+## `scan` flags
+
+| Flag | Effect |
+|---|---|
+| `--format terminal\|json\|sarif\|html` | Output shape (default `terminal`). |
+| `--output FILE`, `-o` | Write the report to a file instead of stdout. |
+| `--fail-on lie\|drift\|smell\|never` | Minimum severity that exits `1` (default from config, else `lie`). |
+| `--enable ID,...` / `--disable ID,...` | Run a subset of checkers. Unknown ids are dropped; an emptied set falls back to all. |
+| `--baseline FILE` | Report only findings not recorded in FILE. `--show-baselined` also lists suppressed findings on stderr. |
+| `--changed [BASE]` | Report only findings on lines changed vs BASE (default `HEAD`). Full tree is still scanned; reporting is filtered. Errors outside git (exit `2`). |
+| `--cache [FILE]` | Reuse per-file results keyed by mtime and size (default `.grounded-cache.json`). Corrupt or mismatched caches fall back silently. |
+| `--jobs N` | Parallel workers. Auto by file count (serial below 512 files); output identical either way. |
+| `--config FILE` | Explicit config file instead of discovery. |
+| `--no-color` | Disable ANSI colors. |
+| `--quiet`, `-q` | Findings count only. |
+
+## Exit codes
+
+`0` clean (or below the fail gate), `1` a finding meets the gate,
+`2` usage or environment error (bad path, unreadable baseline/config,
+unresolvable git base). A typo can never mask drift with a green build.
+
+## Environment
+
+No environment variables are read. No network calls are made. The
+working directory matters only as the default scan root and, for
+`init`/`init-agent`, the write target (current directory, never the
+scan path).

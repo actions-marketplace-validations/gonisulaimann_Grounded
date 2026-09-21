@@ -42,8 +42,13 @@ markdown_extensions:
 
 nav:
   - Overview: index.md
+  - Quickstart: quickstart.md
   - Installation: installation.md
   - Rules & Checkers: rules.md
+  - Configuration: configuration.md
+  - CLI reference: cli-reference.md
   - Agent & Editor Setup: agents.md
   - Agent Skill: agent-skill.md
+  - Architecture: internals.md
   - Benchmarks: benchmarks.md
+  - FAQ: faq.md
