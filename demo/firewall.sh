@@ -7,6 +7,8 @@
 #   ./demo/firewall.sh                  # uses `grounded` on PATH
 #   GROUNDED="python3 -m grounded.cli" ./demo/firewall.sh  # dev checkout
 set -u
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 GROUNDED="${GROUNDED:-grounded}"
 START=$(date +%s)
 D=$(mktemp -d)
