@@ -19,6 +19,27 @@ CACHE_VERSION = 1
 _SUPPRESS = re.compile(r"grounded-disable\s*:\s*([A-Za-z0-9_][A-Za-z0-9_\-, ]*)")
 
 
+def warn_unknown_suppressions(facts_list: list[FileFacts]) -> list[tuple[str, int, list[str]]]:
+    """Suppression markers naming unknown checker ids.
+
+    A typo'd id (`stale-symobl`) silently matches nothing, so the user
+    believes a finding is suppressed while it still fires. Report
+    (path, line, [unknown ids]); callers print to stderr without ever
+    affecting the exit code.
+    """
+    out: list[tuple[str, int, list[str]]] = []
+    for facts in facts_list:
+        for ln, line in enumerate(facts.lines, start=1):
+            m = _SUPPRESS.search(line)
+            if not m:
+                continue
+            unknown = [x.strip() for x in m.group(1).split(",") if x.strip()]
+            unknown = [u for u in unknown if u != "all" and u not in CHECKERS]
+            if unknown:
+                out.append((facts.path, ln, unknown))
+    return out
+
+
 def apply_suppressions(findings: list[Finding], facts_by_path: dict[str, FileFacts]) -> tuple[list[Finding], int]:
     """Honor `# grounded-disable: <id>[, ...]` / `// grounded-disable: ...`.
 

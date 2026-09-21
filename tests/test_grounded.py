@@ -542,6 +542,36 @@ class TestSuppressions(unittest.TestCase):
                 encoding="utf-8")
             self.assertEqual(main(["scan", str(root), "--no-color"]), 0)
 
+    def test_unknown_id_warns_without_failing(self):
+        import contextlib
+        import io
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# Calls `ghost_fn()`.  # grounded-disable: stale-symobl\nX = 1\n",
+                encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = main(["scan", str(root), "--no-color", "--fail-on", "never"])
+            self.assertEqual(rc, 0)
+            self.assertIn("unknown checker id", err.getvalue())
+            self.assertIn("stale-symobl", err.getvalue())
+
+    def test_known_id_no_warning(self):
+        import contextlib
+        import io
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# Calls `ghost_fn()`.  # grounded-disable: stale-symbol-ref\nX = 1\n",
+                encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                main(["scan", str(root), "--no-color"])
+            self.assertNotIn("unknown checker id", err.getvalue())
+
 
 class TestGo(unittest.TestCase):
     def setUp(self):

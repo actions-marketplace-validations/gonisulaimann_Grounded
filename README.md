@@ -86,7 +86,7 @@ grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
               [--config grounded.toml] [--no-color] [--quiet]
               [--jobs N]
 grounded baseline [PATH] [--output FILE]  # record findings for delta gating
-grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale file paths
+grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale refs
 grounded list [PATH]       # show files that would be scanned
 grounded explain CHECKER   # describe a checker (including removed ones)
 grounded init [--force]    # write a starter grounded.toml
@@ -225,7 +225,7 @@ Gate pull requests with the first-party Action (inline PR annotations
 included via problem matchers):
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.10.0
+- uses: gonisulaimann/Grounded@v0.11.1
   with:
     changed-base: origin/main   # new findings on edited lines only
     fail-on: lie
@@ -234,7 +234,7 @@ included via problem matchers):
 Or with a baseline file for whole-tree delta gating:
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.10.0
+- uses: gonisulaimann/Grounded@v0.11.1
   with:
     baseline: .grounded-baseline.json
 ```
@@ -244,7 +244,7 @@ As a pre-commit hook (runs on uncommitted changes):
 ```yaml
 repos:
   - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.10.0
+    rev: v0.11.1
     hooks:
       - id: grounded
 ```
@@ -378,7 +378,7 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 130 tests, stdlib only, no extras
+python -m unittest discover -s tests   # 132 tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
 ```

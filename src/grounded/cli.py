@@ -19,7 +19,7 @@ from .delta import (
 )
 from .models import SEVERITY_RANK
 from .reporters import format_terminal, to_html, to_json, to_sarif
-from .scanner import apply_suppressions, collect_files, scan_root
+from .scanner import apply_suppressions, collect_files, scan_root, warn_unknown_suppressions
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--enable", default=None, help="comma-separated checker ids to run exclusively")
     b.add_argument("--disable", default=None, help="comma-separated checker ids to skip")
 
-    fx = sub.add_parser("fix", help="rewrite unambiguous stale file references (preview with --dry-run)")
+    fx = sub.add_parser("fix", help="rewrite unambiguous stale references (preview with --dry-run)")
     fx.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
     fx.add_argument("--dry-run", action="store_true", help="print fixes without writing")
     fx.add_argument("--config", default=None, help="explicit config file (grounded.toml)")
@@ -127,6 +127,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
         cache_path = root / cache_path
     findings, facts, index = scan_root(root, config, jobs=args.jobs, cache_path=cache_path)
     n_files = len(facts)
+    for wpath, wline, wids in warn_unknown_suppressions(facts):
+        print(f"grounded: warning: unknown checker id(s) in suppression at "
+              f"{wpath}:{wline}: {', '.join(wids)} (known: {', '.join(sorted(CHECKERS))})",
+              file=sys.stderr)
     if only is not None:
         findings = [f for f in findings if f.path == only]
 

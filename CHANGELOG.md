@@ -3,6 +3,15 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.11.1] - 2026-09-21
+
+### Added
+- Unknown suppression ids warn on stderr (`grounded-disable: stale-symobl`
+  no longer fails silently); the gate exit code is unchanged.
+
+### Changed
+- `fix` help text covers symbol renames, not just file paths.
+
 ## [0.11.0] - 2026-09-21
 
 ### Added
