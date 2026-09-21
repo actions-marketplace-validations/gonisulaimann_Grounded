@@ -7,6 +7,14 @@ from datetime import datetime, timezone
 
 from .models import Finding
 
+
+def _tool_version() -> str:
+    try:
+        from . import __version__
+        return str(__version__)
+    except ImportError:  # pragma: no cover - never happens in practice
+        return "0.0.0"
+
 SEV_COLOR = {"lie": "\033[31m", "drift": "\033[33m", "smell": "\033[36m"}
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -73,7 +81,7 @@ def to_sarif(findings: list[Finding], root: str = "") -> str:
         "runs": [{
             "tool": {"driver": {
                 "name": "grounded",
-                "version": "0.12.1",
+                "version": _tool_version(),
                 "informationUri": "https://github.com/gonisulaimann/Grounded",
                 "rules": list(rules_seen.values()),
             }},

@@ -2,7 +2,7 @@
   "name": "grounded",
   "displayName": "Grounded",
   "description": "Reference and import integrity diagnostics for code comments (stale symbols, imports, file paths) via the grounded LSP server.",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "publisher": "gonisulaimann",
   "license": "MIT",
   "repository": {

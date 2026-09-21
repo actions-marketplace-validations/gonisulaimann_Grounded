@@ -3,7 +3,7 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.13.0] - 2026-09-21
 
 ### Added
 - `grounded init-agent --skill` installs the agent skill to
@@ -17,27 +17,29 @@ All notable changes to `grounded` are documented here. Format follows
   calling symbols defined nowhere in the repo. Excluded from every
   default set; run with `--enable stale-doc-ref`. Markdown files are
   collected only when it runs, so default scans are unchanged.
-- VS Code / Cursor extension scaffold (`editors/vscode/`): thin LSP
-  client with explicit server resolution (PATH, `serverPath`, or
-  consent-gated uvx). Not yet published; install from VSIX.
+- VS Code / Cursor extension (`editors/vscode/`): thin LSP client with
+  explicit server resolution (PATH, `serverPath`, or consent-gated
+  uvx). Published on Open VSX; VS Code Marketplace pending.
 - `stale-contract-ref` (experimental, opt-in): deprecation targets,
   lock-holder claims, and env-var defaults in comments that contradict
   the repo. Narrow frames only; bare prose never reports.
 - `ghost-export` (experimental, opt-in): public symbols with no
-  importers, no in-file use, and no API marking. Dogfooding found one
-  real dead helper (`path_to_uri`).
-- Index records original names alongside import aliases (`import x as
-  y` counts as a dependency on `x`).
-- MCP `check_path` and `blast_radius` honor the `grounded.toml` in the
-  scanned root (previously bare defaults: agents saw different results
-  than the CLI).
-- Removed dead helper `path_to_uri` (found by `ghost-export`
-  dogfooding).
+  importers, no in-file use, and no API marking.
 - Precision corpus (`corpus/`): planted-staleness fixtures with exact
   expected findings, enforced in CI. 10 cases, all checkers at 1.00
   precision and recall on the corpus.
 - Attribute-call tracking: `from pkg import mod` + `mod.name()` counts
   as an importer (ghost-export suppression, `blast_radius` recall).
+
+### Fixed
+- Index records original names alongside import aliases (`import x as
+  y` counts as a dependency on `x`).
+- MCP `check_path` and `blast_radius` honor the `grounded.toml` in the
+  scanned root (previously bare defaults: agents saw different results
+  than the CLI).
+
+### Removed
+- Dead helper `path_to_uri` (found by `ghost-export` dogfooding).
 
 ## [0.12.1] - 2026-09-21
 
