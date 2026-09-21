@@ -26,7 +26,8 @@ _JS_METHOD_HINT = re.compile(r"^\s*(?:async\s+|static\s+|get\s+|set\s+)?([A-Za-z
 class RepoIndex:
     def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None,
                  alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] | None = None,
-                 decl_paths: set[str] | None = None):
+                 decl_paths: set[str] | None = None,
+                 tsconfig_excluded: set[str] | None = None):
         self.root = root
         self.files = files  # absolute paths
         self.py_symbols: set[str] = set()
@@ -74,6 +75,10 @@ class RepoIndex:
         # Presence-only: lets import checks stay silent without treating
         # declarations as indexed implementation surface.
         self.decl_paths: set[str] = set(decl_paths or [])
+        # Repo-relative prefixes excluded by some tsconfig: the repo itself
+        # declares these files outside its typecheck contract. Import checks
+        # stay silent about files under them (never "missing").
+        self.tsconfig_excluded: set[str] = set(tsconfig_excluded or [])
         self.basenames: set[str] = set()
         self.dirs: set[str] = set()
         # Absolute-import source roots: top segment -> path prefix, for
@@ -463,9 +468,21 @@ class RepoIndex:
                 if not part:
                     continue
                 bits = [b.strip() for b in part.split(" as ")]
+                # TS type modifier inside the braces (`export { type X }`,
+                # `export { type X as Y }`): strip it, or the alias keeps a
+                # "type " prefix, fails the identifier check, and the
+                # re-exported type vanishes from the module's export
+                # surface (seen: OmniRoute barrel re-exporting
+                # ProviderMessageTranslator -> 13 bogus stale-imports).
+                local = bits[0].split(":")[0].strip()
+                if local.startswith("type "):
+                    local = local[len("type "):].strip()
                 alias = bits[-1].split(":")[0].strip()
+                if alias.startswith("type "):
+                    alias = alias[len("type "):].strip()
                 if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", alias or ""):
-                    self._record(self.js_symbols, bits[0].split(":")[0].strip() or alias, rel)
+                    if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", local or ""):
+                        self._record(self.js_symbols, local, rel)
                     self.file_exports.setdefault(rel, set()).add(alias)
         for m in re.finditer(r"export\s*\*\s*from\s*['\"]([^'\"]+)['\"]", text):
             spec = m.group(1)

@@ -843,6 +843,63 @@ class TestStaleImport(unittest.TestCase):
 
 
 class TestStaleImportJs(unittest.TestCase):
+    def test_scan_ignored_target_dir_silent_via_alias(self):
+        # Same verdict through the alias arm: a tsconfig/manual alias that
+        # maps into a scan-ignored dir (seen: OmniRoute
+        # `@omniroute/open-sse/*` reaching tracked vendor code) reports
+        # drift for files that exist on disk. Unknowable == silent.
+        out = self.imps({
+            "tsconfig.json": '{"compilerOptions": {"paths": {"@omniroute/open-sse/*": ["./open-sse/*"]}}}',
+            "open-sse/vendor/codex/browser-login.ts": "export function inspect() {}\n",
+            "src/use.ts": "import { inspect } from '@omniroute/open-sse/vendor/codex/browser-login.ts';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_reexported_type_visible(self):
+        # `export { type X }` barrel re-exports must keep the type on the
+        # module's export surface (seen: OmniRoute providerPageHelpers
+        # re-exporting ProviderMessageTranslator -> 13 bogus stale-imports).
+        out = self.imps({
+            "src/providerCredentialText.ts":
+                "export type ProviderMessageTranslator = (s: string) => string;\n"
+                "export function providerText(): void {}\n",
+            "src/providerPageHelpers.ts":
+                "import { type ProviderMessageTranslator, providerText } from './providerCredentialText';\n"
+                "export {\n"
+                "  type ProviderMessageTranslator,\n"
+                "  providerText,\n"
+                "};\n",
+            "src/page.tsx":
+                "import type { ProviderMessageTranslator } from './providerPageHelpers';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_reexported_type_missing_still_fires(self):
+        # Positive control: the barrel does not re-export the imported name.
+        out = self.imps({
+            "src/t.ts": "export type T = string;\n",
+            "src/barrel.ts": "export { type T } from './t';\n",
+            "src/page.tsx": "import type { NotThere } from './barrel';\n",
+        })
+        self.assertTrue(any("NotThere" in f.title for f in out))
+
+    def test_trailing_disable_silences_dynamic_import(self):
+        # Intentional dynamic resolutions use the standard trailing
+        # marker (explicit checker id, typo-warned): no second mechanism.
+        files = {
+            "src/real.ts": "export const x = 1;\n",
+            "src/dyn.ts":
+                "import { x } from '../gen/missing';  // grounded-disable: stale-import\n",
+        }
+        self.assertEqual(self.imps(files), [])
+        # Positive control: without the marker the finding fires.
+        files2 = {
+            "src/real.ts": "export const x = 1;\n",
+            "src/dyn.ts": "import { x } from '../gen/missing';\n",
+        }
+        out = self.imps(files2)
+        self.assertTrue(len(out) == 1)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -1049,6 +1106,73 @@ class TestJsAliases(unittest.TestCase):
             "package.json": '{"name": "root"}',
             "packages/a/package.json": '{"name": "a-pkg"}',
             "packages/b/index.ts": "import { thing } from 'a-pkg';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_ts_style_js_extension_resolves_ts(self):
+        # TS module resolution: `./shared.js` resolves shared.ts when no
+        # JS file exists (universal in TS suites compiled to ESM — seen:
+        # svelte tests, OmniRoute tests). The resolved module is checked
+        # normally: a missing name is still a lie.
+        out = self.imps({
+            "lib/shared.ts": "export function suite() {}\n",
+            "lib/app.ts": "import { suite } from './shared.js';\n",
+        })
+        self.assertEqual(out, [])
+        bad = self.imps({
+            "lib/shared.ts": "export function other() {}\n",
+            "lib/app.ts": "import { gone } from './shared.js';\n",
+        })
+        self.assertTrue(any("gone" in f.title for f in bad))
+
+    def test_ambient_dts_module_silent(self):
+        # Extensionless specifier resolving to an ambient declaration
+        # (`./types` -> types.d.ts, seen: svelte internal client): decl
+        # files are existence-tracked, never parsed, so the check stays
+        # silent instead of claiming the module does not exist.
+        out = self.imps({
+            "lib/types.d.ts": "export type Effect = { id: string };\n",
+            "lib/app.test.ts": "import type { Effect } from './types';\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_tsconfig_excluded_claimer_silent(self):
+        # Files the repo excludes from its own typecheck (tsconfig
+        # `exclude`) are outside the import contract: codegen templates
+        # whose relative imports resolve only after transplantation
+        # (seen: svelte's scripts/process-messages/templates/).
+        out = self.imps({
+            "tsconfig.json": json.dumps({"compilerOptions": {},
+                                         "exclude": ["./templates/"]}),
+            "templates/compile-errors.js":
+                "import { C } from './utils/compile_diagnostic.js';\n",
+            "src/utils/compile_diagnostic.ts": "export class C {}\n",
+        })
+        self.assertEqual(out, [])
+
+    def test_scan_ignored_target_dir_silent(self):
+        # A relative import into a directory the scan deliberately ignores
+        # (vendor, build, dist, ...) cannot be judged: the file may be a
+        # real tracked file the snapshot skipped (seen: OmniRoute's
+        # open-sse/vendor/ and scripts/build/ imports reported as missing).
+        out = self.imps({
+            "scripts/build/assemble.mjs": "export const x = 1;\n",
+            "bin/tool.mjs": "import { x } from '../scripts/build/assemble.mjs';\n",
+            "open-sse/vendor/dep.ts": "export const y = 2;\n",
+            "src/use.ts": "import { y } from '../open-sse/vendor/dep.ts';\n",
+        })
+        self.assertEqual(out, [])
+
+
+    def test_require_default_in_js_file_silent(self):
+        # require() from a .js importer may run as CJS, where the call
+        # binds any module.exports shape (seen: electron/loginManager.js
+        # requiring a TS service with only named exports). Only .mjs
+        # importers are forced-ESM; .js stays silent.
+        out = self.imps({
+            "lib/service.ts": "export const CONFIGS = {};\n",
+            "electron/loginManager.js":
+                "const mod = require('../lib/service.ts');\n",
         })
         self.assertEqual(out, [])
 

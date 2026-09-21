@@ -23,6 +23,37 @@ All notable changes to `grounded` are documented here. Format follows
   `stale-import` findings (1,235 false drift on `svelte`/`svelte/*`
   self-imports) to 18, all genuine. Aliases mapped onto the scanned tree
   are unchanged and stay fully checked (regression-tested both ways).
+- `stale-import` (JS/TS): TypeScript-style `.js`-extension relative
+  imports now resolve the same-named `.ts`/`.tsx`/`.mts`/`.cts` sibling
+  (default `tsc` behavior); the resolved module is checked normally.
+- `stale-import` (JS/TS): extensionless specifiers resolving to an
+  ambient `.d.ts` module are silent — declaration files are
+  existence-tracked (`RepoIndex.decl_paths`), never parsed, so the
+  checker no longer claims an ambient type module does not exist.
+- `stale-import` (JS/TS): relative imports into directories the scan
+  deliberately ignores (`vendor`, `build`, `dist`, ...) no longer report
+  "does not exist" — the target may be a real file the snapshot skipped
+  (seen: OmniRoute's tracked `open-sse/vendor/` and `scripts/build/`).
+- `stale-import` (JS/TS): `require()` default-shape imports from `.js`
+  importers stay silent — a `.js` file may run as CJS, where the call
+  binds any `module.exports` shape. Forced-ESM (`.mjs`) importers are
+  still checked.
+- `stale-import` (JS/TS): tsconfig/manual alias targets that land in a
+  scan-ignored directory (vendor, build, dist, ...) are never findings —
+  the alias arm now shares the relative arm's verdict (seen: OmniRoute
+  `@omniroute/open-sse/*` reaching tracked `open-sse/vendor/` code).
+- `stale-import` (JS/TS): TS `type` modifiers inside re-export braces
+  (`export { type X }` / `export { type X as Y }`) are stripped before
+  recording, so re-exported types stay on the module's export surface
+  (seen: OmniRoute barrel re-exporting `ProviderMessageTranslator` —
+  13 bogus stale-imports on its importers).
+- `stale-import` (JS/TS): files under a tsconfig `exclude` prefix are
+  outside the repo's own typecheck contract and never report missing
+  modules — codegen templates whose relative imports resolve only after
+  transplantation (seen: svelte's excluded
+  `scripts/process-messages/templates/`). After these five suppressions
+  the svelte fixture reports zero `stale-import` findings, with the
+  genuine relative-miss cases now resolved correctly instead.
 
 ### Added
 - Rename mapping across all claim surfaces: `impact` / MCP

@@ -815,6 +815,25 @@ def _js_candidates_raw(base: str) -> list[str]:
     return [(c[2:] if c.startswith("./") else c) for c in cands]
 
 
+def _file_tsconfig_excluded(index: RepoIndex, claimer: str) -> bool:
+    """True when the claimer sits under a tsconfig `exclude` prefix."""
+    rel = claimer.replace("\\", "/")
+    return any(rel == p or rel.startswith(p + "/") for p in index.tsconfig_excluded)
+
+
+def _base_in_ignored_dir(base: str) -> bool:
+    """True when a candidate module path sits under a directory suffix the
+    scan deliberately ignores (vendor, build, dist, coverage, ...). Shared
+    by the relative and alias resolution arms: such files are never
+    indexed, so their existence cannot be judged and "does not exist" is
+    never positive evidence.
+    """
+    for part in base.split("/")[:-1]:
+        if part in IGNORED_DIR_NAMES:
+            return True
+    return False
+
+
 def _js_target_in_ignored_dir(index: RepoIndex, claimer: str, spec: str) -> bool:
     """True when a (relative) specifier's candidate targets sit under a
     directory suffix the scan deliberately ignores (vendor, build, dist,
@@ -822,13 +841,8 @@ def _js_target_in_ignored_dir(index: RepoIndex, claimer: str, spec: str) -> bool
     snapshot: they may or may not be real files, so "does not exist" is
     never positive evidence.
     """
-    base = posixpath.normpath(
-        posixpath.join(posixpath.dirname(claimer), spec))
-    stem = base.split("/")[:-1]
-    for i in range(len(stem)):
-        if stem[i] in IGNORED_DIR_NAMES:
-            return True
-    return False
+    return _base_in_ignored_dir(posixpath.normpath(
+        posixpath.join(posixpath.dirname(claimer), spec)))
 
 
 def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] | None:
@@ -858,6 +872,12 @@ def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] |
                     continue  # types-only or dep mappings: outside the snapshot
                 external_only = False
                 base = posixpath.normpath(posixpath.join(zone_dir, repl, rest)) if zone_dir else posixpath.normpath(repl + rest)
+                if _base_in_ignored_dir(base):
+                    # Alias mapped into a scan-ignored dir (seen: OmniRoute
+                    # `@omniroute/open-sse/*` reaching tracked vendor code):
+                    # existence is unknowable from the snapshot — never a
+                    # finding, same verdict as the relative arm.
+                    return None
                 found.extend(_js_candidates(index, base))
             if found:
                 return found
@@ -948,6 +968,13 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                     posixpath.join(posixpath.dirname(facts.path), spec))
                 if base + ".d.ts" in index.decl_paths or base + "/index.d.ts" in index.decl_paths:
                     continue
+            # The repo excludes the claimer from its own typecheck
+            # (tsconfig `exclude`): templates/scaffolds whose relative
+            # imports resolve only after codegen transplantation (seen:
+            # svelte's excluded scripts/process-messages/templates/).
+            # Not a checkable claim — the file is outside the contract.
+            if _file_tsconfig_excluded(index, facts.path):
+                continue
             # Relative misses are lies (relative paths are always local).
             # Alias misses are drift: the target may be generated at build
             # time (registry outputs) or live outside the scanned tree.

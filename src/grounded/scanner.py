@@ -90,14 +90,21 @@ def collect_tsconfigs(root: Path, config: Config) -> list[Path]:
 
 
 def build_alias_zones(root: Path, tsconfigs: list[Path],
-                      manual: dict[str, list[str]]) -> list[tuple[str, list[tuple[str, list[str]]]]]:
-    """[(zone dir rel, [(alias prefix, [replacement prefixes])])].
+                      manual: dict[str, list[str]]
+                      ) -> tuple[list[tuple[str, list[tuple[str, list[str]]]]], set[str]]:
+    """([(zone dir rel, [(alias prefix, [replacement prefixes])])],
+    tsconfig-excluded rel path prefixes).
 
     tsconfig zones apply to their subtree (longest dir first at lookup);
-    manual config aliases apply repo-wide as fallback.
+    manual config aliases apply repo-wide as fallback. Files a tsconfig
+    `exclude`s are outside that project's own typecheck contract: import
+    checks stay silent about them (a repo may keep templates/scaffolds
+    there whose imports only resolve after codegen transplantation —
+    seen: svelte's excluded scripts/process-messages/templates/).
     """
-    from .tsconfig import alias_map, load_tsconfig
+    from .tsconfig import alias_map, excluded_rel, load_tsconfig
     zones: list[tuple[str, list[tuple[str, list[str]]]]] = []
+    excluded: set[str] = set()
     for cfg in tsconfigs:
         try:
             rel = cfg.relative_to(root).as_posix()
@@ -107,10 +114,12 @@ def build_alias_zones(root: Path, tsconfigs: list[Path],
         mapping = alias_map(load_tsconfig(cfg))
         if mapping:
             zones.append((zone_dir, mapping))
+        for prefix in excluded_rel(zone_dir, cfg):
+            excluded.add(prefix)
     zones.sort(key=lambda z: -len(z[0]))
     if manual:
         zones.append(("", sorted(manual.items(), key=lambda kv: -len(kv[0]))))
-    return zones
+    return zones, excluded
 
 
 def collect_files(root: Path, config: Config, include_claim_surfaces: bool = False,
@@ -319,10 +328,11 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
             continue
         rels[str(f)] = rel
         stats[str(f)] = (st.st_mtime, st.st_size)
+    alias_zones, tsconfig_excluded = build_alias_zones(
+        resolved, collect_tsconfigs(resolved, config), config.path_aliases)
     index = RepoIndex(resolved, [f for f in files if str(f) in texts], texts,
-                      build_alias_zones(resolved, collect_tsconfigs(resolved, config),
-                                        config.path_aliases),
-                      decl_paths=decls)
+                      alias_zones,
+                      decl_paths=decls, tsconfig_excluded=tsconfig_excluded)
     facts_list: list[FileFacts] = []
     findings: list[Finding] = []
     # fresh[rel] holds JSON-ready finding dicts for the cache write-back.
