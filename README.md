@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg)](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml)
 [![PyPI version](https://badge.fury.io/py/grounded-lint.svg)](https://pypi.org/project/grounded-lint/)
+[![Documentation Status](https://readthedocs.org/projects/grounded/badge/?version=latest)](https://grounded.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
  <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi" /></a>
 
@@ -22,10 +23,18 @@ Zero dependencies. No network access. Works on Python, JavaScript/TypeScript, Go
 
 ## Install
 
-Requires Python 3.10 or later.
+### macOS & Linux (Homebrew)
+
+```console
+brew install gonisulaimann/tap/grounded
+```
+
+### Python Package (pip / uv)
 
 ```console
 pip install grounded-lint
+# or with uv
+uv tool install grounded-lint
 ```
 
 From source:
