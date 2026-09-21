@@ -93,6 +93,20 @@ far has surfaced and fixed a precision bug before release.
 
 ## Install
 
+### 1-Line Quick Install (Zero Dependencies)
+
+No Python or package manager required. Automatically installs the standalone binary (or uses your existing `uv`/`pip`/`brew`):
+
+**macOS & Linux**:
+```console
+curl -fsSL https://raw.githubusercontent.com/gonisulaimann/Grounded/main/install.sh | sh
+```
+
+**Windows (PowerShell)**:
+```powershell
+irm https://raw.githubusercontent.com/gonisulaimann/Grounded/main/install.ps1 | iex
+```
+
 ### macOS & Linux (Homebrew)
 
 ```console

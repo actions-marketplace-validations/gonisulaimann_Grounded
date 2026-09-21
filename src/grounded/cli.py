@@ -349,6 +349,10 @@ def _skill_source() -> Path | None:
     src = Path(__file__).resolve().parent / "skill"
     if (src / "SKILL.md").exists():
         return src
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        bundle = Path(sys._MEIPASS) / "grounded" / "skill"
+        if (bundle / "SKILL.md").exists():
+            return bundle
     return None
 
 
