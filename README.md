@@ -85,6 +85,12 @@ pip install grounded-lint
 uv tool install grounded-lint
 ```
 
+No Python management needed (measured 0.05s cached startup):
+
+```console
+uvx --from grounded-lint grounded scan .
+```
+
 From source:
 
 ```console
