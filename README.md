@@ -57,11 +57,13 @@
 </p>
 <p align="center"><em>30 seconds, offline, self-checking — reproduce it: <a href="demo/firewall.sh">demo/firewall.sh</a></em></p>
 
-**Grounded** is a reference integrity firewall that handles everything from a single-line agent edit to a full-scale monorepo scan.
-
-Its scanner catches hallucinated APIs, phantom imports, and stale code references in **0.6 milliseconds** before your test runner even boots. Its agent firewalls plug directly into Cursor, Claude Code, Windsurf, and Aider to stop AI coding agents from quietly committing plausible-looking lies. And its ClaimGraph traces symbol definitions, callers, and documentation references across your entire repository to calculate blast radius before you refactor — all across Python, JavaScript/TypeScript, Go, and C with zero dependencies. One tool, zero compromises.
-
-Blazing fast verification with zero false positives. Built for AI agents, software engineers, and modern engineering teams, there's something for everyone.
+**Grounded** is a reference integrity firewall: it finds comments, doc
+examples, imports, and config strings that contradict the repository
+they live in. A rule fires only on mechanical contradiction — a name
+that resolves nowhere, a path that does not exist, a default the code
+disagrees with — so a clean scan means something and a finding means
+something. It runs on Python, JavaScript/TypeScript, Go, and C with
+zero dependencies, offline, deterministically.
 
 ```console
 $ grounded scan ./src
@@ -73,6 +75,21 @@ LIE src/app.py:9 [stale-symbol-ref] Comment references `ghost_service` which is 
 ```
 
 Zero dependencies. No network access. Works on Python, JavaScript/TypeScript, Go, and C.
+
+## Proven on real code
+
+Measured 2026-09-21 (harness: `bench/run.py`; full tables in
+[docs](https://grounded.readthedocs.io/en/latest/benchmarks/)):
+
+| Tree | Files | Scan | Result (all classified) |
+|---|---|---|---|
+| django | 2,977 | 16.7 s | 1 true lie (stale test cross-reference) + fixture noise |
+| cpython | 3,078 | 47.2 s | true moved-file references + fixture noise |
+| grpc-go | 1,068 | 4.4 s | true missing implementation (`NewContextWithHandshakeInfo`) |
+| express | 141 | 0.6 s | clean (was 101 false alarms before the CJS-interop fix) |
+
+Benchmarking on real repos is part of development here: every round so
+far has surfaced and fixed a precision bug before release.
 
 ## Install
 
@@ -108,12 +125,11 @@ pip install -e .
 
 ```console
 grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
-              [--fail-on lie|drift|smell|never]
-              [--enable CHECKER,...] [--disable CHECKER,...]
-              [--baseline FILE] [--show-baselined]
-              [--changed [BASE]] [--cache [FILE]]
-              [--config grounded.toml] [--no-color] [--quiet]
-              [--jobs N]
+               [--fail-on lie|drift|smell|never]
+               [--enable CHECKER,...] [--disable CHECKER,...]
+               [--baseline FILE] [--show-baselined]
+               [--changed [BASE]] [--cache [FILE]] [--jobs N]
+               [--config FILE] [--no-color] [--quiet]
 grounded baseline [PATH] [--output FILE]  # record findings for delta gating
 grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale refs
 grounded impact SYMBOL [PATH] [--format terminal|json]
@@ -187,9 +203,10 @@ Gate pull requests on changed lines only:
 ```console
 grounded scan . --changed                # uncommitted work vs HEAD
 grounded scan . --changed origin/main    # branch vs base (CI)
-```
 
-Untracked files are fully reported. Outside a git repo, or with an
+Untracked files are fully reported. Findings off the diff still report
+when their claim names a diff-touched symbol (rename fallout on
+untouched lines). Outside a git repo, or with an
 unresolvable base, `--changed` exits `2` with the git error instead of
 silently scanning everything.
 
@@ -213,6 +230,18 @@ Corrupt or mismatched caches fall back to a full scan silently.
 | `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, and workaround markers (`HACK`, `XXX`, `workaround`) with no ticket or expiry condition. |
+
+Six more checkers ship **opt-in** (`--enable <id>`); they graduate to
+default-on by measured precision ([tracked here](https://github.com/gonisulaimann/Grounded/tree/main/corpus)):
+
+| ID | Severity | What it reports |
+|---|---|---|
+| `stale-doc-ref` | lie | fenced doc example calling a symbol defined nowhere |
+| `stale-contract-ref` | lie / drift | deprecation target, lock claim, or env default contradicting the repo |
+| `ghost-export` | smell | public symbol with no importers, no use, no API marking |
+| `stale-entrypoint` | lie | `pyproject` scripts / `package.json` bin+main pointing at nothing |
+| `stale-mock-ref` | lie | `@patch` string naming an absent in-repo symbol |
+| `phantom-package` | drift | import declared in no manifest |
 
 A rule stays silent unless the contradiction is mechanical. Imported names,
 standard library names, parameters, locals, attributes, docstring field
@@ -356,9 +385,10 @@ so agents can verify references instead of trusting them:
 
 Three tools: `check_path` (scan a path under the server root; paths cannot
 escape it), `explain_checker`, and `blast_radius` (definers, importers,
-and comment claims for a symbol: ask before renaming). Protocol versions `2025-03-26` through
+and comment claims for a symbol: ask before renaming). Protocol versions `2024-11-05` through
 `2025-06-18` are negotiated per the spec; logs go to stderr, stdout
-carries only MCP messages.
+carries only MCP messages. Scan tools honor the `grounded.toml` in the
+scanned root.
 
 ## Editors (LSP)
 
@@ -411,13 +441,18 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
   same-directory candidate.
 - `grounded fix` rewrites stale file paths only on unambiguous
   same-basename matches in comments (never docstrings, never ties).
+- Generated or build-time content (`tsc` declaration dirs, `dist/`
+  outputs) and dynamic namespaces (`globals().update()`) stay silent
+  rather than guessed about.
 
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 171 tests, stdlib only, no extras
+python -m unittest discover -s tests   # 185 tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
+python3 corpus/run.py                  # precision corpus, exact-match
+./demo/firewall.sh                     # 30-second firewall demo, self-checking
 ```
 
 ## Contributing
@@ -428,8 +463,10 @@ Issues and pull requests are welcome. Please include:
 - current output vs expected output,
 - the checker id in the issue title.
 
-New checkers are accepted only with a fixture, tests, and no new runtime
-dependencies (stdlib only is a project rule).
+New checkers are accepted only with a fixture, tests, a corpus case
+(`corpus/cases/`), and no new runtime
+dependencies (stdlib only is a project rule). New trigger classes ship
+opt-in and graduate by measured precision, never by volume.
 
 ## License
 
