@@ -26,8 +26,8 @@ python3 examples/bench/bench.py
 
 ## Empirical Verification Across Open-Source Corpora
 
-Grounded is continuously validated against real-world, large-scale open-source repositories to guarantee zero false positives:
+Grounded is continuously validated against real-world, large-scale open-source repositories. Remaining false positives fall in documented classes (vendored code, kernel idioms, platform APIs, prose verbs); see the Limitations section of the README:
 
 * **Axios (JavaScript/TypeScript)**: 1 valid finding (an intentionally broken internal test fixture). Zero false alarms across the codebase.
-* **Django (Python)**: Tested against star-import chains, relative modules, and PEP 562 dynamic attributes with zero false alarms.
+* **Django (Python)**: Tested against star-import chains, relative modules, and PEP 562 dynamic attributes; only intentionally-broken fixtures report.
 * **Requests (Python)**: Clean reference resolution.
