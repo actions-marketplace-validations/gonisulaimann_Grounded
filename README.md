@@ -22,6 +22,7 @@
     <br/>
     <a href="https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml"><img src="https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
     <a href="https://pypi.org/project/grounded-lint/"><img src="https://img.shields.io/pypi/v/grounded-lint.svg?color=brightgreen&label=pypi%20package" alt="PyPI package"></a>
+    <a href="https://open-vsx.org/extension/gonisulaimann/grounded"><img src="https://img.shields.io/open-vsx/v/gonisulaimann/grounded?color=purple&logo=visualstudiocode" alt="Open VSX Extension"></a>
     <a href="https://github.com/gonisulaimann/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-gonisulaimann%2Ftap-blue.svg?logo=homebrew" alt="Homebrew"></a>
     <a href="https://grounded.readthedocs.io/en/latest/"><img src="https://readthedocs.org/projects/grounded/badge/?version=latest" alt="Documentation Status"></a>
     <a href="docs/agent-skill.md"><img src="https://img.shields.io/badge/Skill-black?style=flat&label=Agent" alt="AI Agent Skill"></a>
@@ -366,7 +367,9 @@ vim.api.nvim_create_autocmd("FileType", {
 ```
 
 Any editor with a generic LSP client (VS Code, Cursor, Zed, Emacs
-eglot) can point at the same command.
+eglot) can point at the same command. On **Cursor**, **Windsurf**, and
+**VSCodium**, you can also install the 1-click [Open VSX Extension](https://open-vsx.org/extension/gonisulaimann/grounded)
+directly from the Extensions tab.
 
 ## Non-goals
 
