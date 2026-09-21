@@ -87,6 +87,9 @@ grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
               [--jobs N]
 grounded baseline [PATH] [--output FILE]  # record findings for delta gating
 grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale refs
+grounded impact SYMBOL [PATH] [--format terminal|json]
+                     # show everything touching a symbol: definers,
+                     # importers, comment claims
 grounded list [PATH]       # show files that would be scanned
 grounded explain CHECKER   # describe a checker (including removed ones)
 grounded init [--force]    # write a starter grounded.toml
@@ -225,7 +228,7 @@ Gate pull requests with the first-party Action (inline PR annotations
 included via problem matchers):
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.11.1
+- uses: gonisulaimann/Grounded@v0.12.0
   with:
     changed-base: origin/main   # new findings on edited lines only
     fail-on: lie
@@ -234,7 +237,7 @@ included via problem matchers):
 Or with a baseline file for whole-tree delta gating:
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.11.1
+- uses: gonisulaimann/Grounded@v0.12.0
   with:
     baseline: .grounded-baseline.json
 ```
@@ -244,7 +247,7 @@ As a pre-commit hook (runs on uncommitted changes):
 ```yaml
 repos:
   - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.11.1
+    rev: v0.12.0
     hooks:
       - id: grounded
 ```
@@ -321,7 +324,8 @@ so agents can verify references instead of trusting them:
 ```
 
 Two tools: `check_path` (scan a path under the server root; paths cannot
-escape it) and `explain_checker`. Protocol versions `2025-03-26` through
+escape it), `explain_checker`, and `blast_radius` (definers, importers,
+and comment claims for a symbol: ask before renaming). Protocol versions `2025-03-26` through
 `2025-06-18` are negotiated per the spec; logs go to stderr, stdout
 carries only MCP messages.
 
@@ -378,7 +382,7 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 132 tests, stdlib only, no extras
+python -m unittest discover -s tests   # 136 tests, stdlib only, no extras
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
 ```

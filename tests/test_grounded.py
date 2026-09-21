@@ -1063,7 +1063,7 @@ class TestMcp(unittest.TestCase):
             self._handshake(server)
             tools = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
             names = {t["name"] for t in tools["result"]["tools"]}
-            self.assertEqual(names, {"check_path", "explain_checker"})
+            self.assertEqual(names, {"check_path", "explain_checker", "blast_radius"})
             resp = server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                                   "params": {"name": "check_path", "arguments": {"path": "."}}})
             payload = json.loads(resp["result"]["content"][0]["text"])
@@ -1122,7 +1122,7 @@ class TestMcp(unittest.TestCase):
             lines = [json.loads(ln) for ln in proc.stdout.splitlines() if ln.strip()]
             self.assertEqual(lines[0]["result"]["serverInfo"]["name"], "grounded")
             self.assertEqual({t["name"] for t in lines[1]["result"]["tools"]},
-                             {"check_path", "explain_checker"})
+                             {"check_path", "explain_checker", "blast_radius"})
             self.assertNotIn("Traceback", proc.stderr)
 
 
@@ -1531,6 +1531,79 @@ class TestTomlCompat(unittest.TestCase):
                 config_mod.tomllib = saved
             self.assertEqual(cfg.fail_on, "drift")
             self.assertEqual(cfg.path_aliases, {"~/": ["src/"]})
+
+
+class TestImpact(unittest.TestCase):
+    def _tree(self, root: Path) -> None:
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "pkg" / "core.py").write_text(
+            "def get_account(uid):\n    return uid\n", encoding="utf-8")
+        (root / "pkg" / "views.py").write_text(
+            "from .core import get_account\n\n\n"
+            "def show(uid):\n    # Uses `get_account()`.\n    return get_account(uid)\n",
+            encoding="utf-8")
+
+    def test_blast_radius(self):
+        from grounded.config import Config
+        from grounded.graph import ClaimGraph
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._tree(root)
+            _, facts, index = scan_root(root, Config())
+            result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius("get_account")
+            self.assertEqual(result["defined_in"], ["pkg/core.py"])
+            self.assertEqual(result["imported_by"], ["pkg/views.py"])
+            self.assertEqual(result["claimed_by"], ["pkg/views.py"])
+
+    def test_dangling_signature(self):
+        from grounded.config import Config
+        from grounded.graph import ClaimGraph
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._tree(root)
+            _, facts, index = scan_root(root, Config())
+            result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius("gone_fn")
+            self.assertEqual(result, {"symbol": "gone_fn", "defined_in": [],
+                                      "imported_by": [], "claimed_by": []})
+
+    def test_cli_terminal_and_json(self):
+        import contextlib
+        import io
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._tree(root)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(main(["impact", "get_account", str(root)]), 0)
+            self.assertIn("pkg/core.py", buf.getvalue())
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(main(["impact", "get_account", str(root), "--format", "json"]), 0)
+            self.assertEqual(json.loads(buf.getvalue())["defined_in"], ["pkg/core.py"])
+
+    def test_mcp_blast_radius(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._tree(root)
+            from grounded.mcp import McpServer
+            server = McpServer(root)
+            server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                           "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                                      "clientInfo": {"name": "t", "version": "0"}}})
+            tools = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+            self.assertIn("blast_radius", {t["name"] for t in tools["result"]["tools"]})
+            resp = server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                  "params": {"name": "blast_radius",
+                                             "arguments": {"symbol": "get_account"}}})
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertEqual(payload["defined_in"], ["pkg/core.py"])
+            bad = server.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                                 "params": {"name": "blast_radius", "arguments": {}}})
+            self.assertEqual(bad["error"]["code"], -32602)
 
 
 if __name__ == "__main__":

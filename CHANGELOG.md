@@ -3,6 +3,14 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.0] - 2026-09-21
+
+### Added
+- Claim graph: symbols, imports, and comment claims as queryable edges.
+- `grounded impact SYMBOL`: definers, importers, and comment claims for
+  a symbol (answers "what breaks if I rename this?").
+- MCP `blast_radius` tool with the same query surface for agents.
+
 ## [0.11.1] - 2026-09-21
 
 ### Added

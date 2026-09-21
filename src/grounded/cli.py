@@ -81,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser("lsp", help="serve grounded over stdio as an LSP server for editors")
 
+    im = sub.add_parser("impact", help="show everything touching a symbol (definers, importers, comment claims)")
+    im.add_argument("symbol", help="symbol name, e.g. gettext_lazy")
+    im.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
+    im.add_argument("--format", choices=["terminal", "json"], default="terminal")
+    im.add_argument("--config", default=None, help="explicit config file (grounded.toml)")
+
     e = sub.add_parser("explain", help="explain what a checker proves")
     e.add_argument("checker", nargs="?", default=None, help="checker id (omit to list all)")
 
@@ -345,6 +351,34 @@ def cmd_init_agent(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_impact(args: argparse.Namespace) -> int:
+    from .graph import ClaimGraph
+    root = Path(args.path).resolve()
+    if not root.exists():
+        print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
+        return 2
+    if root.is_file():
+        root = root.parent
+    config = Config.load(root, explicit=args.config)
+    _, facts, index = scan_root(root, config)
+    result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(args.symbol)
+    if args.format == "json":
+        import json as _json
+        print(_json.dumps(result, indent=2))
+    else:
+        print(f"impact of `{args.symbol}`:")
+        for key in ("defined_in", "imported_by", "claimed_by"):
+            items = result[key]
+            print(f"  {key} ({len(items)}):")
+            for item in items[:20]:
+                print(f"    {item}")
+            if len(items) > 20:
+                print(f"    ... and {len(items) - 20} more")
+        if not any(result[k] for k in ("defined_in", "imported_by", "claimed_by")):
+            print("  nothing references this symbol anywhere.")
+    return 0
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     target = Path.cwd() / "grounded.toml"
     if target.exists() and not args.force:
@@ -407,6 +441,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "lsp":
         from .lsp import serve as serve_lsp
         return serve_lsp()
+    if args.cmd == "impact":
+        return cmd_impact(args)
     if args.cmd == "init":
         return cmd_init(args)
     if args.cmd == "explain":

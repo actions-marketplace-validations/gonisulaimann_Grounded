@@ -48,6 +48,22 @@ def _tool_defs() -> list[dict]:
                 "required": ["checker"],
             },
         },
+        {
+            "name": "blast_radius",
+            "description": ("Show everything touching a symbol before renaming it: "
+                            "defining files, importing files, and files whose "
+                            "comments mention it."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string",
+                               "description": "Symbol name, e.g. gettext_lazy"},
+                    "path": {"type": "string",
+                             "description": "Directory to scan, relative to the server root"},
+                },
+                "required": ["symbol"],
+            },
+        },
     ]
 
 
@@ -125,6 +141,8 @@ class McpServer:
             return _error(req_id, -32602, "arguments must be an object")
         if name == "check_path":
             return self._check_path(req_id, args)
+        if name == "blast_radius":
+            return self._blast_radius(req_id, args)
         if name == "explain_checker":
             return self._explain(req_id, args)
         return _error(req_id, -32602, f"unknown tool: {name}")
@@ -164,6 +182,27 @@ class McpServer:
                     "findings": [dict(f.to_dict(), fix_hint=f.fix) for f in findings],
                 }),
             }],
+            "isError": False,
+        })
+
+    def _blast_radius(self, req_id, args: dict):
+        from .config import Config
+        from .graph import ClaimGraph
+        from .scanner import scan_root
+        try:
+            target = self._resolve(str(args.get("path", ".")))
+        except ValueError as exc:
+            return _error(req_id, -32602, str(exc))
+        if not target.exists():
+            return _error(req_id, -32602, f"path does not exist: {args.get('path')}")
+        symbol = str(args.get("symbol", "")).strip()
+        if not symbol:
+            return _error(req_id, -32602, "symbol is required")
+        root = target if target.is_dir() else target.parent
+        _, facts, index = scan_root(root, Config())
+        result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(symbol)
+        return _ok(req_id, {
+            "content": [{"type": "text", "text": json.dumps(result)}],
             "isError": False,
         })
 
