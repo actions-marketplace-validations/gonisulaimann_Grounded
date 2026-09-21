@@ -37,10 +37,16 @@ reports.
 `ghost-export`: methods, dunders, `__init__` modules, `__all__` members,
 JS exports / `module.exports`, Go-exported (capitalized) names, and
 `main`/`init` are never candidates. Aliased imports (`import x as y`)
-count as importers of `x`. Known limitation: barrel re-exports
-(`export * from`) are not traced. C is excluded (no static info).
+and module-attribute use (`from pkg import mod` + `mod.name()`) count
+as importers — but only with the module import present, so same-named
+locals don't qualify. Known limitation: barrel re-exports
+(`export * from`) and aliased-module attribute use (`import pkg as p`
++ `p.mod.name()`) are not traced. C is excluded (no static info).
 
-Measurement so far (2026-09-21, this repo as corpus):
+Measurement lives in [`corpus/`](https://github.com/gonisulaimann/Grounded/tree/main/corpus):
+planted-staleness fixtures with exact expected findings, run in CI with
+zero tolerance (a missing finding and an extra finding both fail). Current
+numbers (2026-09-21):
 
 * `stale-doc-ref`: 60 files, 9 checkable blocks, **0 findings, 0 false
   positives** — every silence individually justified. Recall beyond

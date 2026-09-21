@@ -1,0 +1,1 @@
+{"enable": ["stale-contract-ref"], "expect": [{"checker": "stale-contract-ref", "path": "app.js", "line": 1, "contains": "8080"}]}

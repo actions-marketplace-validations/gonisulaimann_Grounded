@@ -40,6 +40,10 @@ class RepoIndex:
         self.file_symbols: dict[str, set[str]] = {}
         # From-imported names per file (re-export chains resolve through these).
         self.file_imports: dict[str, set[str]] = {}
+        # Attribute uses per file: (module, attr) pairs from `mod.attr`
+        # text. Suppression-only evidence (ghost-export, blast_radius):
+        # over-approximation can only hide a finding, never invent one.
+        self.file_attr_uses: dict[str, set[tuple[str, str]]] = {}
         # Star imports per file: [(module, level)] for one-hop expansion.
         self.file_stars: dict[str, list[tuple[str | None, int]]] = {}
         # JS/TS export surface per file: exported names ('default' marks a
@@ -102,6 +106,51 @@ class RepoIndex:
         self.symbol_files.setdefault(name, set()).add(rel)
         self.file_symbols.setdefault(rel, set()).add(name)
 
+    def attr_used_by(self, symbol: str, own: str) -> set[str]:
+        """Files (other than own) importing own's module and touching
+        `mod.symbol` textually: `from pkg import mod` + `mod.symbol()`.
+
+        The file must import the module root, so a same-named local
+        (`lsp = get_conf(); lsp.serve()`) is not evidence. Used for
+        suppression (ghost-export) and recall (blast_radius) only.
+        """
+        dot = own.rfind(".")
+        stem = own[:dot]
+        stem = stem[stem.rfind("/") + 1:] if "/" in stem else stem
+        dotted = own[:dot].replace("/", ".") if dot > 0 else own
+        out: set[str] = set()
+        for rel, pairs in self.file_attr_uses.items():
+            if rel == own:
+                continue
+            mods = self.file_imports.get(rel, set())
+            for (mod, attr) in pairs:
+                if attr != symbol:
+                    continue
+                base = mod.split(".")[0]
+                if base in mods and (mod == stem or mod == dotted
+                                     or mod.endswith("." + stem)):
+                    out.add(rel)
+        return out
+
+    _ATTR_USE = re.compile(
+        r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+        r"\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b")
+
+    @staticmethod
+    def _attr_pairs(text: str) -> set[tuple[str, str]]:
+        """(module, attr) pairs from `mod.attr` text. Full-line comments
+        and string literals are blanked first; residue only ever
+        suppresses, never invents."""
+        out: set[tuple[str, str]] = set()
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or s.startswith("//") or s.startswith("*"):
+                continue
+            code = re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", '""', line)
+            for m in RepoIndex._ATTR_USE.finditer(code):
+                out.add((m.group(1), m.group(2)))
+        return out
+
     def _index_one(self, rel: str, suffix: str, text: str, rebuild: bool = True) -> None:
         """(Re-)index a single file's contributions. Safe to call repeatedly:
         previous contributions for rel are forgotten first."""
@@ -114,6 +163,9 @@ class RepoIndex:
             self._index_go(text, rel)
         elif suffix in {".c", ".h"}:
             self._index_c(text, rel)
+        if suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+                      ".mts", ".cts", ".go", ".c", ".h"}:
+            self.file_attr_uses[rel] = self._attr_pairs(text)
         if rebuild:
             self._rebuild_unions()
 
@@ -131,6 +183,7 @@ class RepoIndex:
     def _forget_no_rebuild(self, rel: str) -> None:
         old = self.file_symbols.pop(rel, set())
         self.file_imports.pop(rel, None)
+        self.file_attr_uses.pop(rel, None)
         self.file_stars.pop(rel, None)
         self.file_exports.pop(rel, None)
         self.file_export_stars.pop(rel, None)

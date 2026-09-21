@@ -33,6 +33,11 @@ All notable changes to `grounded` are documented here. Format follows
   than the CLI).
 - Removed dead helper `path_to_uri` (found by `ghost-export`
   dogfooding).
+- Precision corpus (`corpus/`): planted-staleness fixtures with exact
+  expected findings, enforced in CI. 10 cases, all checkers at 1.00
+  precision and recall on the corpus.
+- Attribute-call tracking: `from pkg import mod` + `mod.name()` counts
+  as an importer (ghost-export suppression, `blast_radius` recall).
 
 ## [0.12.1] - 2026-09-21
 

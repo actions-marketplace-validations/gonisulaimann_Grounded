@@ -1809,6 +1809,33 @@ class TestGhostExport(unittest.TestCase):
             self.assertNotIn("Exported", out)
             self.assertNotIn("Method", out)
 
+    def test_module_attribute_use_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = root / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
+            (pkg / "helper.py").write_text(
+                "def serve():\n    return 1\n", encoding="utf-8")
+            (root / "main.py").write_text(
+                "from pkg import helper\nhelper.serve()\n", encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertNotIn("ghost-export", out)
+
+    def test_module_attribute_use_without_import_still_flags(self):
+        # Same-named local, no module import: not evidence, still a ghost.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = root / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
+            (pkg / "helper.py").write_text(
+                "def serve():\n    return 1\n", encoding="utf-8")
+            (root / "main.py").write_text(
+                "helper = object()\nhelper.serve()\n", encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertIn("[ghost-export]", out)
+
 
 class TestSkillSync(unittest.TestCase):
     def test_packaged_skill_matches_registry_source(self):
@@ -1940,6 +1967,28 @@ class TestImpact(unittest.TestCase):
             bad = server.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
                                  "params": {"name": "blast_radius", "arguments": {}}})
             self.assertEqual(bad["error"]["code"], -32602)
+
+    def test_blast_radius_sees_module_attribute_use(self):
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = root / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
+            (pkg / "helper.py").write_text(
+                "def serve():\n    return 1\n", encoding="utf-8")
+            (root / "main.py").write_text(
+                "from pkg import helper\nhelper.serve()\n", encoding="utf-8")
+            from grounded.mcp import McpServer
+            server = McpServer(root)
+            server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                           "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                                      "clientInfo": {"name": "t", "version": "0"}}})
+            resp = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                  "params": {"name": "blast_radius",
+                                             "arguments": {"symbol": "serve"}}})
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertIn("main.py", payload["imported_by"])
 
     def test_mcp_honors_project_config(self):
         import json

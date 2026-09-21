@@ -27,3 +27,13 @@ jobs:
         run: grounded scan src --no-color
       - name: Demo fixtures still diagnosed
         run: test "$(grounded scan examples/v2demo --format json | python -c 'import json,sys; print(len(json.load(sys.stdin)))')" = "10"
+
+  corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Precision corpus (exact-match, no slop)
+        run: python3 corpus/run.py

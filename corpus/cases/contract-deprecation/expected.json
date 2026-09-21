@@ -1,0 +1,1 @@
+{"enable": ["stale-contract-ref"], "expect": [{"checker": "stale-contract-ref", "path": "pkg/notes.py", "line": 1, "contains": "fetch_user_v2"}]}

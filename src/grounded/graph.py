@@ -26,6 +26,13 @@ class ClaimGraph:
         for rel, names in index.file_imports.items():
             for name in names:
                 self.imported_by.setdefault(name, set()).add(rel)
+        for name, rels in index.symbol_files.items():
+            for rel in rels:
+                for user in index.attr_used_by(name, rel):
+                    # from pkg import mod + mod.name(): a real importer,
+                    # invisible to import tracking. The module import must
+                    # be present, so same-named locals don't qualify.
+                    self.imported_by.setdefault(name, set()).add(user)
         for rel, facts in facts_by_path.items():
             texts = [c.text for c in facts.comments]
             for f in facts.functions:

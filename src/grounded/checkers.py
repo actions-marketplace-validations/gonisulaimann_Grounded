@@ -1442,6 +1442,8 @@ def check_ghost_export(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue  # deliberate API via __all__
         if _ghost_importers(name, facts.path, index):
             continue
+        if index.attr_used_by(name, facts.path):
+            continue  # used as mod.name elsewhere (from pkg import mod)
         uses = len(re.findall(r"\b" + re.escape(name) + r"\b", code))
         if uses > 1:
             continue  # used in its own file (def line itself counts once)
