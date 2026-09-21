@@ -935,6 +935,19 @@ class TestFix(unittest.TestCase):
             self.assertEqual(main(["fix", str(root)]), 0)
             self.assertEqual((root / "a.py").read_text(), before)
 
+    def test_ignored_directories_not_used_as_fix_candidates(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {
+                ".git/hooks/pre-commit.py": "print('hook')\n",
+                ".venv/lib/helper.py": "print('venv')\n",
+                "a.py": "# See src/hooks/pre-commit.py and src/old/helper.py\nX = 1\n",
+            })
+            before = (root / "a.py").read_text()
+            self.assertEqual(main(["fix", str(root)]), 0)
+            self.assertEqual((root / "a.py").read_text(), before)
+
     def test_symbol_rename_same_dir_unique(self):
         from grounded.cli import main
         with tempfile.TemporaryDirectory() as td:

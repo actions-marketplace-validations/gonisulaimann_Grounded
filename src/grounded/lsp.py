@@ -177,7 +177,7 @@ class LspServer:
             if f.checker != code or f.line != line:
                 continue
             if f.checker == "stale-file-ref":
-                cands = file_fix_candidates([f], root, buffer)
+                cands = file_fix_candidates([f], root, buffer, config=self.config)
                 if len(cands) != 1:
                     continue
                 _, replacement, ln = cands[0]

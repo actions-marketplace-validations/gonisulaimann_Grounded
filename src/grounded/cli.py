@@ -245,7 +245,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
     if only is not None:
         # Never rewrite files the user did not name.
         findings = [f for f in findings if f.path == only]
-    fixes = file_fix_candidates(findings, root)
+    fixes = file_fix_candidates(findings, root, config=config)
     sym_fixes = symbol_fix_candidates(findings, root, index)
     if not fixes and not sym_fixes:
         print("grounded fix: nothing unambiguous to rewrite.")
