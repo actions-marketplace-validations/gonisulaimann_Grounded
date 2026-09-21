@@ -1,14 +1,42 @@
-# grounded
+<h1 align="center">
+    <a href="https://grounded.readthedocs.io">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/cover_dark.svg">
+          <img alt="Grounded Banner" src="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/cover_light.svg" width="100%">
+        </picture>
+    </a>
+    <br>
+    <small>The 0.6ms Reference &amp; Import Integrity Firewall for AI Coding Agents</small>
+</h1>
 
-[![CI](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg)](https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml)
-[![PyPI version](https://badge.fury.io/py/grounded-lint.svg)](https://pypi.org/project/grounded-lint/)
-[![Documentation Status](https://readthedocs.org/projects/grounded/badge/?version=latest)](https://grounded.readthedocs.io/en/latest/?badge=latest)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
- <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi" /></a>
+<p align="center">
+    <a href="https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml"><img src="https://github.com/gonisulaimann/Grounded/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://badge.fury.io/py/grounded-lint"><img src="https://badge.fury.io/py/grounded-lint.svg" alt="PyPI version"></a>
+    <a href="https://grounded.readthedocs.io/en/latest/"><img src="https://readthedocs.org/projects/grounded/badge/?version=latest" alt="Documentation Status"></a>
+    <a href="https://github.com/gonisulaimann/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-gonisulaimann%2Ftap-blue.svg?logo=homebrew" alt="Homebrew"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+    <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi"></a>
+    <br/>
+    <a href="https://pypi.org/project/grounded-lint/"><img src="https://img.shields.io/pypi/pyversions/grounded-lint.svg" alt="Python Versions"></a>
+    <img src="https://img.shields.io/badge/Dependencies-0%20(stdlib)-brightgreen" alt="Zero Dependencies">
+    <img src="https://img.shields.io/badge/Scan%20Latency-0.6ms-blueviolet" alt="0.6ms Latency">
+</p>
 
-Find dangling references in code comments. If a comment names a function
-that no longer exists, or a file that is not there, `grounded` reports it
-with the claim, the evidence, and a suggested fix.
+<p align="center">
+    <a href="https://grounded.readthedocs.io/en/latest/"><strong>Documentation</strong></a>
+    &middot;
+    <a href="https://grounded.readthedocs.io/en/latest/installation/"><strong>Installation</strong></a>
+    &middot;
+    <a href="https://grounded.readthedocs.io/en/latest/rules/"><strong>Rules &amp; Checkers</strong></a>
+    &middot;
+    <a href="https://grounded.readthedocs.io/en/latest/agents-lsp/"><strong>Agent Setup (LSP / MCP)</strong></a>
+    &middot;
+    <a href="https://grounded.readthedocs.io/en/latest/benchmarks/"><strong>Benchmarks</strong></a>
+</p>
+
+---
+
+Catch hallucinated APIs, broken imports, and stale references in **0.6 milliseconds** before your test runner even boots. Zero dependencies. Pure standard library. Works across Python and JavaScript/TypeScript.
 
 ```console
 $ grounded scan ./src
