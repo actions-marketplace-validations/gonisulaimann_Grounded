@@ -1,0 +1,48 @@
+site_name: Grounded
+site_description: The 0.6ms Reference & Import Integrity Firewall for AI Coding Agents.
+site_author: Goni Sulaiman
+site_url: https://grounded-lint.readthedocs.io/
+
+repo_name: gonisulaimann/Grounded
+repo_url: https://github.com/gonisulaimann/Grounded
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - tables
+  - attr_list
+
+nav:
+  - Overview: index.md
+  - Installation: installation.md
+  - Rules & Checkers: rules.md
+  - Agent & Editor Setup: agents-lsp.md
+  - Benchmarks: benchmarks.md
