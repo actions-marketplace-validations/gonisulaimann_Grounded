@@ -3,6 +3,13 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Version policy
+- Single version across channels: the VS Code extension tracks the
+  product version (Open VSX briefly served an independent 0.13.2
+  against 0.13.0 everywhere else; reunified at 0.14.0).
+
 ## [0.14.0] - 2026-09-21
 
 ### Added
