@@ -52,7 +52,11 @@
 
 ---
 
-Catch hallucinated APIs, broken imports, and stale references in **0.6 milliseconds** before your test runner even boots. Zero dependencies. Pure standard library. Works across Python, JavaScript/TypeScript, Go, and C.
+**Grounded** is a reference integrity firewall that handles everything from a single-line agent edit to a full-scale monorepo scan.
+
+Its scanner catches hallucinated APIs, phantom imports, and stale code references in **0.6 milliseconds** before your test runner even boots. Its agent firewalls plug directly into Cursor, Claude Code, Windsurf, and Aider to stop AI coding agents from quietly committing plausible-looking lies. And its ClaimGraph traces symbol definitions, callers, and documentation references across your entire repository to calculate blast radius before you refactor — all across Python, JavaScript/TypeScript, Go, and C with zero dependencies. One tool, zero compromises.
+
+Blazing fast verification with zero false positives. Built for AI agents, software engineers, and modern engineering teams, there's something for everyone.
 
 ```console
 $ grounded scan ./src
