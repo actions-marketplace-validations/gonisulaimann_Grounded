@@ -1,10 +1,12 @@
 <h1 align="center">
     <a href="https://grounded.readthedocs.io">
         <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/cover_dark.svg">
-          <img alt="Grounded Banner" src="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/cover_light.svg" width="100%">
+          <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/logo_white.png">
+          <img alt="Grounded Logo" src="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/docs/assets/logo_black.png" width="260">
         </picture>
     </a>
+    <br>
+    Grounded
     <br>
     <small>The 0.6ms Reference &amp; Import Integrity Firewall for AI Coding Agents</small>
 </h1>
