@@ -2,7 +2,7 @@
   "name": "grounded",
   "displayName": "Grounded",
   "description": "Sub-millisecond reference integrity firewall for Cursor, Windsurf, and VS Code. Stops AI coding agent hallucinations in 0.6ms.",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "icon": "icon.png",
   "publisher": "gonisulaimann",
   "license": "MIT",
