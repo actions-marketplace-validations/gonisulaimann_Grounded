@@ -36,9 +36,29 @@
     <a href="https://grounded.readthedocs.io/en/latest/benchmarks/"><strong>Benchmarks</strong></a>
 </p>
 
+<p align="center">
+    <a href="docs/README_AR.md">العربية</a>
+    &middot;
+    <a href="docs/README_ES.md">Español</a>
+    &middot;
+    <a href="docs/README_PT-BR.md">Português (BR)</a>
+    &middot;
+    <a href="docs/README_FR.md">Français</a>
+    &middot;
+    <a href="docs/README_DE.md">Deutsch</a>
+    &middot;
+    <a href="docs/README_CN.md">中文</a>
+    &middot;
+    <a href="docs/README_JP.md">日本語</a>
+    &middot;
+    <a href="docs/README_RU.md">Русский</a>
+    &middot;
+    <a href="docs/README_KR.md">한국어</a>
+</p>
+
 ---
 
-Catch hallucinated APIs, broken imports, and stale references in **0.6 milliseconds** before your test runner even boots. Zero dependencies. Pure standard library. Works across Python and JavaScript/TypeScript.
+Catch hallucinated APIs, broken imports, and stale references in **0.6 milliseconds** before your test runner even boots. Zero dependencies. Pure standard library. Works across Python, JavaScript/TypeScript, Go, and C.
 
 ```console
 $ grounded scan ./src
@@ -180,6 +200,7 @@ Corrupt or mismatched caches fall back to a full scan silently.
 | ID | Default severity | What it reports |
 |---|---|---|
 | `stale-symbol-ref` | lie (error) | A comment names a call that resolves nowhere: not defined in the repo, not imported in the file, not used in the file, not a builtin or keyword. Prints rename suggestions when a close match exists. |
+| `stale-import` | lie (error) | A resolvable import whose module is missing, or whose name is not defined, re-exported, or a submodule there. Python `from`/`import`, JS/TS relative imports (tsconfig aliases resolved). Guarded, stdlib, and external imports never report. |
 | `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, and workaround markers (`HACK`, `XXX`, `workaround`) with no ticket or expiry condition. |
@@ -228,7 +249,7 @@ Gate pull requests with the first-party Action (inline PR annotations
 included via problem matchers):
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.12.0
+- uses: gonisulaimann/Grounded@v0.12.1
   with:
     changed-base: origin/main   # new findings on edited lines only
     fail-on: lie
@@ -237,7 +258,7 @@ included via problem matchers):
 Or with a baseline file for whole-tree delta gating:
 
 ```yaml
-- uses: gonisulaimann/Grounded@v0.12.0
+- uses: gonisulaimann/Grounded@v0.12.1
   with:
     baseline: .grounded-baseline.json
 ```
@@ -247,7 +268,7 @@ As a pre-commit hook (runs on uncommitted changes):
 ```yaml
 repos:
   - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.12.0
+    rev: v0.12.1
     hooks:
       - id: grounded
 ```
@@ -400,4 +421,4 @@ dependencies (stdlib only is a project rule).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/gonisulaimann/Grounded/blob/main/LICENSE).

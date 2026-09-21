@@ -2,6 +2,8 @@
 
 Grounded emits findings with positive, mechanical proof of contradiction.
 
+Supported languages: Python, JavaScript/TypeScript, Go, C.
+
 ---
 
 ## Active Checkers
@@ -12,7 +14,7 @@ Grounded emits findings with positive, mechanical proof of contradiction.
 | `stale-symbol-ref` | `lie` (Error) | A comment names a call (`foo()` or `` `foo()` ``) that resolves nowhere: not defined in the repo, not imported in the file, not used in the file, not a builtin or keyword. |
 | `stale-file-ref` | `lie` (Error) | A comment claims a file path inside this repo's tree that does not exist (namespace- and placeholder-aware). |
 | `number-drift` | `drift` (Warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
-| `fragile-anchor` | `smell` (Note) | Line anchors (`line 42`), `see above` / `see below` without a symbol, or untracked workaround markers (`HACK`, `TODO`) with no ticket or expiry condition. |
+| `fragile-anchor` | `smell` (Note) | Line anchors (`line 42`), `see above` / `see below` without a symbol, or untracked markers (`HACK`, `XXX`, `FIXME`, `workaround`) with no ticket or expiry condition. |
 
 ---
 
@@ -21,6 +23,11 @@ Grounded emits findings with positive, mechanical proof of contradiction.
 * **`lie` (Error)**: Provably false. The reference or import claims a contract that does not exist in the codebase. Exits with code `1`.
 * **`drift` (Warning)**: Mechanically stale by adjacent evidence.
 * **`smell` (Note)**: Fragile pattern likely to rot over time.
+
+Exit codes: `0` clean, `1` a finding at or above `--fail-on` (default
+`lie`), `2` a usage or environment error (bad path, unreadable baseline
+or config, unresolvable git base). A typo can never mask drift with a
+green build: misconfiguration fails loudly.
 
 ---
 
@@ -42,3 +49,6 @@ To suppress all checkers on a line:
 ```python
 # Temporary patch  # grounded-disable: all
 ```
+
+Unknown checker ids in a marker warn on stderr (`unknown checker id`)
+without changing the exit code: a typo never silently disarms a gate.

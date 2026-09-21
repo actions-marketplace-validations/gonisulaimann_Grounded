@@ -29,14 +29,10 @@ grounded lsp
 
 ### VSCode & Cursor Setup
 
-Add a generic Language Client or configure through your editor's settings:
-
-```json
-{
-  "grounded.serverPath": "grounded",
-  "grounded.serverArgs": ["lsp"]
-}
-```
+Use any generic LSP client and point it at the `grounded lsp` command over
+stdio. The task snippet in the README (problem matcher included) works
+without extensions; for live squigglies, any client that launches a
+stdio server command will do.
 
 Capabilities provided:
 * `textDocument/publishDiagnostics`: Live red squigglies on hallucinated imports and stale comments as you type.
@@ -62,3 +58,4 @@ Grounded exposes a zero-dependency MCP server over `stdio` for agent runtimes:
 ### Tools Provided:
 * `check_path`: Scans a specific file or directory under the root and returns structured findings. Root-confined for security.
 * `explain_checker`: Explains what an individual checker proves and remediation steps.
+* `blast_radius`: Definers, importers, and comment claims for a symbol. Ask before renaming.

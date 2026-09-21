@@ -1,5 +1,5 @@
 name: grounded-lint
-description: Find dangling references in code comments
+description: Find dangling references in code comments, with PR annotations, baselines, and SARIF output
 inputs:
   path:
     description: Directory to scan

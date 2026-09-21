@@ -3,6 +3,14 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.1] - 2026-09-21
+
+### Changed
+- Documentation overhaul: language ribbon with 9 translated quickstarts
+  (AR, ES, PT-BR, FR, DE, CN, JP, RU, KR), expanded rules reference,
+  corrected installation pins.
+- Action Marketplace description covers PR annotations, baselines, SARIF.
+
 ## [0.12.0] - 2026-09-21
 
 ### Added

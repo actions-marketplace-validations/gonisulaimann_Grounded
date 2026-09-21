@@ -20,7 +20,7 @@ python3 examples/bench/bench.py
 | :--- | :--- | :--- |
 | **Grounded In-Process (Single File)** | **0.6 ms** | Agent tool execution loop (`edit_file` pre-flight) |
 | **Grounded Cold CLI (Single File)** | **56.8 ms** | Fast Git pre-commit hook / terminal command |
-| **Cached Full-Tree Scan** | **~2.7 s** | Repeat full-repo scans (roughly $2\times$ faster than cold) |
+| **Cached Full-Tree Scan** | **~2.7 s** | Repeat full-repo scans (roughly 2x faster than cold) |
 
 ---
 

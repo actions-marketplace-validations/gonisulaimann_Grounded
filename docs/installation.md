@@ -61,7 +61,7 @@ Add Grounded as a pre-commit hook to catch broken references and imports on ever
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.9.0
+    rev: v0.12.0
     hooks:
       - id: grounded
 ```
@@ -74,7 +74,7 @@ Gate pull requests in CI using the official GitHub Marketplace Action:
 
 ```yaml
 # .github/workflows/ci.yml
-- uses: gonisulaimann/Grounded@v0.9.0
+- uses: gonisulaimann/Grounded@v0.12.0
   with:
     changed-base: origin/main
     fail-on: lie

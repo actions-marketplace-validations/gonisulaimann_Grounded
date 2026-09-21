@@ -38,9 +38,25 @@ LIE src/views.py:2 [stale-import] `get_user_profile` imported from `src/core.py`
 
 ---
 
+## Core concepts & the claim-evidence model
+
+Every finding has the same shape: a **claim** found in the repository, the
+**evidence** contradicting it, and a **fix**. A rule stays silent unless
+the contradiction is mechanical. There are three outcomes, never two:
+
+* **False** (`lie`, exit 1): the claim contradicts repository state.
+  Example: a comment names `get_user_profile()`, but no definition,
+  import, or usage of that name exists anywhere indexed.
+* **Drift** (`drift`, warning): adjacent evidence disagrees, but the claim
+  may describe intent rather than fact. Example: a comment says
+  `timeout 30s` next to `TIMEOUT = 60`.
+* **Silent**: the claim cannot be decided mechanically (external packages,
+  generated files, framework namespaces). Silence is a deliberate verdict,
+  not a gap: a verifier that guesses teaches developers to ignore it.
+
 ## Key Features
 
 * **Code Import Verification (`stale-import`)**: Verifies resolvable imports in Python (`from M import N`) and relative imports in JavaScript/TypeScript (`import { N } from './x'`). Handles re-exports, star chains, and PEP 562 dynamic modules.
-* **Scope-Gated Autofix (`grounded fix`)**: Rewrites stale symbol and file references using scope-bounded similarity matching (ratio $\ge 0.75$, same directory only, unambiguous match or no-op).
+* **Scope-Gated Autofix (`grounded fix`)**: Rewrites stale symbol and file references using scope-bounded similarity matching (ratio 0.75+, same directory only, unambiguous match or no-op).
 * **Native LSP 3.17 (`grounded lsp`)**: Drop-in live editor diagnostics and 1-click QuickFix actions for VSCode, Cursor, Zed, and Neovim.
 * **Agent Hooks (`grounded init-agent`)**: Scaffolds zero-friction pre-flight rules for Claude Code, Cursor, and Aider.
