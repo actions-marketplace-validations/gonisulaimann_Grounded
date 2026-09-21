@@ -25,6 +25,7 @@
     <a href="https://github.com/gonisulaimann/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-gonisulaimann%2Ftap-blue.svg?logo=homebrew" alt="Homebrew"></a>
     <a href="https://grounded.readthedocs.io/en/latest/"><img src="https://readthedocs.org/projects/grounded/badge/?version=latest" alt="Documentation Status"></a>
     <a href="docs/agent-skill.md"><img src="https://img.shields.io/badge/Skill-black?style=flat&label=Agent" alt="AI Agent Skill"></a>
+    <a href="https://clawhub.ai/gonisulaimann/grounded"><img src="https://img.shields.io/badge/Clawhub-darkred?style=flat&label=OpenClaw" alt="OpenClaw Skill"></a>
     <br/>
     <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi"></a>
     <img src="https://img.shields.io/badge/Scan%20Latency-0.6ms-blueviolet" alt="0.6ms Latency">
