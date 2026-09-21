@@ -1,21 +1,24 @@
 # Editor setup (VS Code / Cursor)
 
-A thin LSP client lives in [`editors/vscode`](https://github.com/gonisulaimann/Grounded/tree/main/editors/vscode).
+A thin LSP client lives in [`editors/vscode`](https://github.com/gonisulaimann/Grounded/tree/main/editors/vscode)
+and is published on [Open VSX](https://open-vsx.org/extension/gonisulaimann/grounded)
+(Cursor, Windsurf, VSCodium: install from the Extensions tab).
 It shows grounded diagnostics inline (lie as error, drift as warning,
 smell as information) plus the server's quickfix actions, for Python,
 JavaScript/TypeScript (incl. React), Go, and C.
 
-## Install (until marketplace listing)
+## Install
 
-The extension is not published yet: no Marketplace or Open VSX links
-exist. Until then, build and install from source:
+* **Cursor / Windsurf / VSCodium**: search `Grounded` in Extensions.
+* **VS Code**: the Marketplace listing is pending; until then build
+  from source:
 
 ```console
 cd editors/vscode
 npm ci && npm run compile && npx @vscode/vsce package
 ```
 
-Then `Extensions → … → Install from VSIX` (works in VS Code and Cursor).
+Then `Extensions → … → Install from VSIX`.
 
 ## Requirements (honest version)
 

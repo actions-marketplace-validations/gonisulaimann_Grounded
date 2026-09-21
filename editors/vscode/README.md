@@ -5,6 +5,10 @@ extension is a ~150-line wrapper: diagnostics (lie as error, drift as
 warning, smell as information) plus the server's quickfix actions, for
 Python, JavaScript/TypeScript (incl. React), Go, and C.
 
+Published on [Open VSX](https://open-vsx.org/extension/gonisulaimann/grounded)
+(Cursor, Windsurf, VSCodium). VS Code Marketplace listing is pending;
+until then see `PUBLISHING.md`.
+
 `.h` headers open as C in stock VS Code and are covered. If you use
 Microsoft's C/C++ extension, headers may open as C++, which grounded
 does not parse: diagnostics simply stay silent there.
