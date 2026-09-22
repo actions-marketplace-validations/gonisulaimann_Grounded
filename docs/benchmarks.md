@@ -62,6 +62,25 @@ rename-rot lies; redis (C) 63 smells + 13 lies (7 confirmed true).
 Remaining false positives fall in documented classes (vendored code,
 kernel idioms, platform APIs, prose verbs); see Limitations.
 
+## External validation: merged upstream fixes
+
+On 2026-09-22 the maintainer of OmniRoute (`diegosouzapw/OmniRoute`,
+69k stars) merged [PR #14412](https://github.com/diegosouzapw/OmniRoute/pull/14412),
+three fixes for rot a Grounded audit surfaced, each confirmed broken
+by the project's own toolchain before repair:
+
+* `src/lib/db/discovery.ts` — relative import unresolvable from its
+  directory (TS2307), masked in CI by a narrow typecheck config.
+* `scripts/ad-hoc/regen-opencode-config.ts` — import and usage docs
+  left pointing at a pre-move directory (TS2307).
+* `tests/unit/combo/recovery-hint.test.ts` — renamed ghost type plus
+  a fixture built on a superseded interface shape (TS2305).
+
+Validation recorded on the PR: 11/11 tests pass, scoped `tsc` probe
+clean, eslint clean, 16 checks green. One data point, not a trend —
+but it is the first maintainer-merged proof that the contradiction
+class Grounded checks is real rot other tooling misses.
+
 ## What the benchmark round fixed
 
 Measuring on real repos paid for itself four times over, all in
