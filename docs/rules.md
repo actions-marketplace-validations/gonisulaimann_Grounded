@@ -23,6 +23,14 @@ a clean scan means the repo earned it (smoke detectors don't invent
 fires), so a new trigger class stays opt-in until its false-positive
 rate is measured near zero.
 
+Silence alone is not evidence, though — a smoke detector with a dead
+battery also never reports a fire, and a checker that *raises* returns
+no findings either. "Silent on N repos" therefore only counts as
+precision evidence when the scan can show the checker actually ran,
+which is what a checker-error count of `0` means (see
+[Exit codes](#severities-and-exit-codes)). Each graduation below is
+recorded with that count.
+
 `stale-doc-ref`: only fenced blocks with a supported language tag are
 read. Bare fences, `console`/`bash` transcripts, data formats, comment
 lines inside examples, decorator roots (framework surface), and any
@@ -117,11 +125,21 @@ numbers (2026-09-21):
   single reference repo-wide), **0 false positives** after the aliased-
   import fix. Default scans are byte-identical (Markdown is collected
   only when `stale-doc-ref` runs).
-* New checkers ride the same track: 14 corpus cases hold every checker
-  at 1.00 precision / 1.00 recall (`corpus/run.py`, CI-enforced), and
-  `stale-entrypoint`, `stale-mock-ref`, and `phantom-package` are
-  silent on this repo's real code (the only finding is a planted
-  corpus fixture).
+* New checkers ride the same track: 40 corpus cases hold every checker
+  at 1.00 precision (`corpus/run.py`, CI-enforced — all 12 checkers
+  have a firing fixture), and `stale-entrypoint`, `stale-mock-ref`, and
+  `phantom-package` are silent on this repo's real code (the only
+  finding is a planted corpus fixture).
+* Isolation precision is not repo recall, and the two need separate
+  evidence: the corpus plants rot in the smallest tree that shows the
+  behavior, while `bench/recall.py` replays each firing case inside a
+  copy of a real repository, where definitions, manifests and
+  generated directories are the context that can silence it. Measured
+  2026-09-22 over Grounded, flask, requests and svelte (3,922 files):
+  **77 planted expectations, 0 misses, 0 checker errors**. 3 cases
+  were not plantable — a fixture may not overwrite a host's own
+  `pyproject.toml`, which would change what the host *is* — and are
+  excluded from the number rather than counted as failures.
 
 ## How a rule decides
 
@@ -142,6 +160,22 @@ report as drift, mappings into `node_modules` stay silent.
 Exit code `2` means a usage or environment error (bad path, unreadable
 baseline or config, unresolvable git base). A typo can never mask drift
 with a green build.
+
+Exit code `3` means the scan is **incomplete**: an enabled checker
+raised on at least one file. A crashed checker returns no findings,
+which is indistinguishable from a checker that found nothing, so the
+summary refuses to say `clean` on its behalf. The failures are named on
+stderr, grouped by cause (`checker error: <id> raised <Exception>: … at
+<path>`, with a `(+N more)` count for repeats), so one broken checker
+over a 10k-file tree is one line, not 10k. The stdout payload stays
+byte-identical (`json` is still a bare list), and `baseline` refuses to
+write a file from an incomplete scan — a blind spot is never persisted
+into every later gate.
+
+Two explicit ways to proceed when a checker is genuinely broken:
+`--disable <id>` records which one you are accepting as broken, and
+`fail_on = "never"` keeps the run report-only (exit `0`, errors still
+printed). Neither one hides the error.
 
 ## Suppressions
 
