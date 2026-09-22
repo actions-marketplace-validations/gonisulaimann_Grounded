@@ -13,12 +13,14 @@ All notable changes to `grounded` are documented here. Format follows
   pytest doubles, docs prose, CJS interop). 29/29 cases green.
 
 ### Fixed
-- `stale-doc-ref` JavaScript precision: ambient roots (platform, Node,
-  `this`), JS call-keywords (`catch (e)`), continuation chains,
-  template-literal contents, ESM/arrow/function/method bindings,
-  package self-name, manifest-declared externals, and cross-block
-  tutorial narrative no longer report. Axios docs: 580 → 41 findings
-  (≈8 unique narrative-residue families, documented as the boundary).
+- `stale-doc-ref` JavaScript precision across two rounds: ambient roots
+  (platform, Node, `this`), JS call-keywords (`catch (e)`),
+  continuation chains, template-literal contents, ESM/arrow/function/
+  method bindings, package self-name, manifest-declared externals
+  (unioned up the tree, kebab/camel agnostic), self-dir
+  `require('..')`, DOM event constructors, and cross-block tutorial
+  narrative no longer report. Axios docs: 580 → 40 (≈8 unique
+  narrative-residue families, documented as the boundary).
 
 ## [0.15.0] - 2026-09-22
 

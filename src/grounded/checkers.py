@@ -1362,7 +1362,8 @@ _DOC_JS_AMBIENT_ROOTS = frozenset({
     "this", "self", "global", "globalThis", "Symbol", "BigInt", "Map",
     "Set", "WeakMap", "WeakSet", "parseFloat", "parseInt", "isNaN",
     "isFinite", "encodeURI", "decodeURI", "encodeURIComponent",
-    "decodeURIComponent",
+    "decodeURIComponent", "CustomEvent", "Event", "EventTarget",
+    "MessageEvent",
 } | set(JS_GLOBALS))
 
 # Bare call names that are JS control syntax, never references
@@ -2215,6 +2216,8 @@ def _phantom_js(facts: FileFacts, index: RepoIndex, declared: set[str]) -> list[
     for spec, _kind, _default, _named, lineno in facts.js_imports:
         if spec.startswith(("./", "../", "/", "node:")):
             continue
+        if spec in (".", ".."):
+            continue  # parent/self-dir self-reference (require('..'))
         if spec.startswith("#"):
             continue  # package imports-map: unresolvable statically
         pkg = "/".join(spec.split("/")[:2]) if spec.startswith("@") else spec.split("/")[0]

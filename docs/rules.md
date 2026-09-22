@@ -28,16 +28,18 @@ read. Bare fences, `console`/`bash` transcripts, data formats, comment
 lines inside examples, decorator roots (framework surface), and any
 block containing `...` or placeholder names (`foo`, `my_*`, `<key>`)
 are skipped. In JavaScript blocks, platform and Node roots (`Promise`,
-`document`, `fs`, `this`), JS keywords used as calls (`catch (e)`),
-continuation chains (`.then`/`.catch` lines), template-literal
-contents, ESM/arrow/function bindings, method-shorthand definitions,
-the documented package's own name, and manifest-declared externals all
-stay silent; bindings accumulate across blocks in file order (tutorial
-narrative). Known residue: reader-supplied narrative helpers
-(`handleError`, `getToken`) with no definition anywhere — statically
-indistinguishable from real staleness. Measured on axios docs:
-580 → 41 findings (×5 i18n duplication ≈ 8 unique families, all
-narrative residue, zero true positives found).
+`document`, `fs`, `this`), DOM event constructors (`CustomEvent`,
+`Event`), JS keywords used as calls (`catch (e)`), continuation chains
+(`.then`/`.catch` lines), template-literal contents, ESM/arrow/function
+bindings, method-shorthand definitions, the documented package's own
+name, manifest-declared externals (unioned up the tree, kebab/camel
+agnostic), and self-dir requires (`require('..')`) all stay silent;
+bindings accumulate across blocks in file order (tutorial narrative).
+Known residue: reader-supplied narrative helpers (`handleError`,
+`getToken`) with no definition anywhere — statically indistinguishable
+from real staleness. Measured on axios docs: 580 → 40 findings (×5
+i18n duplication ≈ 8 unique families, all narrative residue, zero true
+positives found).
 
 `stale-contract-ref`: only narrow frames report — deprecation sentences
 with a replacement name, `must hold`/`guarded by`-style lock claims on

@@ -2114,6 +2114,22 @@ class TestStaleDocRef(unittest.TestCase):
             self.assertEqual(
                 main(["scan", td, "--no-color", "--enable", "stale-doc-ref"]), 0)
 
+    def test_js_event_constructors_silent(self):
+        # DOM event constructors are ambient (seen: axios migration guide).
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "README.md").write_text(
+                "# Demo\n\n```js\n"
+                "const el = document.createElement('x');\n"
+                "el.dispatchEvent(new CustomEvent('x'));\n"
+                "const m = new Map();\n"
+                "console.log(el, m);\n"
+                "```\n",
+                encoding="utf-8")
+            self.assertEqual(
+                main(["scan", td, "--no-color", "--enable", "stale-doc-ref"]), 0)
+
 
 class TestStaleContractRef(unittest.TestCase):
     def _tree(self, root, files):
@@ -2533,6 +2549,19 @@ class TestPhantomPackage(unittest.TestCase):
             self.assertIn("lodash", out)
             self.assertNotIn("`express` is imported", out)
             self.assertNotIn("`fs` is imported", out)
+
+    def test_self_dir_require_silent(self):
+        # require('..') resolves to the parent package itself, not a
+        # distribution (seen: express test/app.js).
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "package.json").write_text('{"name": "mylib"}', encoding="utf-8")
+            testdir = root / "test"
+            testdir.mkdir()
+            (testdir / "app.js").write_text(
+                "var mylib = require('..');\nconsole.log(mylib);\n", encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertNotIn("phantom-package", out)
 
     def test_off_by_default(self):
         from grounded.cli import main
