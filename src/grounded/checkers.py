@@ -2619,8 +2619,104 @@ def check_stale_cli_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     return _dedupe(findings)
 
 
+_FENCE_LINE = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+
+
+def check_unclosed_fence(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """Fenced code blocks that never close, judged by CommonMark.
+
+    Markdown only. Two shapes, one cause — the author wrote a block boundary
+    the renderer does not honor, so content lands inside a code block:
+
+    * **never closed**: the fence runs to the end of the file, and every line
+      after it renders as code;
+    * **swallowed boundary**: a closing fence accepts only a run of the same
+      character, at least as long, carrying no info string. A line like
+      ```` ```console ```` arriving while a block is still open therefore
+      cannot open one: it is content, and the block the author thought they
+      had opened does not exist.
+
+    Nesting is not a defect, so the one legitimate shape stays silent: an
+    enclosing fence that is **longer** than the inner one *and* carries an
+    info string of its own — ` `````markdown ` around ` ```python `, where the
+    outer fence declares itself as a nesting scaffold. Everything else is
+    reported, because a bare enclosing fence declares nothing, so a block
+    header inside it cannot be nesting: the two shapes measured in the wild
+    are a repeated header of the same length (a missing close) and a bare
+    4-backtick line that the author read as a closer while the renderer read it
+    as an opener. A bare inner fence stays silent either way — inside a block
+    that is the illustrated closer of a nested example, which is exactly what
+    a nesting scaffold is for.
+
+    This is also the shape that disarms the doc checkers. `stale-doc-ref` and
+    `stale-cli-ref` track fences with a toggle that flips on every
+    fence-looking line, so a swallowed boundary inverts their view of every
+    line after it and they stop checking real prose. Measured 2026-09-22: one
+    missing close in this repository's `README.md` left the tail of the file
+    looking like code, and two `stale-cli-ref` corpus plants reported as
+    phantom recall misses until the fence was fixed.
+
+    Verified against GitHub's own renderer (`POST /markdown`, `mode=gfm`) on
+    that README: 24 code blocks before the fix and 25 after, with the
+    paragraphs at 220-228 rendered as code before and as prose after.
+    """
+    if facts.language != "markdown":
+        return []
+    findings: list[Finding] = []
+    lines = facts.lines
+    open_line = 0
+    open_char = ""
+    open_len = 0
+    open_declares = False
+    for lineno, raw in enumerate(lines, start=1):
+        m = _FENCE_LINE.match(raw)
+        if not m:
+            continue
+        fence, info = m.group("fence"), m.group("info")
+        declared = bool(info.strip())
+        if open_line == 0:
+            # A backtick fence may not carry a backtick in its info string.
+            if fence[0] == "`" and "`" in info:
+                continue
+            open_line, open_char, open_len = lineno, fence[0], len(fence)
+            open_declares = declared
+            continue
+        if fence[0] == open_char and len(fence) >= open_len and not declared:
+            open_line = 0
+            continue
+        if fence[0] != open_char or not declared:
+            continue
+        if open_declares and open_len > len(fence):
+            continue  # declared nesting scaffold: ````markdown around ```python
+        findings.append(Finding(
+            path=facts.path, line=lineno, end_line=lineno,
+            checker="unclosed-fence", severity="smell",
+            title=f"Code fence is swallowed by the block opened at line {open_line}",
+            claim=raw.strip()[:60],
+            evidence=f"the block opened at line {open_line} is closed only by a run of "
+                     f"at least {open_len} `{open_char}` with no info string, so this "
+                     f"line is content inside it — and so is everything after it until "
+                     f"the next {open_len}-`{open_char}` fence on its own line",
+            fix=f"Close the block opened at line {open_line} before this fence.",
+            confidence=0.9,
+        ))
+    if open_line:
+        findings.append(Finding(
+            path=facts.path, line=open_line, end_line=len(lines),
+            checker="unclosed-fence", severity="smell",
+            title="Code fence is never closed",
+            claim=lines[open_line - 1].strip()[:60],
+            evidence=f"this fence has no closer, so the {len(lines) - open_line} "
+                     f"line(s) after it render as one code block to the end of the file",
+            fix="Add the closing fence.",
+            confidence=0.95,
+        ))
+    return _dedupe(findings)
+
+
 CHECKERS = {
     "stale-symbol-ref": check_stale_symbol,
+    "unclosed-fence": check_unclosed_fence,
     "stale-file-ref": check_stale_file,
     "stale-import": check_stale_import,
     "number-drift": check_number_drift,
@@ -2647,6 +2743,7 @@ CHECKER_DESCRIPTIONS = {
     "stale-mock-ref": "@patch/patch.object strings naming symbols absent from the in-repo module (graduated 2026-09-22; re-verified with the checker-error count at 0 — 0 false positives over 15,196 files in svelte/OmniRoute/flask/requests, so the checker demonstrably ran).",
     "phantom-package": "EXPERIMENTAL, opt-in only: imports declared in no manifest (pyproject, requirements, package.json).",
     "stale-cli-ref": "EXPERIMENTAL, opt-in only: documented `grounded` invocations with unknown subcommands or flags.",
+    "unclosed-fence": "EXPERIMENTAL, opt-in only: a Markdown code fence that never closes, or a fence the renderer swallows because an earlier block is still open (both make content render as code and invert the doc checkers' fence state).",
 }
 
 # Opt-in checkers are registered (so --enable/explain work) but excluded
@@ -2655,7 +2752,7 @@ CHECKER_DESCRIPTIONS = {
 # can prove the checker ran — a checker that raises also returns no findings
 # — so graduation requires a checker-error count of 0 (exit code 3).
 OPT_IN_CHECKERS = frozenset({"stale-doc-ref", "stale-contract-ref", "ghost-export",
-                             "phantom-package", "stale-cli-ref"})
+                             "phantom-package", "stale-cli-ref", "unclosed-fence"})
 DEFAULT_ENABLED = frozenset(CHECKERS) - OPT_IN_CHECKERS
 
 # Intentionally unimplemented: docstring contracts and commented-out code

@@ -1,0 +1,7 @@
+{
+  "enable": ["unclosed-fence"],
+  "expect": [
+    {"checker": "unclosed-fence", "path": "README.md", "line": 7,
+     "contains": "swallowed by the block opened at line 5"}
+  ]
+}

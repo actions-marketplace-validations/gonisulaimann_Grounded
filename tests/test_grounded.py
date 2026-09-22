@@ -3033,6 +3033,118 @@ class TestRecallHarness(unittest.TestCase):
             self.assertEqual(report["unbalanced_hosts"], [])
 
 
+class TestUnclosedFence(unittest.TestCase):
+    """`unclosed-fence`: fences the renderer does not honour.
+
+    Precision measured 2026-09-22 over 11,564 Markdown files in eight real
+    repos (svelte, vuejs/docs, rust-lang/book, markdown-it, flask, requests,
+    OmniRoute, and this repo): 0 false positives. The only findings were these
+    fixtures and one real document — OmniRoute's
+    `docs/frameworks/OPEN_SSE_ARCHITECTURE.md`, where a stray bare
+    ```` ```` ```` fence made GitHub render a 76-line code block containing
+    `## Services (117 modules)`, `### Common Patterns` and the surrounding
+    prose, verified with `POST /markdown` (`mode=gfm`).
+
+    The two silence cases below are the shapes that would otherwise fire: a
+    *declared* nesting scaffold (` ````markdown ` around ` ```python `, which
+    is how svelte's docs show Svelte inside HTML on purpose, and renders
+    correctly) and a bare fence inside a block (the illustrated closer of a
+    nested example).
+    """
+
+    def _findings(self, td):
+        return scan_root(Path(td), Config(enabled={"unclosed-fence"}))[0]
+
+    def test_never_closed_fires_at_the_opener(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "\n".join(["# Guide", "", "Prose.", "", "```console",
+                           "grounded scan ."]), encoding="utf-8")
+            findings = self._findings(td)
+            self.assertEqual(len(findings), 1, findings)
+            self.assertEqual(findings[0].line, 5)
+            self.assertIn("never closed", findings[0].title)
+            self.assertEqual(findings[0].severity, "smell")
+
+    def test_swallowed_boundary_names_the_open_block(self):
+        # The real shape: a missing close, then a second header of the same
+        # length, which CommonMark reads as content rather than an opener.
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "\n".join(["# Guide", "", "Gate on changed lines:", "",
+                           "```console", "grounded scan . --changed", "",
+                           "Untracked files are fully reported.", "",
+                           "```console", "grounded scan . --cache", "```"]),
+                encoding="utf-8")
+            findings = self._findings(td)
+            self.assertEqual(len(findings), 1, findings)
+            self.assertEqual(findings[0].line, 10)
+            self.assertIn("swallowed by the block opened at line 5",
+                          findings[0].title)
+
+    def test_bare_longer_fence_fires(self):
+        # A bare 4-backtick line reads as a closer but opens a block; the ts
+        # header inside it is then content. This is the OmniRoute shape.
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "\n".join(["# Guide", "", "Providers are configured in one place.",
+                           "", "````", "", "```ts", "const x = 1;", "```",
+                           "", "````"]), encoding="utf-8")
+            findings = self._findings(td)
+            self.assertEqual(len(findings), 1, findings)
+            self.assertEqual(findings[0].line, 7)
+            self.assertIn("block opened at line 5", findings[0].title)
+
+    def test_declared_nesting_scaffold_is_silent(self):
+        # ````markdown around ```python: the outer fence declares itself, so
+        # the inner header is an illustration, not a swallowed boundary.
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "\n".join(["# Guide", "", "````markdown", "```python",
+                           "x = 1", "```", "````"]), encoding="utf-8")
+            self.assertEqual(self._findings(td), [])
+
+    def test_bare_inner_fence_is_silent(self):
+        # A bare fence inside a block is the illustrated closer of a nested
+        # example, not a header.
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "\n".join(["# Guide", "", "````svelte", "<p>hi</p>", "```",
+                           "````"]), encoding="utf-8")
+            self.assertEqual(self._findings(td), [])
+
+    def test_non_markdown_is_silent(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "a.py").write_text("x = '```console'\n", encoding="utf-8")
+            self.assertEqual(self._findings(td), [])
+
+    def test_cli_collects_markdown_for_this_checker(self):
+        # The scanner only collects Markdown when one of its checkers runs;
+        # without that gate this checker would silently see no files.
+        import io
+        from contextlib import redirect_stdout
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "# Guide\n\n```console\ngrounded scan .\n", encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["scan", td, "--no-color", "--enable", "unclosed-fence"])
+            # reported by default, and a smell: it needs --fail-on smell to
+            # gate, like every other structural note.
+            self.assertEqual(rc, 0)
+            self.assertIn("unclosed-fence", buf.getvalue())
+            with redirect_stdout(io.StringIO()):
+                gated = main(["scan", td, "--no-color", "--enable", "unclosed-fence",
+                              "--fail-on", "smell"])
+            self.assertEqual(gated, 1)
+
+    def test_off_by_default(self):
+        from grounded.checkers import DEFAULT_ENABLED, OPT_IN_CHECKERS
+        self.assertIn("unclosed-fence", OPT_IN_CHECKERS)
+        self.assertNotIn("unclosed-fence", DEFAULT_ENABLED)
+
+
 class TestRepoDocFences(unittest.TestCase):
     """The README's fences must balance.
 

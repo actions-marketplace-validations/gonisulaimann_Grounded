@@ -17,16 +17,21 @@ All notable changes to `grounded` are documented here. Format follows
   file, reported on stderr grouped by cause (one broken checker over a
   10k-file tree is one line, not 10k), and a scan that has any of them can no
   longer print the word `clean`.
-- **The README's fences did not balance, so 186 of its last 248 lines
-  rendered as one code block on GitHub** — the `stale-symbol-ref` table,
-  Configuration, Limitations and Contributing sections included. A
-  ` ```console ` block opened at line 216 was never closed, and in Markdown
-  an unterminated fence runs to EOF, so every fence after it inverted: 49
-  fences, odd. The rendering damage was the visible half; the silent half is
-  that `stale-cli-ref` stopped checking the whole tail of the file, since an
-  invocation inside a code block is not parsed as one. Now 50 fences,
-  balanced, with a test pinning the parity so the class cannot return
-  unnoticed.
+- **The README's fence count was odd, because one ` ```console ` opened at
+  line 216 was never closed.** A closing fence must be at least as long as its
+  opener and carry no info string, so the block ran on to the next bare fence
+  and the paragraphs at lines 220-228 rendered as code. Verified against
+  GitHub's own renderer (`POST /markdown`, `mode=gfm`): 24 code blocks in the
+  broken file, 25 after the fix, every heading correctly rendered in both.
+  **An earlier draft of this entry claimed 186 of the last 248 lines rendered
+  as one code block, and that figure does not reproduce** — it came from this
+  tool's own fence toggle rather than from a renderer, which is exactly the
+  mistake this project's rules warn about. The toggle's view is still real,
+  and it is the quiet half: it inverts for the rest of the file, so
+  `stale-cli-ref` stopped checking the whole tail (186 of the last 248 lines
+  read as code from the toggle's side) and two corpus plants reported as
+  phantom recall misses. Now 50 fences, balanced, with a test pinning the
+  parity so the class cannot return unnoticed.
 - Releases were shipping **three of four macOS/desktop binaries without
   saying so**. The `darwin-amd64` leg asked for `runs-on: macos-13`, an image
   GitHub retired, and a job pointed at a retired runner does not fail — it
@@ -75,9 +80,29 @@ All notable changes to `grounded` are documented here. Format follows
   requests and svelte (3,922 files): 77 expectations, **0 misses, 0 checker
   errors**.
 - Three corpus cases for the checkers that had no firing fixture at all
-  (`stale-symbol-ref`, `number-drift`, `fragile-anchor`), so all 12 checkers
+  (`stale-symbol-ref`, `number-drift`, `fragile-anchor`), so all 13 checkers
   are now held to a designed true positive instead of only to silence. The
-  corpus goes 37 → **40 cases**.
+  corpus goes 37 → **45 cases**.
+- `unclosed-fence` (opt-in), a checker for the defect that started this: a
+  Markdown fence that never closes, or an info-carrying fence the renderer
+  swallows because an earlier block is still open. Fences are judged by
+  CommonMark instead of counted, because counting is what gets it wrong: a
+  closer must be a run of the same character, at least as long as its opener,
+  with no info string. Two legitimate shapes stay silent — a *declared*
+  nesting scaffold (a longer enclosing fence that carries its own info string,
+  which is how svelte's docs show Svelte inside HTML on purpose) and a bare
+  fence inside a block (the illustrated closer of a nested example). Measured
+  2026-09-22 over **11,564 Markdown files** in eight real repos (svelte,
+  vuejs/docs, rust-lang/book, markdown-it, flask, requests, OmniRoute, this
+  repo): **0 false positives**, and the only findings were its own corpus
+  fixtures plus one real document — OmniRoute's
+  `docs/frameworks/OPEN_SSE_ARCHITECTURE.md`, where a stray bare four-backtick
+  fence makes GitHub render a 76-line code block holding `## Services (117
+  modules)`, `### Common Patterns` and the surrounding prose. Known residue: a
+  *bare* fence inside a block is never reported, so an over-long fence used by
+  mistake stays silent where the identical shape is a legitimate scaffold —
+  `docs/guides/USAGE_QUOTA_GUIDE.md` is the measured example, 33 lines
+  swallowed.
 - `scripts/sync-skill.py` — the agent skill is now generated, not
   maintained: `src/grounded/skill/` is the source of truth (it is what
   `init --agent` installs and what the wheel ships) and the top-level

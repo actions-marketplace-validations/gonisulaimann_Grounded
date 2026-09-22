@@ -23,7 +23,7 @@ collect_files → read texts once → RepoIndex → parse + check per file
   import extraction. Broken Python buffers degrade to comment-only
   facts instead of failing.
 * **Check** (`checkers.py`): each checker a pure function of
-  file facts plus the index (7 default, 5 opt-in). A checker never crashes a scan.
+  file facts plus the index (7 default, 6 opt-in). A checker never crashes a scan.
 * **Report** (`reporters.py`): terminal, JSON, SARIF 2.1.0, self-contained
   HTML. Sorted deterministically by path, line, checker.
 
