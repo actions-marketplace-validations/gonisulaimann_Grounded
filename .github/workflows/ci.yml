@@ -55,3 +55,24 @@ jobs:
           for target in docs README.md agent-skill CHANGELOG.md bench demo editors; do
             grounded scan "$target" --no-color --fail-on smell --enable "$OPTS"
           done
+
+  action-dogfood:
+    name: GitHub Action Dogfood
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Dogfood local action checkout (source mode with SARIF output)
+        uses: ./
+        with:
+          version: source
+          path: src
+          fail-on: lie
+          sarif-file: results.sarif
+      - name: Verify SARIF file was generated
+        run: |
+          test -f results.sarif
+          python3 -c "import json; d = json.load(open('results.sarif')); assert d['version'] == '2.1.0'"
+

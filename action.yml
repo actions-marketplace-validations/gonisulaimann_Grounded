@@ -16,6 +16,18 @@ inputs:
   changed-base:
     description: Report only findings on lines changed vs this ref (empty disables)
     default: ''
+  sarif-file:
+    description: Path to write SARIF output for GitHub Code Scanning (optional)
+    default: ''
+  config:
+    description: Explicit config file path (grounded.toml / pyproject.toml)
+    default: ''
+  enable:
+    description: Comma-separated checker IDs to run exclusively (optional)
+    default: ''
+  disable:
+    description: Comma-separated checker IDs to skip (optional)
+    default: ''
 runs:
   using: composite
   steps:
@@ -41,6 +53,14 @@ runs:
         ARGS=("${{ inputs.path }}" --fail-on "${{ inputs['fail-on'] }}" --no-color)
         [ -n "${{ inputs.baseline }}" ] && ARGS+=(--baseline "${{ inputs.baseline }}")
         [ -n "${{ inputs['changed-base'] }}" ] && ARGS+=(--changed "${{ inputs['changed-base'] }}")
+        [ -n "${{ inputs.config }}" ] && ARGS+=(--config "${{ inputs.config }}")
+        [ -n "${{ inputs.enable }}" ] && ARGS+=(--enable "${{ inputs.enable }}")
+        [ -n "${{ inputs.disable }}" ] && ARGS+=(--disable "${{ inputs.disable }}")
+
+        if [ -n "${{ inputs['sarif-file'] }}" ]; then
+          grounded scan "${ARGS[@]}" --format sarif --output "${{ inputs['sarif-file'] }}" || true
+        fi
+
         grounded scan "${ARGS[@]}"
 branding:
   icon: search
