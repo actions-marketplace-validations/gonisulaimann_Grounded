@@ -83,6 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="install the grounded agent skill to ~/.claude/skills/grounded (all projects)")
     ag.add_argument("--skill-project", action="store_true",
                     help="install the grounded agent skill to .claude/skills/grounded (this project only)")
+    ag.add_argument("--pre-commit", action="store_true",
+                    help="write .pre-commit-config.yaml with the grounded hook")
 
     ls = sub.add_parser("lsp", help="serve grounded over stdio as an LSP server for editors")
 
@@ -286,6 +288,30 @@ lint-cmd: "sh -c 'for f; do grounded scan \"$f\" --quiet || exit 1; done' sh"
 """
 
 
+def _precommit_conf() -> str:
+    return (
+        "# Grounded: fail commits carrying new dangling references.\n"
+        "# Keep the rev current with: pre-commit autoupdate\n"
+        "repos:\n"
+        "  - repo: https://github.com/gonisulaimann/Grounded\n"
+        f"    rev: v{__version__}\n"
+        "    hooks:\n"
+        "      - id: grounded\n"
+    )
+
+
+def _init_precommit(root: Path, force: bool, dry_run: bool) -> str:
+    # Same no-merge rule as Aider: without a YAML library, merging into
+    # an existing config risks corrupting it, so existing files win.
+    target = root / ".pre-commit-config.yaml"
+    if target.exists() and not force:
+        return f"exists, kept (use --force): {target}"
+    if dry_run:
+        return f"would write {target}"
+    target.write_text(_precommit_conf(), encoding="utf-8")
+    return f"wrote {target}"
+
+
 def _init_claude(root: Path, force: bool, dry_run: bool) -> str:
     import json
     target = root / ".claude" / "settings.json"
@@ -380,7 +406,8 @@ def _install_skill(dest: Path, force: bool, dry_run: bool) -> tuple[str, bool]:
 
 def cmd_init_agent(args: argparse.Namespace) -> int:
     root = Path.cwd()
-    want_all = not (args.claude or args.cursor or args.aider or args.skill or args.skill_project)
+    want_all = not (args.claude or args.cursor or args.aider or args.skill or args.skill_project
+                    or args.pre_commit)
     results = []
     ok = True
     if args.claude or want_all:
@@ -399,6 +426,8 @@ def cmd_init_agent(args: argparse.Namespace) -> int:
             root / ".claude" / "skills" / _SKILL_DIR_NAME, args.force, args.dry_run)
         results.append(msg)
         ok = ok and good
+    if args.pre_commit:
+        results.append(_init_precommit(root, args.force, args.dry_run))
     for line in results:
         print(f"grounded init-agent: {line}")
     return 0 if ok else 2

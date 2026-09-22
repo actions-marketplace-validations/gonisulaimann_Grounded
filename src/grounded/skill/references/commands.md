@@ -17,7 +17,7 @@ grounded list [PATH]
 grounded explain [CHECKER]
 grounded init [--force]
 grounded init-agent [--claude|--cursor|--aider] [--skill] [--skill-project]
-               [--force] [--dry-run]
+               [--pre-commit] [--force] [--dry-run]
 grounded mcp [--root .]
 grounded lsp
 ```

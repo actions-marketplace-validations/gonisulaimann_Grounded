@@ -243,8 +243,10 @@ Corrupt or mismatched caches fall back to a full scan silently.
 | `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, and workaround markers (`HACK`, `XXX`, `workaround`) with no ticket or expiry condition. |
+| `stale-entrypoint` | lie (error) | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. Graduated 2026-09-22: silent on 5 real repos. |
+| `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module (a test that errors at runtime). Graduated 2026-09-22: 134 Django findings classified, all fixed or documented. |
 
-Six more checkers ship **opt-in** (`--enable <id>`); they graduate to
+Four more checkers ship **opt-in** (`--enable <id>`); they graduate to
 default-on by measured precision ([tracked here](https://github.com/gonisulaimann/Grounded/tree/main/corpus)):
 
 | ID | Severity | What it reports |
@@ -252,8 +254,6 @@ default-on by measured precision ([tracked here](https://github.com/gonisulaiman
 | `stale-doc-ref` | lie | fenced doc example calling a symbol defined nowhere |
 | `stale-contract-ref` | lie / drift | deprecation target, lock claim, or env default contradicting the repo |
 | `ghost-export` | smell | public symbol with no importers, no use, no API marking |
-| `stale-entrypoint` | lie | `pyproject` scripts / `package.json` bin+main pointing at nothing |
-| `stale-mock-ref` | lie | `@patch` string naming an absent in-repo symbol |
 | `phantom-package` | drift | import declared in no manifest |
 
 A rule stays silent unless the contradiction is mechanical. Imported names,

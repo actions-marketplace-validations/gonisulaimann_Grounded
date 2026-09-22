@@ -10,8 +10,8 @@
 | `stale-doc-ref` | lie (error), **experimental, opt-in only** | A fenced code example (explicit `python`/`js`/`ts`/`go`/`c` tag) calls a symbol bound nowhere in the example and defined nowhere in the repo. |
 | `stale-contract-ref` | lie/drift, **experimental, opt-in only** | A deprecation notice naming a nonexistent replacement, a lock-holder claim (`must hold X`) naming nothing, or a comment stating an env default the code contradicts. |
 | `ghost-export` | smell (note), **experimental, opt-in only** | A public symbol with no importers anywhere, no use in its own file, and no deliberate API marking (`__all__`, exports, `__init__`). |
-| `stale-entrypoint` | lie (error), **experimental, opt-in only** | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. |
-| `stale-mock-ref` | lie (error), **experimental, opt-in only** | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module (a test that errors at runtime). |
+| `stale-entrypoint` | lie (error) | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. Graduated 2026-09-22. |
+| `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module. Graduated 2026-09-22. |
 | `phantom-package` | drift (warning), **experimental, opt-in only** | An absolute import declared in no manifest (`pyproject.toml`, `requirements*.txt`, `package.json`). |
 | `stale-cli-ref` | lie (error), **experimental, opt-in only** | A documented `grounded` invocation with an unknown subcommand or flag (verified against the live parser). |
 ## Experimental checkers
@@ -47,16 +47,19 @@ locals don't qualify. Known limitation: barrel re-exports
 + `p.mod.name()`) are not traced. C is excluded (no static info).
 
 `stale-entrypoint`: only `pyproject.toml` scripts and `package.json`
-`bin`/`main` are read (collected only when enabled). Malformed files
-stay silent. Build-output dirs (`dist/`, `build/`, …) stay silent —
-absent pre-publish is normal, not a lie. External (`bare-package`)
-targets stay silent.
+`bin`/`main` are read. Malformed files stay silent. Build-output dirs
+(`dist/`, `build/`, …) stay silent — absent pre-publish is normal, not
+a lie. External (`bare-package`) targets stay silent. Graduated
+2026-09-22 after silent runs on 5 real repos plus fixtures.
 
 `stale-mock-ref`: decorator, call, and `with` forms of
 `patch`/`mocker.patch`/`mock.patch` plus `patch.object` (bare names
-resolve through imports; string targets verify the class, method-level
-gaps documented). `create=True` opts out; external module paths stay
-silent.
+resolve through imports with alias resolution; string targets verify
+progressively; method/meta/instance attributes stay silent by design).
+`create=True` opts out; external module paths stay silent. Graduated
+2026-09-22 after a django stress run (134 apparent lies classified:
+cross-module chains, aliases, proxies, builtins — all fixed or
+documented as gaps) plus CPython clean.
 
 `phantom-package`: union of every manifest flavor (project deps, all
 optional/PEP 735/Poetry groups, build-system requires,

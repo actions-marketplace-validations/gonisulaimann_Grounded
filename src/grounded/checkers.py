@@ -1853,6 +1853,77 @@ def _mock_provided(index: RepoIndex, target: str, symbol: str) -> bool:
     return provided or dynamic
 
 
+_IMPORT_AS = re.compile(
+    r"^\s*import\s+(.+)$")
+
+
+def _mock_import_map(facts: FileFacts, skip: set[int]) -> dict[str, tuple[str, int, str | None]]:
+    """Bare head -> (module, level, orig): full dotted module, the name as
+    defined there (alias resolved), level for relatives. Covers
+    `from m import (X as) Y`, `import a.b as m`, and plain `import a`
+    (top segment, usable as an absolute root).
+    """
+    out: dict[str, tuple[str, int, str | None]] = {}
+    for module, level, names, _guarded, _lineno in facts.from_imports:
+        for orig, alias in names:
+            out[alias or orig] = (module or "", level, orig)
+    for idx, line in enumerate(facts.lines, start=1):
+        if idx in skip:
+            continue
+        m = _IMPORT_AS.match(line)
+        if not m:
+            continue
+        for part in m.group(1).split(","):
+            pm = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_.]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*", part)
+            if pm:
+                out[pm.group(2)] = (pm.group(1), 0, None)
+    for alias, root in facts.imports.items():
+        if root and alias not in out:
+            out[alias] = (root, 0, None)
+    return out
+
+
+def _mock_resolve_path(index: RepoIndex, claimer: str, parts: list[str]
+                       ) -> tuple[str, str, str] | None:
+    """Progressive resolution of an absolute dotted mock path.
+
+    Returns None when silent (external top, or a resolvable prefix
+    provides the head: attribute chains, methods, builtins injected
+    into module namespace), else (modfile, head, full) for the verdict.
+    The longest file-prefix wins; attribute chains below a provided
+    head are method gaps the snapshot cannot falsify.
+    """
+    if not parts or len(parts) < 2:
+        return None
+    top_targets = _resolve_py_target(index, claimer, parts[0], 0)
+    if top_targets is None and parts[0] not in index.py_prefixes:
+        return None  # external top-level: outside snapshot analysis
+    for k in range(len(parts) - 1, 0, -1):
+        mod = ".".join(parts[:k])
+        targets = _resolve_py_target(index, claimer, mod, 0)
+        if targets is None:
+            continue
+        existing = [t for t in targets if t in index.rel_paths]
+        if not existing:
+            # Namespace package portion (no __init__): unenumerable.
+            prefix = "/".join(parts[:k])
+            if prefix in index.dirs and any(
+                    r == prefix or r.startswith(prefix + "/") for r in index.rel_paths):
+                return None
+            continue
+        head = parts[k]
+        if (head in PYTHON_BUILTINS
+                or any(_mock_provided(index, t, head) for t in existing)):
+            return None
+        modpath = "/".join(parts[:k])
+        if (f"{modpath}/{head}.py" in index.rel_paths
+                or f"{modpath}/{head}/__init__.py" in index.rel_paths
+                or f"{modpath}/{head}" in index.dirs):
+            return None  # head is itself a module: patching it is valid
+        return (existing[0], head, ".".join(parts))
+    return None
+
+
 def check_stale_mock_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     """@patch / patch.object strings naming absent in-repo symbols.
 
@@ -1867,58 +1938,71 @@ def check_stale_mock_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     for c in facts.comments:
         for ln in range(c.line, c.end_line + 1):
             skip.add(ln)
+    import_map = _mock_import_map(facts, skip)
     for idx, line in enumerate(facts.lines, start=1):
         if idx in skip or not line.strip():
             continue
-        jobs: list[tuple[str, str]] = []  # (module, symbol)
+        jobs: list[list[str]] = []  # absolute dotted paths, attr included
         for m in _MOCK_PATCH_STR.finditer(line):
             split = _mock_split(m.group(1))
             if split:
-                jobs.append(split)
+                jobs.append((split[0] + "." + split[1]).split("."))
         for m in _MOCK_PATCH_OBJECT.finditer(line):
             str_target, bare_target, attr = m.group(1), m.group(2), m.group(3)
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", attr or ""):
                 continue
             if str_target:
-                # patch.object("app.Foo", "meth"): verify the class;
-                # method-level renames on string targets are a known gap.
+                # patch.object("app.Foo", "meth"): the class is verified,
+                # the method is a documented gap.
                 split = _mock_split(str_target)
                 if split:
-                    jobs.append(split)
+                    jobs.append((split[0] + "." + split[1]).split("."))
             elif bare_target:
-                mod = facts.imports.get(bare_target.split(".")[0], None)
-                if mod:
-                    jobs.append((mod, attr))
+                parts = bare_target.split(".")
+                entry = import_map.get(parts[0])
+                if not entry:
+                    continue
+                mod, level, orig = entry
+                # segs continues the object path below the imported name;
+                # orig is that name as defined (alias resolved). A bare
+                # top import (`import a` used as `a.b.X`) is already
+                # absolute: don't re-prepend. The attr itself stays
+                # unjudged (method/meta gap by design).
+                if orig is not None:
+                    tail = [orig] + parts[1:]
+                elif mod and mod != parts[0]:
+                    tail = mod.split(".") + parts[1:]  # import-as alias
+                else:
+                    tail = parts
+                if level:
+                    base = _resolve_py_base(facts.path, level)
+                    if not base and level - 1 > len(facts.path.split("/")[:-1]):
+                        continue
+                    full = base + ((mod.split(".") if mod else []) + tail
+                                   if orig is not None or (mod and mod != parts[0])
+                                   else tail)
+                else:
+                    full = ((mod.split(".") if mod else []) + tail
+                            if orig is not None or (mod and mod != parts[0])
+                            else tail)
+                jobs.append(full)
         if not jobs:
             continue
         if re.search(r"\bcreate\s*=\s*True\b", line):
             continue
-        for mod, symbol in jobs:
-            if len(symbol) < 3 or _is_dunder(symbol):
+        for full in jobs:
+            if len(full[-1]) < 3 or _is_dunder(full[-1]):
                 continue
-            targets = _resolve_py_target(index, facts.path, mod, 0)
-            if targets is None:
-                continue  # external module path
-            existing = [t for t in targets if t in index.rel_paths]
-            if not existing:
-                findings.append(Finding(
-                    path=facts.path, line=idx, end_line=idx,
-                    checker="stale-mock-ref", severity="lie",
-                    title=f"Mock patches `{mod}.{symbol}` but module `{mod}` does not exist",
-                    claim=f'"{mod}.{symbol}"',
-                    evidence=f"No `{mod}` module file exists in this repo.",
-                    fix="Fix the mock path or remove the test double.",
-                    confidence=0.8,
-                ))
+            verdict = _mock_resolve_path(index, facts.path, full)
+            if verdict is None:
                 continue
-            if any(_mock_provided(index, t, symbol) for t in existing):
-                continue
+            modfile, head, _full = verdict
             findings.append(Finding(
                 path=facts.path, line=idx, end_line=idx,
                 checker="stale-mock-ref", severity="lie",
-                title=f"Mock patches `{mod}.{symbol}` which is not defined there",
-                claim=f'"{mod}.{symbol}"',
-                evidence=f"`{existing[0]}` exists but defines no `{symbol}`.",
+                title=f"Mock patches `{_full}`: `{head}` not found in `{modfile}`",
+                claim=f'"{_full}"',
+                evidence=f"`{modfile}` exists but provides no `{head}`.",
                 fix="Update the mock to the current name.",
                 confidence=0.8,
             ))
@@ -2256,8 +2340,8 @@ CHECKER_DESCRIPTIONS = {
     "stale-doc-ref": "EXPERIMENTAL, opt-in only: fenced Markdown code example calls a symbol defined nowhere in the repo.",
     "stale-contract-ref": "EXPERIMENTAL, opt-in only: deprecation target, lock-holder claim, or env default in a comment that contradicts the repo.",
     "ghost-export": "EXPERIMENTAL, opt-in only: public symbol with no importers, no in-file use, and no deliberate API marking.",
-    "stale-entrypoint": "EXPERIMENTAL, opt-in only: pyproject scripts or package.json bin/main pointing at nothing in the repo.",
-    "stale-mock-ref": "EXPERIMENTAL, opt-in only: @patch/patch.object strings naming symbols absent from the in-repo module.",
+    "stale-entrypoint": "pyproject scripts and package.json bin/main pointing at nothing in the repo (graduated 2026-09-22: silent on 5 real repos).",
+    "stale-mock-ref": "@patch/patch.object strings naming symbols absent from the in-repo module (graduated 2026-09-22: zero false positives on django/CPython stress).",
     "phantom-package": "EXPERIMENTAL, opt-in only: imports declared in no manifest (pyproject, requirements, package.json).",
     "stale-cli-ref": "EXPERIMENTAL, opt-in only: documented `grounded` invocations with unknown subcommands or flags.",
 }
@@ -2265,8 +2349,8 @@ CHECKER_DESCRIPTIONS = {
 # Opt-in checkers are registered (so --enable/explain work) but excluded
 # from every default set. A checker graduates by measured precision, not
 # by age: see docs/rules.md.
-OPT_IN_CHECKERS = frozenset({"stale-doc-ref", "stale-contract-ref", "ghost-export", "stale-entrypoint",
-                             "stale-mock-ref", "phantom-package", "stale-cli-ref"})
+OPT_IN_CHECKERS = frozenset({"stale-doc-ref", "stale-contract-ref", "ghost-export",
+                             "phantom-package", "stale-cli-ref"})
 DEFAULT_ENABLED = frozenset(CHECKERS) - OPT_IN_CHECKERS
 
 # Intentionally unimplemented: docstring contracts and commented-out code

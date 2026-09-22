@@ -5,6 +5,14 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- Graduated `stale-mock-ref` and `stale-entrypoint` to default-on.
+  Mock strings resolve progressively (cross-module chains, aliases,
+  proxies, builtins injected into module namespace); entrypoint and
+  mock evidence came from silent runs on django/CPython plus fixtures.
+- `grounded init-agent --pre-commit` writes `.pre-commit-config.yaml`
+  with the grounded hook (refuses to merge, like the Aider config).
+
 ### Fixed
 - `collect_files`: symlinked directories are no longer followed — inside
   the root they duplicated whole trees under a second rel path (seen:

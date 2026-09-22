@@ -1929,6 +1929,27 @@ class TestInitAgent(unittest.TestCase):
                 else:
                     os.environ["HOME"] = old_home
 
+    def test_precommit_install_keeps_force_dryrun(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td)
+            import os
+            cwd = Path.cwd()
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent", "--pre-commit"]), 0)
+                text = (target / ".pre-commit-config.yaml").read_text()
+                self.assertIn("gonisulaimann/Grounded", text)
+                self.assertIn("- id: grounded", text)
+                (target / ".pre-commit-config.yaml").write_text("mine\n", encoding="utf-8")
+                self.assertEqual(main(["init-agent", "--pre-commit"]), 0)
+                self.assertEqual(
+                    (target / ".pre-commit-config.yaml").read_text(), "mine\n")
+                self.assertEqual(
+                    main(["init-agent", "--pre-commit", "--force", "--dry-run"]), 0)
+            finally:
+                os.chdir(cwd)
+
 
 class TestStaleDocRef(unittest.TestCase):
     DOC = (
@@ -2243,14 +2264,17 @@ class TestStaleEntrypoint(unittest.TestCase):
             self.assertIn("missing.js", out)
             self.assertNotIn("dist/index.js", out)
 
-    def test_off_by_default(self):
+    def test_on_by_default(self):
         from grounded.cli import main
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            pkg = root / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
             (root / "pyproject.toml").write_text(
                 '[project]\nname = "demo"\n[project.scripts]\nold = "pkg.gone:run"\n',
                 encoding="utf-8")
-            self.assertEqual(main(["scan", td, "--no-color"]), 0)
+            self.assertEqual(main(["scan", td, "--no-color"]), 1)
 
 
 class TestStaleMockRef(unittest.TestCase):
@@ -2305,6 +2329,9 @@ class TestStaleMockRef(unittest.TestCase):
             self.assertNotIn("stale-mock-ref", out)
 
     def test_patch_object(self):
+        # Bare patch.object verifies the OBJECT path only; the attr is a
+        # method/meta gap the snapshot cannot falsify (Django _meta,
+        # proxies). A renamed class still fires (see below).
         with tempfile.TemporaryDirectory() as td:
             tests = self._tree(Path(td))
             (tests / "test_billing.py").write_text(
@@ -2313,16 +2340,30 @@ class TestStaleMockRef(unittest.TestCase):
                 'patch.object(process_payment, "nope")\n',
                 encoding="utf-8")
             rc, out = self._scan(td)
-            self.assertEqual(rc, 1)
-            self.assertIn("nope", out)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("stale-mock-ref", out)
 
-    def test_off_by_default(self):
+    def test_patch_object_broken_class_fires(self):
+        # The object path itself is judged: a renamed class breaks every
+        # patch.object on it, and no other checker sees mock targets.
+        with tempfile.TemporaryDirectory() as td:
+            tests = self._tree(Path(td))
+            (tests / "test_billing.py").write_text(
+                'from unittest.mock import patch\n'
+                'from app.services.billing import GoneClass\n'
+                'patch.object(GoneClass, "meth")\n',
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertEqual(rc, 1)
+            self.assertIn("GoneClass", out)
+
+    def test_on_by_default(self):
         from grounded.cli import main
         with tempfile.TemporaryDirectory() as td:
             tests = self._tree(Path(td))
             (tests / "test_billing.py").write_text(
                 '@patch("app.services.billing.charge_card")\nX = 1\n', encoding="utf-8")
-            self.assertEqual(main(["scan", td, "--no-color"]), 0)
+            self.assertEqual(main(["scan", td, "--no-color"]), 1)
 
 
 class TestPhantomPackage(unittest.TestCase):

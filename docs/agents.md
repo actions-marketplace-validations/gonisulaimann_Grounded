@@ -7,6 +7,7 @@ grounded init-agent                  # Claude hook + Cursor rule + Aider config
 grounded init-agent --cursor         # just .cursor/rules/grounded.mdc
 grounded init-agent --skill          # install skill to ~/.claude/skills/grounded
 grounded init-agent --skill-project  # install skill to .claude/skills/grounded
+grounded init-agent --pre-commit     # write .pre-commit-config.yaml
 ```
 
 `init-agent` is idempotent, refuses invalid JSON instead of merging
