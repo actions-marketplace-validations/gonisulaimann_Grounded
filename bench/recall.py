@@ -84,10 +84,9 @@ COPY_IGNORE = shutil.ignore_patterns(
 # Prose can be merged into a host file that already exists; structured formats
 # cannot. Matches the suffixes the scanner collects for the doc checkers.
 MERGEABLE = {".md", ".markdown", ".mdc"}
-# The same fence toggle the doc checkers use. Kept byte-identical to theirs on
-# purpose: the point is to reproduce the state machine the checkers actually
-# run, not an idealized Markdown parser.
-FENCE = re.compile(r"^(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)\s*$")
+# The same fence walk the checkers use (`_fence_scan`), imported — not
+# re-derived. The point is to reproduce the state machine the checkers
+# actually run, so it must agree with them by construction.
 
 
 def firing_cases(only: list[str] | None = None) -> list[tuple[str, list[dict]]]:
@@ -120,25 +119,27 @@ def ends_inside_fence(text: str) -> bool:
     it matters here: prose appended to such a file lands *inside* the host's
     dangling block, so a planted invocation is no longer parsed as one.
     """
-    inside = False
-    for line in text.splitlines():
-        if FENCE.match(line.strip()):
-            inside = not inside
-    return inside
+    from grounded.checkers import _fence_scan
+    _, open_at = _fence_scan(text.splitlines())
+    return open_at != 0
 
 
 def plant(case_id: str, into: Path,
-          ) -> tuple[list[str], list[str], dict[str, bytes], list[str]]:
+          ) -> tuple[list[str], list[str], dict[str, bytes], list[str],
+                     dict[str, int]]:
     """Plant a case root-relative.
 
     Returns `(created, skipped, merged originals, hosts whose dangling fence
-    had to be closed first)`.
+    had to be closed first, merged line offsets)`. A merged file's offset is
+    the number of lines the plant added ahead of the fixture content, so
+    expectations that embed fixture line numbers can be translated.
     """
     case = CASES / case_id
     created: list[str] = []
     skipped: list[str] = []
     merged: dict[str, bytes] = {}
     closed: list[str] = []
+    offsets: dict[str, int] = {}
     for src in sorted(p for p in case.rglob("*") if p.is_file()):
         rel = src.relative_to(case).as_posix()
         if rel == "expected.json":
@@ -157,12 +158,18 @@ def plant(case_id: str, into: Path,
                 # outcome and reports as a recall miss.
                 separator = b"\n\n```\n\n"
                 closed.append(rel)
-            dest.write_bytes(host + separator + src.read_bytes())
+            fixture_bytes = src.read_bytes()
+            dest.write_bytes(host + separator + fixture_bytes)
+            # Lines ahead of the fixture = every complete line in
+            # host+separator (correct whether or not the host ends with a
+            # newline).
+            offsets[rel] = len((host + separator).decode("utf-8", "replace")
+                               .splitlines())
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
         created.append(rel)
-    return created, skipped, merged, closed
+    return created, skipped, merged, closed, offsets
 
 
 def unplant(into: Path, created: list[str], merged: dict[str, bytes]) -> None:
@@ -193,7 +200,7 @@ def run_repo(root: Path, cases: list[tuple[str, list[dict]]]) -> dict:
         copy = Path(td) / root.name
         shutil.copytree(root, copy, ignore=COPY_IGNORE, symlinks=True)
         for case_id, expect in cases:
-            created, skipped, merged, closed = plant(case_id, copy)
+            created, skipped, merged, closed, offsets = plant(case_id, copy)
             unbalanced.update(closed)
             findings, raised = scan(copy)
             errors.extend(raised)
@@ -201,8 +208,20 @@ def run_repo(root: Path, cases: list[tuple[str, list[dict]]]) -> dict:
                      if (f.checker, f.path, f.line) not in baseline_keys]
             measurable = set(created) | set(merged)
             for e in expect:
+                if e["path"] in offsets:
+                    off = offsets[e["path"]]
+                    e = {**e, "line": e.get("line", 0) + off}
+                    if e.get("contains"):
+                        # Titles embed opener line numbers
+                        # (`swallowed by the block opened at line N`), which
+                        # shift when the fixture is merged under host content.
+                        e["contains"] = re.sub(
+                            r"line (\d+)",
+                            lambda m: f"line {int(m.group(1)) + off}",
+                            e["contains"])
                 match = [f for f in delta if f.checker == e["checker"]
-                         and f.path == e["path"]]
+                         and f.path == e["path"]
+                         and (e.get("line") is None or f.line == e["line"])]
                 hit = [f for f in match if e.get("contains", "") in f.title]
                 outcome, detail = "missed", ""
                 if e["path"] in skipped:

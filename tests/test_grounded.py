@@ -2219,6 +2219,134 @@ class TestInitAgent(unittest.TestCase):
                 os.chdir(cwd)
 
 
+class TestFenceToggleCommonMark(unittest.TestCase):
+    """Fence tracking must follow CommonMark, not count fence-looking lines.
+
+    Measured 2026-09-22: re-deriving the retired scan and A/B-ing it against
+    the shared walk over 10,857 Markdown files (Grounded, OmniRoute, svelte,
+    flask, requests) shows two error directions. Prose wrongly skipped
+    (the disarm): 1 file, 41 lines — an i18n doc with header text glued to
+    its fence lines shifting the toggle's state. The far larger error ran
+    the other way: 10,962 lines of code in 1,032 files were read as prose,
+    because the retired regex did not recognize indented fences, rich info
+    strings (` ```bash title="x" `), or unclosed fences running to EOF.
+    An earlier draft of this docstring cited "238 files / 20,681 lines";
+    that figure came from a comparison that mixed line populations and is
+    retracted here.
+
+    CommonMark rules pinned here:
+
+    * a closing fence is a run of the **same character**, **at least as
+      long**, carrying **no info string** — a longer bare fence closes;
+    * an info-carrying fence inside an open block is **content**, not an
+      opener (the README-216 defect, renderer-verified);
+    * a fence may carry a rich info string (` ```bash title="x" `) and up
+      to three leading spaces; a backtick fence whose info string contains
+      a backtick is not a fence at all.
+    """
+
+    def _doc_blocks(self, text):
+        from grounded.checkers import _doc_fence_blocks
+        return _doc_fence_blocks(text.splitlines())
+
+    def test_closing_fence_requires_no_info_string(self):
+        # ```console inside an open block is content, not an opener; the
+        # block stays open to EOF.
+        text = ("# Guide\n\n```console\ngrounded scan . --changed\n\n"
+                "Untracked files are fully reported.\n\n"
+                "```console\ngrounded scan . --cache\n```")
+        self.assertEqual(self._doc_blocks(text), [])
+
+    def test_rich_info_string_is_still_a_fence(self):
+        # `bash title="x"` opens a block; the old regex did not match it, so
+        # every line inside was analyzed as prose. CommonMark property: the
+        # info string is everything after the fence run.
+        from grounded.checkers import _fence_scan
+        blocks, open_at = _fence_scan(
+            ['```bash title="install"', "ghost_tool --run", "```"])
+        self.assertEqual([(b["open"], b["close"], b["info"]) for b in blocks],
+                         [(1, 3, 'bash title="install"')])
+        self.assertEqual(open_at, 0)
+        # and the language table's deliberate narrowness is unchanged:
+        # bash blocks are console, not parsed doc examples.
+        self.assertEqual(self._doc_blocks(
+            '```bash title="install"\nghost_tool --run\n```\n'), [])
+
+    def test_indented_fence_opens_a_block(self):
+        # Up to three leading spaces are allowed; the old regex required the
+        # fence at column 0.
+        text = "intro\n\n   ```python\nx = ghost_call()\n   ```\n"
+        self.assertEqual(self._doc_blocks(text), [("python", 4, 5)])
+
+    def test_longer_bare_fence_closes(self):
+        text = "````python\nx = ghost_call()\n`````\n"
+        self.assertEqual(self._doc_blocks(text), [("python", 2, 3)])
+
+    def test_backtick_in_info_string_is_not_a_fence(self):
+        # CommonMark: a backtick fence's info string may not contain a
+        # backtick, so ``` `code` ``` is content — and must not swallow the
+        # rest of the file.
+        text = "``` `code` example\nnot a fence\n\n```python\nx = ghost()\n```\n"
+        self.assertEqual(self._doc_blocks(text), [("python", 5, 6)])
+
+    def test_nested_shorter_fence_is_content(self):
+        # Declared scaffold: ````markdown around ```python. The inner block
+        # is part of the illustrated content, not a separate block: exactly
+        # one CommonMark block, and the inner fence is never re-emitted as
+        # a python doc block (no double-reporting, no unparsed-language
+        # leak into stale-doc-ref).
+        from grounded.checkers import _fence_scan
+        lines = "````markdown\n```python\nx = 1\n```\n````\n".splitlines()
+        blocks, open_at = _fence_scan(lines)
+        self.assertEqual([(b["open"], b["close"]) for b in blocks], [(1, 5)])
+        self.assertEqual(open_at, 0)
+        self.assertEqual(self._doc_blocks("\n".join(lines) + "\n"), [])
+
+    def test_cli_ref_sees_invocations_in_rich_fences(self):
+        import io
+        from contextlib import redirect_stdout
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                '# Guide\n\n```bash title="check"\ngrounded scan . --bogus-flag\n````\n',
+                encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main(["scan", td, "--no-color", "--enable", "stale-cli-ref"])
+            self.assertIn("bogus-flag", buf.getvalue())
+
+    def test_cli_ref_not_disarmed_by_rich_fence(self):
+        # The measured disarm: a rich fence the old toggle did not match
+        # flipped its state for the rest of the file.
+        import io
+        from contextlib import redirect_stdout
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                '# Guide\n\n```bash title="x"\nls\n```\n\n'
+                "```console\ngrounded frobnicate --yes\n```\n",
+                encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main(["scan", td, "--no-color", "--enable", "stale-cli-ref"])
+            self.assertIn("frobnicate", buf.getvalue())
+
+    def test_unclosed_fence_uses_the_same_walk(self):
+        # The checker and the toggle must agree by construction: a rich
+        # info string no longer hides a defect.
+        import io
+        from contextlib import redirect_stdout
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                '# Guide\n\n```bash title="x"\ngrounded scan .\n',
+                encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main(["scan", td, "--no-color", "--enable", "unclosed-fence"])
+            self.assertIn("never closed", buf.getvalue())
+
+
 class TestStaleDocRef(unittest.TestCase):
     DOC = (
         "# Demo\n\n```python\nfrom pkg.core import get_account\n\n"
@@ -3031,6 +3159,25 @@ class TestRecallHarness(unittest.TestCase):
             report = recall.run_repo(host, recall.firing_cases(["cli-stale"]))
             self.assertEqual([r["outcome"] for r in report["results"]], ["caught"])
             self.assertEqual(report["unbalanced_hosts"], [])
+
+    def test_merged_expectation_line_numbers_translate(self) -> None:
+        # Expectations that embed fixture line numbers (`swallowed by the
+        # block opened at line 5`) must shift by the plant offset, or a
+        # merge into a non-empty host reports a phantom title miss. The
+        # host here contributes 3 content lines + 2 separator lines, so
+        # the fixture's line 7 lands at 12 — and must be judged caught
+        # there, not reported as a miss with "title changed".
+        recall = self._recall()
+        td, host = self._host("# Host\n\nSome intro prose.\n")
+        with td:
+            report = recall.run_repo(
+                host, recall.firing_cases(["fence-bare-outer-boundary"]))
+            r = report["results"][0]
+            self.assertEqual(r["outcome"], "caught", report["results"])
+            self.assertEqual(r["expected_line"], 12, report["results"])
+            self.assertEqual(r["observed_line"], 12, report["results"])
+            self.assertEqual(r["detail"],
+                             "merged into the host's own file", report["results"])
 
 
 class TestUnclosedFence(unittest.TestCase):
