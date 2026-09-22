@@ -6,7 +6,6 @@
         </picture>
     </a>
     <br>
-    The 1-Click Firewall That Stops AI Coding Agents from Hallucinating in Your Repo
 </h1>
 
 <p align="center">
