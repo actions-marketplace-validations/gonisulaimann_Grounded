@@ -122,6 +122,12 @@ class TestSymbolV2(unittest.TestCase):
         out = self.syms({"a.py": "# Uses SendXxx() for delivery.\nX = 1\n"})
         self.assertEqual(out, [])
 
+    def test_negated_backticked_call_silent(self):
+        # A negated claim asserts absence ("no call to X"): flagging it
+        # contradicts a true statement (seen: gh httpmock test comment).
+        out = self.syms({"a.py": "# Notice there is no call to `ghost_fn()`.\nX = 1\n"})
+        self.assertEqual(out, [])
+
     def test_imported_root_is_silent(self):
         out = self.syms({"a.py": "from http.cookiejar import CookieJar\n# Wraps CookieJar.clear().\nX = 1\n"})
         self.assertEqual(out, [])
@@ -235,6 +241,14 @@ class TestFileV2(unittest.TestCase):
     def test_in_scope_existing_silent(self):
         out = self.files({"src/keep.py": "X = 1\n",
                           "a.py": "# See src/keep.py for details.\nY = 2\n"})
+        self.assertEqual(out, [])
+
+    def test_illustrative_eg_silent(self):
+        # e.g./i.e. markers introduce examples, not claims (seen: gh
+        # skill-convention doc comment). Without placeholder segments,
+        # so this isolates the illustrative guard itself.
+        out = self.files({"pkg/exists.py": "X = 1\n",
+                          "a.py": "# e.g. pkg/missing/file.py\nY = 2\n"})
         self.assertEqual(out, [])
 
     def test_out_of_scope_silent(self):
@@ -2024,6 +2038,24 @@ class TestStaleDocRef(unittest.TestCase):
             self.assertIn("fetch_user", buf.getvalue())
             self.assertNotIn("get_account(1)", buf.getvalue())
 
+    def test_go_stdlib_calls_silent(self):
+        # Toolchain calls (fmt.Printf, time.Now) are not repo claims
+        # (seen: gin docs). PONDER stays flagged as the control.
+        from grounded.cli import main
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "# Demo\n\n```go\nfmt.Println(time.Now())\nPONDER()\n```\n",
+                encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["scan", td, "--no-color", "--enable", "stale-doc-ref"])
+            self.assertEqual(rc, 1)
+            self.assertIn("PONDER", buf.getvalue())
+            self.assertNotIn("fmt.Println", buf.getvalue())
+            self.assertNotIn("time.Now", buf.getvalue())
+
     def test_skips_uncheckable_blocks(self):
         from grounded.cli import main
         with tempfile.TemporaryDirectory() as td:
@@ -2312,6 +2344,34 @@ class TestGhostExport(unittest.TestCase):
             self.assertIn("helper", out)
             self.assertNotIn("Exported", out)
             self.assertNotIn("Method", out)
+
+    def test_go_sibling_use_silent(self):
+        # Same-package cross-file calls need no import (seen: gin's
+        # debugPrintRoute called from gin.go, defined in debug.go).
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "debug.go").write_text(
+                "package p\n\nfunc debugPrintRoute() {}\n", encoding="utf-8")
+            (root / "gin.go").write_text(
+                "package p\n\nfunc run() {\n\tdebugPrintRoute()\n}\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertNotIn("debugPrintRoute", out)
+
+    def test_go_build_tag_variants_silent(self):
+        # Mutually exclusive //go:build variants (seen: grpc-go
+        # binding.go vs binding_nomsgpack.go): flagging either deletes
+        # a live build configuration.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.go").write_text(
+                "package p\n\n//go:build !tagx\n\nfunc validate() int { return 1 }\n",
+                encoding="utf-8")
+            (root / "b.go").write_text(
+                "package p\n\n//go:build tagx\n\nfunc validate() int { return 2 }\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertNotIn("[ghost-export]", out)
 
     def test_module_attribute_use_counts(self):
         with tempfile.TemporaryDirectory() as td:

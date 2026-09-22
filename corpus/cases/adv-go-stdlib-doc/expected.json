@@ -1,0 +1,1 @@
+{"enable": ["stale-doc-ref"], "expect": [{"checker": "stale-doc-ref", "path": "README.md", "line": 5, "contains": "PONDER"}]}

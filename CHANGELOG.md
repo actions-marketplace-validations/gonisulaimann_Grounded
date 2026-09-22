@@ -5,6 +5,14 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- Negated backticked claims ("there is no call to X") no longer fire.
+- `e.g.`/`i.e.` illustrative paths no longer fire (trailing-`\b` never
+  matched them in real prose).
+- Go stdlib roots (`fmt`, `time`, `os`, …) silent in doc examples.
+- Same-package cross-file Go/C calls suppress ghost findings;
+  mutually exclusive `//go:build` variants never flagged.
+
 ### Added
 - Adversarial corpus (`adv-*`, 11 cases): planted agent-style rot that
   must fire (rename fallout, moved paths, stale CLI flags, real ghosts)

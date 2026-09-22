@@ -92,6 +92,21 @@ GO_BUILTINS = {
     "iota",
 }
 
+# Go standard-library package leaf names: doc examples calling
+# fmt.Printf or time.Now reference the toolchain, not the repo.
+# (Seen: gin docs.) Checked on the call root only.
+_GO_STDLIB_PACKAGES = frozenset({
+    "fmt", "log", "time", "os", "io", "bytes", "strings", "errors",
+    "context", "sync", "sort", "strconv", "regexp", "path", "filepath",
+    "math", "net", "http", "url", "json", "template", "sql", "rpc",
+    "crypto", "tls", "encoding", "base64", "hex", "mime", "mail",
+    "reflect", "runtime", "atomic", "maps", "slices", "cmp", "hash",
+    "bufio", "exec", "signal", "unicode", "utf8", "html", "image",
+    "compress", "archive", "container", "heap", "list", "ring",
+    "testing", "httptest", "plugin", "debug", "expvar", "flag",
+    "syscall", "unsafe",
+})
+
 GO_KEYWORDS = {
     "break", "case", "chan", "const", "continue", "default", "defer",
     "else", "fallthrough", "for", "func", "go", "goto", "if", "import",
@@ -190,14 +205,17 @@ _TICKET = re.compile(r"(#[0-9]{1,6}\b|https?://\S+|GH-\d+|JIRA-[A-Z]+-\d+|[A-Z]{
 _NEGATED = re.compile(
     r"\b(don'?t|doesn'?t\s+(?:use|need|support|exist|matter)|isn'?t|"
     r"aren'?t|wasn'?t|weren'?t|not\s+(?:needed|supported|required|used|"
-    r"necessary|available)|never|no longer|instead|avoid|avoids|"
+    r"necessary|available)|never|no longer|no\s+calls?\b|instead|avoid|avoids|"
     r"unsupported)\b", re.IGNORECASE)
 
 # v2: illustrative-example markers. Docs constantly invent paths
 # ("For example ... ``django/templatetags/news/photos.py``"); a file ref
 # within ~120 chars after such a marker is an example, not a claim.
+# Dotted abbreviations need lookarounds, not \b: after "e.g." comes a
+# space (non-word), so a trailing \b never matches in real prose.
 _ILLUSTRATIVE = re.compile(
-    r"\b(for example|for instance|e\.g\.|such as|suppose|imagine|example)\b",
+    r"\b(for example|for instance|such as|suppose|imagine|example)\b"
+    r"|(?<!\w)e\.g\.(?!\w)|(?<!\w)i\.e\.(?!\w)",
     re.IGNORECASE)
 
 
@@ -470,6 +488,12 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             if not is_call:
                 if not _is_dunder(base) or base in _DUNDER_OK:
                     continue
+            # Negated claims assert absence ("no call to X", "don't use
+            # X"): flagging them contradicts a true statement. Same
+            # window as the bare-call branch.
+            window = text[max(0, m.start() - 60):m.end() + 40]
+            if _NEGATED.search(window):
+                continue
             root = name.split(".")[0]
             if root in facts.imports:
                 continue  # resolves via import; outside snapshot analysis
@@ -1556,6 +1580,8 @@ def check_stale_doc_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                     continue
                 if lang == "python" and full_root in _STDLIB_MODULES:
                     continue
+                if lang == "go" and full_root in _GO_STDLIB_PACKAGES:
+                    continue  # stdlib (fmt.Printf, time.Now): not repo claims
                 if index.has_symbol(full) or index.has_symbol(base):
                     continue
                 hint = _suggest(base, index)
@@ -1710,6 +1736,51 @@ def _ghost_importers(symbol: str, own: str, index: RepoIndex) -> bool:
     return False
 
 
+def _ghost_used_in_sibling(name: str, rel: str, index: RepoIndex) -> bool:
+    """Same-package cross-file use: Go/C call across files without imports,
+    so same-file counting plus importers miss real uses (seen:
+    debugPrintRoute called from gin.go, defined in debug.go). Only files
+    in the same directory are consulted (Go package boundary; C
+    translation-unit proximity), and only call-shaped occurrences count.
+    Suppression-only: a comment mentioning the name cannot resurrect real
+    dead code, it can only hide a finding.
+    """
+    texts = getattr(index, "_texts", None)
+    root = getattr(index, "root", None)
+    if not texts or root is None:
+        return False
+    want_dir = posixpath.dirname(rel)
+    pat = re.compile(r"\b" + re.escape(name) + r"\s*\(")
+    for f in getattr(index, "files", []):
+        try:
+            frel = f.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if frel == rel or posixpath.dirname(frel) != want_dir:
+            continue
+        if pat.search(texts.get(str(f), "")):
+            return True
+    return False
+
+
+def _ghost_build_tagged_variants(name: str, index: RepoIndex) -> bool:
+    """Mutually exclusive //go:build variants (binding.go vs
+    binding_nomsgpack.go): flagging either as dead deletes a live build
+    configuration. All definers constrained ⇒ unknowable which builds."""
+    definers = index.symbol_files.get(name, set())
+    if len(definers) < 2:
+        return False
+    texts = getattr(index, "_texts", None)
+    root = getattr(index, "root", None)
+    if not texts or root is None:
+        return False
+    for drel in definers:
+        text = texts.get(str(root / drel))
+        if text is None or not re.search(r"^\s*//go:build\b", text, re.MULTILINE):
+            return False
+    return True
+
+
 def check_ghost_export(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     """Public symbol with no importers, no in-file use, no API marking.
 
@@ -1761,6 +1832,10 @@ def check_ghost_export(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         uses = len(re.findall(r"\b" + re.escape(name) + r"\b", code))
         if uses > 1:
             continue  # used in its own file (def line itself counts once)
+        if facts.language in ("go", "c") and _ghost_used_in_sibling(name, facts.path, index):
+            continue  # same-package cross-file call needs no import
+        if _ghost_build_tagged_variants(name, index):
+            continue  # mutually exclusive build variants, all constrained
         findings.append(Finding(
             path=facts.path, line=f.lineno, end_line=f.lineno,
             checker="ghost-export", severity="smell",

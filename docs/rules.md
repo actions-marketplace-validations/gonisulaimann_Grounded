@@ -190,5 +190,16 @@ JavaScript/TypeScript. Commented-out code is covered by
   top-level bindings are recovered heuristically. The scan summary
   reports the unparsed count; a nonzero count means some absence verdicts
   were withheld, never that findings were invented.
+* Negated claims ("there is no call to X") and illustrative paths
+  ("e.g. ...") assert absence or give examples: flagging them would
+  contradict true statements, so they stay silent.
+* Go/C same-package calls need no import: cross-file use within one
+  directory suppresses ghost findings. Mutually exclusive `//go:build`
+  variants are never flagged. Cross-directory C use and framework
+  name-dispatch (template tags, browser globals, signal receivers)
+  remain out of scope.
+* In doc examples, toolchain calls (`fmt.Printf`, `Promise.reject`),
+  JS control keywords used as calls (`catch (e)`), and `this`-rooted
+  calls stay silent.
 * `grounded fix` rewrites stale file paths only on unambiguous
   same-basename matches in comments (never docstrings, never ties).
