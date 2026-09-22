@@ -48,7 +48,7 @@ expected finding must still appear:
 
 ```
 repo                     files  caught  missed   n/p  recall
-requests                    51      19       0     1    100%
+requests                    51      22       0     1    100%
 
 per checker (caught / missed / not-planted, all repos):
   stale-symbol-ref         4 / 0   / 0

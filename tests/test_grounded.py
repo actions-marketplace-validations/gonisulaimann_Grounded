@@ -3161,12 +3161,12 @@ class TestRecallHarness(unittest.TestCase):
             self.assertEqual(report["unbalanced_hosts"], [])
 
     def test_merged_expectation_line_numbers_translate(self) -> None:
-        # Expectations that embed fixture line numbers (`swallowed by the
-        # block opened at line 5`) must shift by the plant offset, or a
-        # merge into a non-empty host reports a phantom title miss. The
-        # host here contributes 3 content lines + 2 separator lines, so
-        # the fixture's line 7 lands at 12 — and must be judged caught
-        # there, not reported as a miss with "title changed".
+        # Expectations that embed fixture line numbers (a title like
+        # "swallowed by the block opened at line <N>") must shift by the
+        # plant offset, or a merge into a non-empty host reports a phantom
+        # title miss. The host here contributes 3 content lines + 2
+        # separator lines, so the fixture's seventh line lands at twelve —
+        # judged caught there, not a miss with "title changed".
         recall = self._recall()
         td, host = self._host("# Host\n\nSome intro prose.\n")
         with td:

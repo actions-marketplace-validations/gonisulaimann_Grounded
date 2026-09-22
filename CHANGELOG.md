@@ -116,6 +116,39 @@ All notable changes to `grounded` are documented here. Format follows
   `libpython3.11.dylib` both report `x86_64 arm64`), then gates the output
   with `lipo -archs`. A thin binary can therefore never be published, least
   of all under the amd64 name.
+- **One CommonMark fence walk shared by every fence consumer.**
+  `stale-doc-ref` and `stale-cli-ref` tracked fences with a line-by-line
+  toggle that flipped on any bare fence-looking line and ignored lines whose
+  info string was not a bare tag, so a swallowed boundary inverted their
+  view of every line after it and fenced code with a rich info string
+  (` ```bash title="x" `) or an indented fence was analyzed as prose.
+  `_fence_scan` is now the single walk (`_doc_fence_blocks`,
+  `check_stale_cli_ref`, `check_unclosed_fence`, and the graph query all
+  run on it), so the checkers and the `unclosed-fence` checker agree by
+  construction. `bench/recall.py` imports the walk instead of re-deriving
+  the retired toggle, and translates merged-plant expectations (line
+  numbers and opener references shift when a fixture lands under host
+  content) — a fixture's `opened at line 5` finding lands at line 12 under
+  a 5-line host and is judged caught there, not as a phantom title miss.
+  Measured A/B of the retired scan vs the walk over 10,857 Markdown files
+  (Grounded, OmniRoute, svelte, flask, requests): 1 file with prose wrongly
+  skipped (41 lines, an i18n doc with header text glued to its fence
+  lines), and 1,032 files / 10,962 lines of fenced code the old scan
+  wrongly analyzed as prose. An earlier note citing "238 files / 20,681
+  lines" came from a comparison that mixed line populations and is
+  retracted.
+- **Documentation audit against v0.16.0 reality.** Fresh measured numbers
+  everywhere: 279 unit tests (was 238 on the landing page, 269 in the
+  README), 45 corpus cases (was 37), 13 checkers — 7 default-on, 6 opt-in —
+  with `stale-cli-ref` and `unclosed-fence` now in the README's opt-in
+  table (was 4), and the recall harness at 89/89 expectations over 3,927
+  files. `pyproject.toml` keywords now describe what the tool actually is
+  (documentation rot, AI agents, MCP, LSP), classifiers updated to Beta
+  with Python 3.14 and OS-independent, Documentation and Bug Tracker URLs
+  added; the VS Code extension manifest version follows the wheel (0.16.0);
+  `docs/agent-skill.md` documents that `agent-skill/` is generated from
+  `src/grounded/skill/` by `scripts/sync-skill.py`; `docs/benchmarks.md`
+  documents the recall harness and its measured run alongside the corpus.
 
 ### Changed
 - `docs/rules.md` no longer treats isolation precision as repo recall, and no

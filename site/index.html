@@ -283,9 +283,11 @@
 
       <div class="callout">
         <p>
-          <b>238 tests, 37 adversarial corpus cases, stdlib only.</b> The corpus holds planted
+          <b>279 tests, 45 corpus cases, stdlib only.</b> The corpus holds planted
           agent-style rot that must fire next to legitimate lookalikes that must stay silent —
-          a silence case that passes vacuously is treated as a failure, not a green.
+          a silence case that passes vacuously is treated as a failure, not a green. A second
+          harness replays the same rot inside copies of real repositories (flask, requests,
+          svelte) and measures how much survives real context: currently 100%.
         </p>
       </div>
     </div>

@@ -162,8 +162,8 @@ numbers (2026-09-21):
   behavior, while `bench/recall.py` replays each firing case inside a
   copy of a real repository, where definitions, manifests and
   generated directories are the context that can silence it. Measured
-  2026-09-22 over Grounded, flask, requests and svelte (3,922 files):
-  **77 planted expectations, 0 misses, 0 checker errors**. 3 cases
+  2026-09-22 over Grounded, flask, requests and svelte (3,927 files):
+  **89 planted expectations, 0 misses, 0 checker errors**. 4 cases
   were not plantable — a fixture may not overwrite a host's own
   `pyproject.toml`, which would change what the host *is* — and are
   excluded from the number rather than counted as failures.
