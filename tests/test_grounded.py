@@ -2059,6 +2059,61 @@ class TestStaleDocRef(unittest.TestCase):
         from grounded.config import Config
         self.assertNotIn("stale-doc-ref", Config().enabled)
 
+    def test_js_ambient_roots_silent(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "README.md").write_text(
+                "# Demo\n\n```js\n"
+                "return Promise.reject(error);\n"
+                "const el = document.getElementById('x');\n"
+                "this.setup();\n"
+                "try {\n  foo();\n"
+                "} catch (e) {\n  bar(e);\n"
+                "}\n```\n",
+                encoding="utf-8")
+            self.assertEqual(
+                main(["scan", td, "--no-color", "--enable", "stale-doc-ref"]), 0)
+
+    def test_js_bindings_params_methods_templates(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "package.json").write_text('{"name": "demo"}\n', encoding="utf-8")
+            (root / "README.md").write_text(
+                "# Demo\n\n```js\n"
+                "import qs from 'qs';\n"
+                "import { a, b as c } from './lib';\n"
+                "import * as ns from './ns';\n"
+                "function handle(x) { return x; }\n"
+                "const show = (t) => t;\n"
+                "const out = qs.stringify(ns.val(c));\n"
+                "[1].forEach((item) => handle(item));\n"
+                "function render(title) { return show(title); }\n"
+                "class Widget {\n  normalize(e) { return e; }\n"
+                "}\n"
+                "const msg = `hi ${name()}`;\n"
+                "demo.run();\n"
+                "```\n",
+                encoding="utf-8")
+            self.assertEqual(
+                main(["scan", td, "--no-color", "--enable", "stale-doc-ref"]), 0)
+
+    def test_js_chain_lines_silent(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "README.md").write_text(
+                "# Demo\n\n```js\n"
+                "fetch(url)\n"
+                "  .then(r => r.json())\n"
+                "  .catch(handle);\n"
+                "```\n",
+                encoding="utf-8")
+            # fetch is ambient; .then/.catch are continuation chains
+            self.assertEqual(
+                main(["scan", td, "--no-color", "--enable", "stale-doc-ref"]), 0)
+
 
 class TestStaleContractRef(unittest.TestCase):
     def _tree(self, root, files):

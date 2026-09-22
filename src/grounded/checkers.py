@@ -1317,6 +1317,11 @@ def _contract_known(root: str, base: str, facts: FileFacts, index: RepoIndex,
     return bool(index.has_symbol(root) or index.has_symbol(base))
 
 
+def _loose_dist(name: str) -> str:
+    """alphanumeric-only lowercase: bodyParser == body-parser."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
 # ---------------------------------------------------------------- stale-doc-ref
 # EXPERIMENTAL, opt-in only (see OPT_IN_CHECKERS). Doc examples are dense
 # with illustrative, pseudo, and version-skewed code; this checker stays
@@ -1342,6 +1347,31 @@ _DOC_PLACEHOLDER_RES = [
     re.compile(r"\b(my|your|our|test|testing|dummy|mock|fake)[A-Za-z_]*\b", re.IGNORECASE),
     re.compile(r"<[^<>\n]*>"),  # <placeholder>, <your-key>
 ]
+
+# Roots that are ambient in JavaScript/TypeScript doc examples, not repo
+# symbols. Seen: 400+ such findings on axios docs (Promise.reject,
+# document.*, localStorage, .catch chains). Node builtins (_NODE_BUILTINS,
+# defined below) are checked alongside at use time. JS_GLOBALS covers
+# the rest (Promise, Object, console, test hooks).
+_DOC_JS_AMBIENT_ROOTS = frozenset({
+    "document", "window", "navigator", "localStorage", "sessionStorage",
+    "location", "history", "AbortController", "AbortSignal", "Buffer",
+    "URL", "URLSearchParams", "TextEncoder", "TextDecoder", "Blob",
+    "File", "FormData", "Headers", "Request", "Response", "crypto",
+    "performance", "atob", "btoa", "queueMicrotask", "structuredClone",
+    "this", "self", "global", "globalThis", "Symbol", "BigInt", "Map",
+    "Set", "WeakMap", "WeakSet", "parseFloat", "parseInt", "isNaN",
+    "isFinite", "encodeURI", "decodeURI", "encodeURIComponent",
+    "decodeURIComponent",
+} | set(JS_GLOBALS))
+
+# Bare call names that are JS control syntax, never references
+# (`catch (e)` in try/catch examples). Seen across axios docs.
+_DOC_JS_CALL_KEYWORDS = frozenset({
+    "catch", "if", "for", "while", "switch", "return", "typeof",
+    "delete", "void", "in", "of", "do", "else", "try", "finally",
+    "throw", "case", "default", "function", "await", "yield",
+})
 
 
 def _doc_fence_blocks(lines: list[str]) -> list[tuple[str, int, int]]:
@@ -1396,6 +1426,16 @@ def _doc_block_known(block: list[str], language: str) -> set[str]:
             r"(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)",
             r"^\s*function\s+([A-Za-z_$][\w$]*)",
             r"^\s*@([A-Za-z_$][\w$.]*)",
+            r"^\s*import\s+([A-Za-z_$][\w$]*)\s+from\b",
+            r"^\s*import\s*\*\s*as\s+([A-Za-z_$][\w$]*)",
+            # method shorthand: `name(args) {` (class bodies, object
+            # literals). Keywords (`if(){`) bind harmlessly: never roots.
+            r"^\s*(?:async\s+|static\s+|get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{",
+            # arrow/callback params: (req, res) =>, (prom) =>, x =>
+            # (incl. TS-annotated `(req: Config) =>`), function params
+            r"\(\s*([A-Za-z_$][\w$]*)\s*[:,)]",
+            r",\s*([A-Za-z_$][\w$]*)\s*[:,)]",
+            r"(?<![A-Za-z_$0-9])([A-Za-z_$][\w$]*)\s*=>",
         ]
     elif language == "go":
         pats = [
@@ -1416,6 +1456,17 @@ def _doc_block_known(block: list[str], language: str) -> set[str]:
                 known.add(m.group(1).split(".")[0])
                 if language == "javascript" and "." in m.group(1):
                     known.add(m.group(1).split(".")[-1])
+    if language == "javascript":
+        # function f(a, b) and (a, b) => params, incl. TS `a: Type`
+        for line in block:
+            for pm in re.finditer(
+                    r"function\s+[A-Za-z_$][\w$]*\s*\(([^()]*)\)"
+                    r"|\(([^()]*)\)\s*=>", line):
+                params = pm.group(1) if pm.group(1) is not None else pm.group(2)
+                for p in (params or "").split(","):
+                    pname = re.split(r"[:=]", p.strip(), 1)[0].strip().lstrip("...")
+                    if re.fullmatch(r"[A-Za-z_$][\w$]*", pname or ""):
+                        known.add(pname)
     for line in block:
         m = re.match(r"^\s*(?:from\s+(\S+)\s+import\s+(.+)|import\s+(.+))$", line)
         if m and language in ("python", "javascript"):
@@ -1424,6 +1475,14 @@ def _doc_block_known(block: list[str], language: str) -> set[str]:
                     base = name.strip().split(" as ")[-1].strip().split(".")[0]
                     if re.fullmatch(r"[A-Za-z_]\w*", base or ""):
                         known.add(base)
+        if language == "javascript":
+            mb = re.match(r"^\s*import\s*\{([^}]*)\}\s*from\b", line)
+            if mb:
+                for part in mb.group(1).split(","):
+                    bits = [b.strip() for b in part.split(" as ")]
+                    alias = bits[-1] if len(bits) > 1 else bits[0].split(":")[0].strip()
+                    if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", alias or ""):
+                        known.add(alias)
         if language == "go":
             m2 = re.match(r"^\s*(?:[A-Za-z_.]+\s+)?\"([\w./-]+)\"\s*$", line)
             if m2:
@@ -1432,7 +1491,8 @@ def _doc_block_known(block: list[str], language: str) -> set[str]:
 
 
 def _strip_doc_strings(line: str) -> str:
-    return re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", '""', line)
+    scrubbed = re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", '""', line)
+    return re.sub(r"`(?:[^`\\]|\\.)*`", '""', scrubbed)
 
 
 def check_stale_doc_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
@@ -1447,16 +1507,28 @@ def check_stale_doc_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     if facts.language != "markdown":
         return []
     findings: list[Finding] = []
+    # Tutorial narrative: later blocks build on names bound earlier in
+    # the file (const api = ... in block 1, api.post in block 4).
+    # Bindings accumulate in file order; shadowing staleness across
+    # distant blocks is the documented trade (suppress-only direction).
+    file_known: set[str] = set()
+    declared: set[str] | None = None
     for lang, start, end in _doc_fence_blocks(facts.lines):
         block = facts.lines[start - 1:end - 1]
         if _doc_block_is_illustrative(block):
             continue
-        known = _doc_block_known(block, lang)
+        known = _doc_block_known(block, lang) | file_known
+        if lang == "javascript" and declared is None:
+            from .repo_index import _norm_dist as _nd
+            declared = {_nd(x) for x in index.declared_dependencies(facts.path)}
+            loose_declared = {_loose_dist(x) for x in declared}
         for off, line in enumerate(block):
             lineno = start + off
             s = line.strip()
             if not s or s.startswith("#") or s.startswith("$") or s.startswith("//"):
                 continue
+            if s.startswith("."):
+                continue  # continuation chain (.then/.catch): receiver above
             code = _strip_doc_strings(line)
             for m in _DOC_CALL.finditer(code):
                 full = m.group(1)
@@ -1470,6 +1542,15 @@ def check_stale_doc_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                     continue
                 if _is_reserved(base, lang):
                     continue
+                if lang == "javascript" and (
+                        full_root in _DOC_JS_AMBIENT_ROOTS
+                        or full_root in _NODE_BUILTINS
+                        or base in _DOC_JS_CALL_KEYWORDS
+                        or full_root in index.root_package_names
+                            or (declared is not None and (
+                                _nd(full_root) in declared
+                                or _loose_dist(full_root) in loose_declared))):
+                    continue  # platform/Node/`this`/documented-package roots
                 if full_root in known or base in known:
                     continue
                 if lang == "python" and full_root in _STDLIB_MODULES:
@@ -1487,6 +1568,7 @@ def check_stale_doc_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                     fix=f"Update the example to the current name, or remove the call.{hint}",
                     confidence=0.75,
                 ))
+        file_known |= known
     return _dedupe(findings)
 
 

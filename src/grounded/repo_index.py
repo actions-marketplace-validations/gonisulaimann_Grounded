@@ -75,6 +75,17 @@ def _walkup_tops(root: Path) -> set[str]:
     return tops
 
 
+def _root_package_names(root: Path) -> set[str]:
+    """The `name` field of the root package.json, if present."""
+    try:
+        data = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if isinstance(data, dict) and isinstance(data.get("name"), str):
+        return {data["name"]}
+    return set()
+
+
 _FALLBACK_DEF = re.compile(r"^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)")
 _FALLBACK_CLASS = re.compile(r"^class\s+([A-Za-z_][A-Za-z0-9_]*)")
 _FALLBACK_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=")
@@ -177,6 +188,10 @@ class RepoIndex:
         # `src/<pkg>/` package as first-party, not phantom). Bounded walk
         # to the project dir; presence-only, read once at build.
         self.parent_tops: set[str] = _walkup_tops(root)
+        # This repo's own package name(s): doc examples calling the
+        # documented package (`axios.get(...)` in axios's README) are
+        # self-referential by construction, never stale.
+        self.root_package_names: set[str] = _root_package_names(root)
         # v2: top-level names (repo root entries) for the "claims about this
         # repo" rule: file refs whose first segment is not a repo top-level
         # name (and not ./ ../ /) are external/framework namespaces, not lies.
@@ -341,10 +356,11 @@ class RepoIndex:
         Project dir = nearest ancestor (from rel's dir, else scan root)
         containing pyproject.toml or package.json; its manifests plus its
         requirements files form the closure, unioned with nearer nested
-        manifests walking down. Returns None when no manifest exists
-        anywhere: without evidence the checker stays silent.
-        Union-everything is deliberate: a name missing here is declared
-        nowhere, which is exactly the claim.
+        manifests walking down AND further ancestors walking up (Node
+        resolution walks up; monorepo roots hoist deps). Returns None
+        when no manifest exists anywhere: without evidence the checker
+        stays silent. Union-everything is deliberate: a name missing here
+        is declared nowhere, which is exactly the claim.
         """
         start = (self.root / rel).parent if rel else self.root
         start = start if start.is_dir() else self.root
@@ -362,6 +378,12 @@ class RepoIndex:
             if d == project:
                 break
             d = d.parent
+        up = project.parent
+        while True:
+            dirs.append(up)
+            if up.parent == up:
+                break
+            up = up.parent
         manifests: list[tuple[str, float]] = []
         for d in dirs:
             for name in ("pyproject.toml", "package.json"):

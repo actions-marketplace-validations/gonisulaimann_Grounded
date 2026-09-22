@@ -3,6 +3,16 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+- `stale-doc-ref` JavaScript precision: ambient roots (platform, Node,
+  `this`), JS call-keywords (`catch (e)`), continuation chains,
+  template-literal contents, ESM/arrow/function/method bindings,
+  package self-name, manifest-declared externals, and cross-block
+  tutorial narrative no longer report. Axios docs: 580 → 41 findings
+  (≈8 unique narrative-residue families, documented as the boundary).
+
 ## [0.15.0] - 2026-09-22
 
 ### Fixed
