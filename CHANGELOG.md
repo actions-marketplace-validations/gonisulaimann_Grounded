@@ -3,7 +3,7 @@
 All notable changes to `grounded` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.15.0] - 2026-09-22
 
 ### Fixed
 - `phantom-package` no longer reports guarded imports (`try/except`,
