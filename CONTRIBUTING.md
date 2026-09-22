@@ -36,7 +36,6 @@ More specific information about individual parts of Grounded can be found here:
   - [Pinging Etiquette](#pinging-etiquette)
 - [Commit Message & AI Attribution Policy](#commit-message--ai-attribution-policy)
 - [Development Setup](#development-setup)
-- [Release Process](#release-process)
 
 ---
 
@@ -196,16 +195,3 @@ PYTHONPATH=src python3 -m grounded.cli scan src
 # Test the demo fixture tree (expected: 10 findings)
 grounded scan examples/v2demo
 ```
-
----
-
-## Release Process
-[release-process]: #release-process
-
-Releases are published by maintainers following semantic versioning (`vX.Y.Z`):
-
-1. Ensure [`CHANGELOG.md`](./CHANGELOG.md) accurately reflects all changes for the release version.
-2. Bump version in `pyproject.toml` and `src/grounded/__init__.py`.
-3. Tag the release: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`.
-4. Push tag to GitHub: `git push origin vX.Y.Z`.
-5. GitHub Actions builds wheels and source distributions, publishing to PyPI and updating the GitHub Marketplace action.
