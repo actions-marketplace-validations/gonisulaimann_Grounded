@@ -5,6 +5,14 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- Parse-failure opacity: modules that fail `ast.parse` (version-skewed
+  grammar, truncated buffers) are marked opaque instead of indexing
+  zero symbols, which cascaded into phantom absence lies (24,881
+  `stale-import` findings on home-assistant/core under Python 3.13).
+  Top-level bindings are recovered heuristically, and the scan summary
+  reports the unparsed count.
+
 ### Added
 - Graduated `stale-mock-ref` and `stale-entrypoint` to default-on.
   Mock strings resolve progressively (cross-module chains, aliases,

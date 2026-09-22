@@ -383,6 +383,13 @@ class TestReporters(unittest.TestCase):
         data = json.loads(to_json(f))
         self.assertEqual(data[0]["checker"], "stale-symbol-ref")
 
+    def test_terminal_unparsed_note(self):
+        from grounded.reporters import format_terminal
+        plain = format_terminal([], 2, root=".")
+        self.assertNotIn("unparsed", plain)
+        noted = format_terminal([], 2, root=".", n_unparsed=1)
+        self.assertIn("1 file(s) unparsed", noted)
+
     def test_sarif_valid_shape(self):
         from grounded.models import Finding
         f = [Finding(path="a.py", line=3, end_line=3, checker="stale-file-ref",
@@ -811,6 +818,36 @@ class TestStaleImport(unittest.TestCase):
     def test_ok_import_silent(self):
         out = self.imps({"pkg/mod.py": "def real():\n    pass\n",
                          "pkg/use.py": "from .mod import real\n"})
+        self.assertEqual(out, [])
+
+    def test_unparseable_module_never_fires_absence(self):
+        # Regression: a module that fails ast.parse (version-skewed
+        # grammar, truncated buffer) must not cascade into phantom
+        # "never defined there" lies for every importer. Seen: 24,881
+        # stale-import findings on home-assistant/core scanned under
+        # Python 3.13, whose grammar rejects 3.14 syntax. Helper is only
+        # re-exported (no top-level def for the fallback to find), so
+        # this exercises the opaque guard, not the fallback.
+        out = self.imps({"pkg/base.py": "def Helper():\n    pass\n",
+                         "pkg/core.py": "from .base import Helper\n{{{broken\n",
+                         "pkg/use.py": "from .core import Helper\n"})
+        self.assertEqual(out, [])
+
+    def test_unparseable_module_marks_opaque(self):
+        from grounded.config import Config
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "core.py").write_text("def get_thing():\n{{{broken\n", encoding="utf-8")
+            _, _, index = scan_root(root, Config())
+            self.assertIn("core.py", index.parse_failed)
+            self.assertFalse(index.knows_symbols("core.py"))
+
+    def test_fallback_symbols_suppress(self):
+        # The regex fallback recovers top-level bindings so positively
+        # evidenced names stay silent even when the file won't parse.
+        out = self.imps({"pkg/core.py": "def get_thing():\n    return 1\n{{{broken\n",
+                         "pkg/use.py": "from .core import get_thing\n"})
         self.assertEqual(out, [])
 
     def test_submodule_form_silent(self):

@@ -21,13 +21,15 @@ BOLD = "\033[1m"
 DIM = "\033[2m"
 
 
-def format_terminal(findings: list[Finding], n_files: int, root: str, use_color: bool = True) -> str:
+def format_terminal(findings: list[Finding], n_files: int, root: str, use_color: bool = True,
+                    n_unparsed: int = 0) -> str:
     counts = {"lie": 0, "drift": 0, "smell": 0}
     for f in findings:
         counts[f.severity] = counts.get(f.severity, 0) + 1
+    unparsed_note = f", {n_unparsed} file(s) unparsed" if n_unparsed else ""
     lines: list[str] = []
     if not findings:
-        head = f"grounded: clean, {n_files} file(s) scanned, 0 findings."
+        head = f"grounded: clean, {n_files} file(s) scanned, 0 findings{unparsed_note}."
         return head if not use_color else f"\033[32m{head}{RESET}"
     for f in findings:
         color = SEV_COLOR.get(f.severity, "") if use_color else ""
@@ -43,7 +45,7 @@ def format_terminal(findings: list[Finding], n_files: int, root: str, use_color:
             lines.append(f"    {d}fix:{reset} {f.fix[:220]}")
     summary = (
         f"\ngrounded: {len(findings)} finding(s) in {n_files} file(s), "
-        f"{counts.get('lie',0)} lie(s), {counts.get('drift',0)} drift(s), {counts.get('smell',0)} smell(s)."
+        f"{counts.get('lie',0)} lie(s), {counts.get('drift',0)} drift(s), {counts.get('smell',0)} smell(s){unparsed_note}."
     )
     lines.append(summary if not use_color else f"{BOLD}{summary}{RESET}")
     return "\n".join(lines)

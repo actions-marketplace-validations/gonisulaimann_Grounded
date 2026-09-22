@@ -75,6 +75,35 @@ def _walkup_tops(root: Path) -> set[str]:
     return tops
 
 
+_FALLBACK_DEF = re.compile(r"^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)")
+_FALLBACK_CLASS = re.compile(r"^class\s+([A-Za-z_][A-Za-z0-9_]*)")
+_FALLBACK_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=")
+_FALLBACK_TRIPLE = re.compile(r'("""|\'\'\')[\s\S]*?\1')
+
+
+def _fallback_top_level(text: str) -> set[str]:
+    """Top-level def/class/assign names from unparseable Python.
+
+    Heuristic of last resort: triple-quoted regions are blanked first
+    (a col-0 `def` inside a docstring must not become a binding), then
+    only column-0 definitions count. Over-approximation only ever
+    suppresses findings, never invents them; the file stays opaque
+    regardless (see parse_failed).
+    """
+    names: set[str] = set()
+    scrubbed = _FALLBACK_TRIPLE.sub("", text)
+    for line in scrubbed.splitlines():
+        m = _FALLBACK_DEF.match(line) or _FALLBACK_CLASS.match(line)
+        if m:
+            names.add(m.group(1))
+            continue
+        m = _FALLBACK_ASSIGN.match(line)
+        if m and m.group(1) not in ("if", "for", "while", "with", "try",
+                                    "return", "import", "from", "class", "def"):
+            names.add(m.group(1))
+    return names
+
+
 class RepoIndex:
     def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None,
                  alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] | None = None,
@@ -138,6 +167,10 @@ class RepoIndex:
         # Root-level packages win on collision. Presence-based: content
         # edits never affect it, file add/remove recomputes it.
         self.py_prefixes: dict[str, str] = {}
+        # Files whose Python parse failed (opaque): checkers may use
+        # positively-indexed names from these files, but must never
+        # claim a symbol is absent from them.
+        self.parse_failed: set[str] = set()
         self._deps_cache: dict | None = None
         # First-party top segments living ABOVE the scan root (subdirectory
         # scans: `scan tests/` must still recognize the project's own
@@ -156,6 +189,10 @@ class RepoIndex:
         except OSError:
             pass
         self._build()
+
+    def knows_symbols(self, rel: str) -> bool:
+        """False when rel failed to parse: absence there is unknowable."""
+        return rel not in self.parse_failed
 
     def _build(self) -> None:
         for f in self.files:
@@ -381,6 +418,7 @@ class RepoIndex:
 
     def _forget_no_rebuild(self, rel: str) -> None:
         old = self.file_symbols.pop(rel, set())
+        self.parse_failed.discard(rel)
         self.file_imports.pop(rel, None)
         self.file_esm.discard(rel)
         self.file_dynamic_ns.discard(rel)
@@ -402,6 +440,15 @@ class RepoIndex:
         try:
             tree = ast.parse(text)
         except SyntaxError:
+            # Unparseable (version-skewed grammar, mid-typing buffer):
+            # record top-level bindings heuristically, but mark the file
+            # opaque so no checker ever claims a symbol is ABSENT from it.
+            # An empty symbol table reads as "exports nothing" downstream
+            # and cascades into phantom lies (seen: 24,881 on
+            # home-assistant/core scanned under the wrong interpreter).
+            self.parse_failed.add(rel)
+            for name in _fallback_top_level(text):
+                self._record(self.py_symbols, name, rel)
             return
 
         def _targets(t) -> list[str]:

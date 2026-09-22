@@ -665,7 +665,7 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                         or name in index.file_imports.get(pkg_init, set())
                         or name in _effective_symbols(index, pkg_init)):
                     continue
-                if _dynamic_ns(index, pkg_init):
+                if _dynamic_ns(index, pkg_init) or not index.knows_symbols(pkg_init):
                     continue
                 subs = ([base + "/" + name + ".py", base + "/" + name + "/__init__.py"]
                         if base else [name + ".py", name + "/__init__.py"])
@@ -692,6 +692,8 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                     confidence=0.85,
                 ))
                 break
+            if any(not index.knows_symbols(t) for t in existing):
+                continue  # unparsed target may provide it: unknowable
             provided = any(name in _effective_symbols(index, t) for t in existing)
             # PEP 562: a module-level __getattr__ means any name may resolve.
             dynamic = any("__getattr__" in index.file_symbols.get(t, set()) for t in existing)
@@ -1765,6 +1767,8 @@ def check_stale_entrypoint(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             if func:
                 if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", func):
                     continue
+                if any(not index.knows_symbols(t) for t in existing):
+                    continue  # unparsed target may provide it: unknowable
                 provided = any(func in _effective_symbols(index, t) for t in existing)
                 dynamic = any("__getattr__" in index.file_symbols.get(t, set())
                               or t in index.file_dynamic_ns for t in existing)
@@ -1911,6 +1915,8 @@ def _mock_resolve_path(index: RepoIndex, claimer: str, parts: list[str]
                     r == prefix or r.startswith(prefix + "/") for r in index.rel_paths):
                 return None
             continue
+        if not all(index.knows_symbols(t) for t in existing):
+            return None  # unparsed target may provide it: unknowable
         head = parts[k]
         if (head in PYTHON_BUILTINS
                 or any(_mock_provided(index, t, head) for t in existing)):

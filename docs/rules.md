@@ -166,5 +166,10 @@ JavaScript/TypeScript. Commented-out code is covered by
   names, imports, same-file identifiers).
 * Rename suggestions use string similarity only; `grounded fix` applies a
   symbol rename only with exactly one similar, same-directory candidate.
+* Files that fail to parse (version-skewed grammar, truncated buffers)
+  are marked opaque: no checker claims a symbol is absent from them, and
+  top-level bindings are recovered heuristically. The scan summary
+  reports the unparsed count; a nonzero count means some absence verdicts
+  were withheld, never that findings were invented.
 * `grounded fix` rewrites stale file paths only on unambiguous
   same-basename matches in comments (never docstrings, never ties).

@@ -140,6 +140,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         cache_path = root / cache_path
     findings, facts, index = scan_root(root, config, jobs=args.jobs, cache_path=cache_path)
     n_files = len(facts)
+    n_unparsed = len(index.parse_failed)
     for wpath, wline, wids in warn_unknown_suppressions(facts):
         print(f"grounded: warning: unknown checker id(s) in suppression at "
               f"{wpath}:{wline}: {', '.join(wids)} (known: {', '.join(sorted(CHECKERS))})",
@@ -187,9 +188,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
             counts = {"lie": 0, "drift": 0, "smell": 0}
             for f in findings:
                 counts[f.severity] += 1
-            out = f"grounded: {len(findings)} finding(s), {counts['lie']} lie(s), {counts['drift']} drift(s), {counts['smell']} smell(s) in {n_files} file(s)."
+            note = f", {n_unparsed} file(s) unparsed" if n_unparsed else ""
+            out = f"grounded: {len(findings)} finding(s), {counts['lie']} lie(s), {counts['drift']} drift(s), {counts['smell']} smell(s) in {n_files} file(s){note}."
         else:
-            out = format_terminal(findings, n_files, root=str(root), use_color=use_color)
+            out = format_terminal(findings, n_files, root=str(root), use_color=use_color,
+                                  n_unparsed=n_unparsed)
     if suppressed_note and fmt in ("terminal",):
         out += f"\ngrounded:{suppressed_note}."
     if args.output:
