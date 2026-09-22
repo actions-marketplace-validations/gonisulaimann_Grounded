@@ -5,6 +5,8 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-22
+
 ### Fixed
 - Negated backticked claims ("there is no call to X") no longer fire.
 - `e.g.`/`i.e.` illustrative paths no longer fire (trailing-`\b` never
