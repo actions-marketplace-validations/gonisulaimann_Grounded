@@ -5,6 +5,13 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- Adversarial corpus (`adv-*`, 11 cases): planted agent-style rot that
+  must fire (rename fallout, moved paths, stale CLI flags, real ghosts)
+  alongside legitimate lookalikes that must stay silent (PEP 562 lazy
+  attributes, namespace packages, star re-exports, guarded imports,
+  pytest doubles, docs prose, CJS interop). 29/29 cases green.
+
 ### Fixed
 - `stale-doc-ref` JavaScript precision: ambient roots (platform, Node,
   `this`), JS call-keywords (`catch (e)`), continuation chains,

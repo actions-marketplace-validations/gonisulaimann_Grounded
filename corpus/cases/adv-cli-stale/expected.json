@@ -1,0 +1,1 @@
+{"enable": ["stale-cli-ref"], "expect": [{"checker": "stale-cli-ref", "path": "README.md", "line": 5, "contains": "bogus-flag"}]}

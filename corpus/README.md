@@ -32,3 +32,9 @@ Rules:
   is wrong, justify the change in the commit message.
 * Keep cases minimal: one behavior per case, smallest tree that shows
   it. Name cases `<checker>-<behavior>`.
+* `adv-` cases are adversarial: `adv-<name>` either plants realistic
+  agent-style rot that must fire, or constructs legitimate code that
+  merely looks stale and must stay silent. Both directions are
+  load-bearing: a silence case passing vacuously (checker not running,
+  file not collected) is a false green — check the findings count in
+  the runner output, not just PASS.

@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-import", "path": "pkg/views.py", "line": 2, "contains": "get_user"}]}

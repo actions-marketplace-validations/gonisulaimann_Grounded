@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-file-ref", "path": "pkg/notes.py", "line": 1, "contains": "oldplace"}]}
