@@ -2,7 +2,7 @@
 
 > 简要译文，以[英文 README](https://github.com/gonisulaimann/Grounded#readme) 为准。
 
-**Grounded** 用于发现代码注释中的悬空引用：已不存在的函数、缺失的文件、损坏的导入。确定性、离线、零依赖。支持 Python、JavaScript/TypeScript、Go 和 C。
+**Grounded** 是引用完整性防火墙：它找出与仓库相矛盾的注释、文档示例、导入和配置字符串——已不存在的函数、缺失的文件、损坏的导入、失效的示例。确定性、离线、零依赖。支持 Python、JavaScript/TypeScript、Go 和 C。
 
 ## 安装
 
@@ -32,6 +32,11 @@ grounded impact my_function .      # 查看与某个符号相关的一切：定�
 | `stale-file-ref` | lie | 注释指向仓库中不存在的路径 |
 | `number-drift` | drift | 注释中的数字与相邻代码矛盾 |
 | `fragile-anchor` | smell | 脆弱的行号锚点、无工单的 workaround 标记 |
+| `stale-entrypoint` | lie | `pyproject` scripts 或 `package.json` bin/main 指向仓库中不存在的目标 |
+| `stale-mock-ref` | lie | `@patch` 字符串提到的符号在对应模块中不存在 |
+| `unclosed-fence` | lie | 渲染器无法闭合的 Markdown 代码围栏——其后内容按代码渲染 |
+
+13 条规则中 8 条默认启用；另有 5 条需手动开启（`--enable <id>`）。
 
 ## 链接
 
