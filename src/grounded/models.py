@@ -48,6 +48,9 @@ class FileFacts:
     # conditional (compat imports that may legitimately fail are never
     # flagged).
     from_imports: list[Any] = field(default_factory=list)
+    # Linenos of Import/ImportFrom under try/except, TYPE_CHECKING, or
+    # version/platform conditionals (see parsers._is_guarded).
+    guarded_lines: set = field(default_factory=set)
     # Structured JS/TS imports: [(specifier, kind, default or None,
     # [named], lineno)]. Kinds: named, namespace (`* as ns`), sideeffect,
     # require. Side-effect-only and non-relative specifiers resolve to

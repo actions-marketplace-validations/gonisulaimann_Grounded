@@ -34,17 +34,22 @@ with a replacement name, `must hold`/`guarded by`-style lock claims on
 lock-like names (`_lock`, `mutex`, …), and same-file comments stating a
 default for an env var read with a different default in code. Known
 limitation: an external successor (`use requests instead`) reads as a
-missing symbol; ticket-link the comment to silence it. Bare prose never
-reports.
+missing symbol; ticket-link the comment to silence it. ALL-CAPS names
+in a bare "use X instead" frame are treated as SQL/platform builtins,
+not deprecation targets (explicit `DEPRECATED:` notices are still
+checked). Bare prose never reports.
 
 `ghost-export`: methods, dunders, `__init__` modules, `__all__` members,
 JS exports / `module.exports`, Go-exported (capitalized) names, and
 `main`/`init` are never candidates. Aliased imports (`import x as y`)
 and module-attribute use (`from pkg import mod` + `mod.name()`) count
 as importers — but only with the module import present, so same-named
-locals don't qualify. Known limitation: barrel re-exports
-(`export * from`) and aliased-module attribute use (`import pkg as p`
-+ `p.mod.name()`) are not traced. C is excluded (no static info).
+locals don't qualify. Framework-discovered entry points are exempt:
+`test_*` names in test files (pytest, go test). Known limitation:
+barrel re-exports (`export * from`), aliased-module attribute use
+(`import pkg as p` + `p.mod.name()`), template tags loaded by string
+(Django `{% load %}`), and browser-global scripts (loaded by `<script>`
+tags, never imported) are not traced. C is excluded (no static info).
 
 `stale-entrypoint`: only `pyproject.toml` scripts and `package.json`
 `bin`/`main` are read. Malformed files stay silent. Build-output dirs
@@ -65,9 +70,11 @@ documented as gaps) plus CPython clean.
 optional/PEP 735/Poetry groups, build-system requires,
 `requirements*.txt` with includes, all `package.json` dep flavors),
 nearest manifests walking up for monorepos, plus a curated
-import→distribution map (`yaml`→`pyyaml`, `PIL`→`pillow`, …). Manifests
-are found by walking up to the nearest project dir, so subscans work;
-with no manifest anywhere the checker stays silent. stdlib,
+import→distribution map (`yaml`→`pyyaml`, `PIL`→`pillow`, …). Imports
+under `try/except`, `TYPE_CHECKING`, or version/platform conditionals
+are compat shims that may legitimately fail and never report.
+Manifests are found by walking up to the nearest project dir, so
+subscans work; with no manifest anywhere the checker stays silent. stdlib,
 in-repo modules, `@types/`-covered host modules, and Node builtins
 stay silent. Known limits: root manifests only for requirements files;
 an `@types/X` declaration hides a missing runtime `X` (deliberate,

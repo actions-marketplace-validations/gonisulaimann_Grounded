@@ -164,6 +164,7 @@ def parse_python(path: Path, rel: str, text: str) -> FileFacts:
         return facts
     facts.imports = _py_imports(tree)
     facts.from_imports = _py_from_imports(tree)
+    facts.guarded_lines = _guarded_line_set(tree)
     # is_method detection: need parent tracking
     parents: dict[int, ast.AST] = {}
     for node in ast.walk(tree):
@@ -177,6 +178,39 @@ def parse_python(path: Path, rel: str, text: str) -> FileFacts:
             facts.functions.append(info)
     facts.comments = _py_comments(text)
     return facts
+
+
+def _is_guarded(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    """Inside try/except, a TYPE_CHECKING conditional, or a version/platform
+    conditional: compatibility imports that may legitimately fail."""
+    seen: set[int] = set()
+    cur: ast.AST | None = node
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        parent = parents.get(id(cur))
+        if isinstance(parent, (ast.Try, ast.TryStar if hasattr(ast, "TryStar") else ast.Try)):
+            return True
+        if isinstance(parent, ast.If):
+            try:
+                test_src = ast.unparse(parent.test)
+            except Exception:
+                test_src = ""
+            if ("TYPE_CHECKING" in test_src or "version_info" in test_src
+                    or "sys.version" in test_src or "platform" in test_src
+                    or "os.name" in test_src):
+                return True
+        cur = parent
+    return False
+
+
+def _guarded_line_set(tree: ast.AST) -> set[int]:
+    """Linenos of Import/ImportFrom statements under a guarded context."""
+    parents: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    return {node.lineno for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and _is_guarded(node, parents)}
 
 
 def _py_imports(tree: ast.AST) -> dict[str, str]:
@@ -210,26 +244,6 @@ def _py_from_imports(tree: ast.AST) -> list[tuple[str | None, int, list[tuple[st
     """
     out: list[tuple[str | None, int, list[tuple[str, str | None]], bool, int]] = []
 
-    def guarded(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
-        seen: set[int] = set()
-        cur: ast.AST | None = node
-        while cur is not None and id(cur) not in seen:
-            seen.add(id(cur))
-            parent = parents.get(id(cur))
-            if isinstance(parent, (ast.Try, ast.TryStar if hasattr(ast, "TryStar") else ast.Try)):
-                return True
-            if isinstance(parent, ast.If):
-                try:
-                    test_src = ast.unparse(parent.test)
-                except Exception:
-                    test_src = ""
-                if ("TYPE_CHECKING" in test_src or "version_info" in test_src
-                        or "sys.version" in test_src or "platform" in test_src
-                        or "os.name" in test_src):
-                    return True
-            cur = parent
-        return False
-
     parents: dict[int, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
@@ -237,7 +251,7 @@ def _py_from_imports(tree: ast.AST) -> list[tuple[str | None, int, list[tuple[st
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             names = [(a.name, a.asname) for a in node.names]
-            out.append((node.module, node.level or 0, names, guarded(node, parents), node.lineno))
+            out.append((node.module, node.level or 0, names, _is_guarded(node, parents), node.lineno))
     return out
 
 

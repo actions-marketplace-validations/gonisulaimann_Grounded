@@ -2152,6 +2152,27 @@ class TestStaleContractRef(unittest.TestCase):
             })
             self.assertEqual(main(["scan", td, "--no-color"]), 0)
 
+    def test_uppercase_in_weak_frame_silent(self):
+        # Bare "use X instead" naming SQL/platform builtins (JSON_TYPE,
+        # COALESCE) is not a deprecation claim. Explicit deprecation of
+        # a missing CONSTANT still fires.
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "core.py": ("# Extract with JSON_EXTRACT(), use JSON_TYPE() instead.\n"
+                            "X = 1\n"),
+            })
+            rc, out = self._scan(td, "stale-contract-ref")
+            self.assertEqual(rc, 0)
+            self.assertNotIn("stale-contract-ref", out)
+        with tempfile.TemporaryDirectory() as td:
+            self._tree(Path(td), {
+                "core.py": ("# DEPRECATED: use Config.MAX_ITEMS instead.\n"
+                            "LIMIT = 10\n"),
+            })
+            rc, out = self._scan(td, "stale-contract-ref")
+            self.assertEqual(rc, 1)
+            self.assertIn("MAX_ITEMS", out)
+
 
 class TestGhostExport(unittest.TestCase):
     def _scan(self, td):
@@ -2464,6 +2485,29 @@ class TestPhantomPackage(unittest.TestCase):
             root = Path(td)
             (root / "a.py").write_text("import yaml\nprint(yaml)\n", encoding="utf-8")
             self.assertEqual(main(["scan", td, "--no-color"]), 0)
+
+    def test_guarded_imports_silent(self):
+        # try/except, TYPE_CHECKING, and version/platform conditionals
+        # are compat imports that may legitimately fail (seen: 55 such
+        # drifts on django backend drivers). Only the unguarded one fires.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+            (root / "a.py").write_text(
+                "import sys\n"
+                "try:\n"
+                "    import yaml\n"
+                "except ImportError:\n"
+                "    yaml = None\n"
+                "if sys.version_info >= (3, 99):\n"
+                "    import tomli\n"
+                "import requests\n"
+                "print(sys, yaml, tomli, requests)\n",
+                encoding="utf-8")
+            rc, out = self._scan(td)
+            self.assertIn("`requests` is imported", out)
+            self.assertNotIn("yaml", out)
+            self.assertNotIn("tomli", out)
 
 
 class TestStaleCliRef(unittest.TestCase):

@@ -6,6 +6,13 @@ All notable changes to `grounded` are documented here. Format follows
 ## [Unreleased]
 
 ### Fixed
+- `phantom-package` no longer reports guarded imports (`try/except`,
+  `TYPE_CHECKING`, version/platform conditionals are compat shims by
+  the project's own doctrine): 43 findings removed on django with zero
+  true positives among them.
+- `stale-contract-ref` no longer treats ALL-CAPS names in a bare "use
+  X instead" frame as deprecation targets (SQL/platform builtins like
+  `JSON_TYPE`); explicit `DEPRECATED:` notices are still checked.
 - Parse-failure opacity: modules that fail `ast.parse` (version-skewed
   grammar, truncated buffers) are marked opaque instead of indexing
   zero symbols, which cascaded into phantom absence lies (24,881

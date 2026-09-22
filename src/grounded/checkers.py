@@ -1506,6 +1506,9 @@ def check_stale_contract_ref(facts: FileFacts, index: RepoIndex) -> list[Finding
         if not text.strip() or _TICKET.search(text):
             continue
         if _CONTRACT_DEPRECATION.search(text):
+            strong = bool(re.search(
+                r"deprecat\w*|\breplac\w*\s+by\b|\bsupersed\w*\s+by\b|\bmigrat\w+\s+to\b",
+                text, re.IGNORECASE))
             for m in _CONTRACT_NAME.finditer(text):
                 raw = m.group(1).rstrip(".")
                 is_call = raw.endswith(")")
@@ -1516,6 +1519,9 @@ def check_stale_contract_ref(facts: FileFacts, index: RepoIndex) -> list[Finding
                 root = name.split(".")[0]
                 if len(base) < 3 or _is_dunder(base) or _is_reserved(base, language):
                     continue
+                if not strong and base.isupper():
+                    continue  # bare "use X instead" naming SQL/platform
+                    # builtins (JSON_TYPE, COALESCE): uppercase convention
                 if "." not in name and not is_call:
                     continue  # bare word in prose, not a reference
                 if _contract_known(root, base, facts, index, code, language):
@@ -2070,12 +2076,18 @@ def _phantom_py(facts: FileFacts, index: RepoIndex, declared: set[str]) -> list[
     seen: set[str] = set()
     _norm = _norm_dist
     jobs: list[tuple[str, int]] = []  # (top module, lineno)
-    for module, level, _names, _guarded, lineno in facts.from_imports:
+    for module, level, _names, guarded, lineno in facts.from_imports:
+        if guarded:
+            continue  # compat import that may legitimately fail
         if module and not level:
             jobs.append((module.split(".")[0], lineno))
     for _alias, root in facts.imports.items():
         if root:
-            jobs.append((root.split(".")[0], 1))
+            top = root.split(".")[0]
+            lines = _import_lines(facts, top)
+            if lines and all(ln in facts.guarded_lines for ln in lines):
+                continue  # every occurrence guarded: may legitimately fail
+            jobs.append((top, lines[0] if lines else 1))
     for top, lineno in jobs:
         if not top or top in _STDLIB_MODULES or top in seen:
             continue
@@ -2102,11 +2114,17 @@ def _phantom_py(facts: FileFacts, index: RepoIndex, declared: set[str]) -> list[
 
 
 def _import_line(facts: FileFacts, top: str) -> int:
+    lines = _import_lines(facts, top)
+    return lines[0] if lines else 1
+
+
+def _import_lines(facts: FileFacts, top: str) -> list[int]:
+    out = []
     for i, line in enumerate(facts.lines, start=1):
         s = line.strip()
         if re.match(r"(?:from|import)\s+", s) and top in s:
-            return i
-    return 1
+            out.append(i)
+    return out
 
 
 def _phantom_js(facts: FileFacts, index: RepoIndex, declared: set[str]) -> list[Finding]:
