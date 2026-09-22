@@ -56,7 +56,7 @@
         </div>
         <p class="hero-meta">
           <b>Zero dependencies.</b> No network access. Deterministic.<br>
-          Python · JavaScript/TypeScript · Go · C &nbsp;|&nbsp; 7 default rules, 4 opt-in
+          Python · JavaScript/TypeScript · Go · C &nbsp;|&nbsp; 8 default rules, 5 opt-in
         </p>
       </div>
 
@@ -150,9 +150,9 @@
     <div class="wrap">
       <div class="section-head">
         <p class="kicker">The rule set</p>
-        <h2>Eleven contradictions, each with a name</h2>
+        <h2>Thirteen contradictions, each with a name</h2>
         <p>
-          Seven run by default and gate on <code>lie</code>. Four ship opt-in and graduate to
+          Eight run by default and gate on <code>lie</code>. Five ship opt-in and graduate to
           default-on only by measured precision on real repositories — never by volume.
         </p>
       </div>
@@ -190,6 +190,11 @@
             <td>A <code>@patch</code> string naming a symbol absent from the in-repo module — the test that errors at runtime.</td>
           </tr>
           <tr>
+            <td>unclosed-fence</td>
+            <td><span class="pill pill-lie">LIE</span></td>
+            <td>A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open — the content after it renders as code. Judged by CommonMark, not by counting fences.</td>
+          </tr>
+          <tr>
             <td>number-drift</td>
             <td><span class="pill pill-drift">DRIFT</span></td>
             <td>A comment states a magic number that disagrees with adjacent code.</td>
@@ -218,6 +223,11 @@
             <td>ghost-export <span class="pill pill-optin">opt-in</span></td>
             <td><span class="pill pill-smell">SMELL</span></td>
             <td>A public symbol with no importers, no use, and no deliberate API marking.</td>
+          </tr>
+          <tr>
+            <td>stale-cli-ref <span class="pill pill-optin">opt-in</span></td>
+            <td><span class="pill pill-lie">LIE</span></td>
+            <td>A documented <code>grounded</code> invocation with a subcommand or flag the CLI does not accept (verified against the live parser).</td>
           </tr>
         </tbody>
       </table>

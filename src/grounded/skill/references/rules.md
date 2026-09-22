@@ -15,9 +15,9 @@ Condensed checker semantics for agents. Full prose lives in the
 | `ghost-export` | smell, opt-in only | public symbol with no importers, no in-file use, no API marking | methods, dunders, `__init__`, `__all__`, exports, Go-exported names |
 | `stale-entrypoint` | lie | scripts/bin/main pointing at nothing in-repo | malformed files, build-output dirs, external targets |
 | `stale-mock-ref` | lie | @patch string naming an absent in-repo symbol | external paths, create=True, method/meta attrs |
+| `unclosed-fence` | lie | Markdown fence that never closes, or is swallowed by an open block (content renders as code) | declared nesting scaffolds (` ````markdown ` around ` ```python `), bare fences inside a block |
 | `phantom-package` | drift, opt-in only | import declared in no manifest | stdlib, in-repo, all dep groups, @types-covered hosts |
 | `stale-cli-ref` | lie, opt-in only | documented `grounded` call with unknown subcommand/flag | prose mentions, synopsis meta-syntax, program output |
-| `unclosed-fence` | smell, opt-in only | Markdown fence that never closes, or is swallowed by an open block (content renders as code) | declared nesting scaffolds (` ````markdown ` around ` ```python `), bare fences inside a block |
 
 Exit codes: `0` clean, `1` a finding at or above `--fail-on` (default
 `lie`), `2` usage or environment error, `3` an enabled checker raised

@@ -7,14 +7,11 @@
 | `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, or untracked markers (`HACK`, `XXX`, `FIXME`, `workaround`) with no ticket or expiry condition. |
-| `stale-doc-ref` | lie (error), **experimental, opt-in only** | A fenced code example (explicit `python`/`js`/`ts`/`go`/`c` tag) calls a symbol bound nowhere in the example and defined nowhere in the repo. |
-| `stale-contract-ref` | lie/drift, **experimental, opt-in only** | A deprecation notice naming a nonexistent replacement, a lock-holder claim (`must hold X`) naming nothing, or a comment stating an env default the code contradicts. |
-| `ghost-export` | smell (note), **experimental, opt-in only** | A public symbol with no importers anywhere, no use in its own file, and no deliberate API marking (`__all__`, exports, `__init__`). |
 | `stale-entrypoint` | lie (error) | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. Graduated 2026-09-22. |
 | `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module. Graduated 2026-09-22. |
 | `phantom-package` | drift (warning), **experimental, opt-in only** | An absolute import declared in no manifest (`pyproject.toml`, `requirements*.txt`, `package.json`). |
 | `stale-cli-ref` | lie (error), **experimental, opt-in only** | A documented `grounded` invocation with an unknown subcommand or flag (verified against the live parser). |
-| `unclosed-fence` | smell (note), **experimental, opt-in only** | A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open: the content after it renders as code, and the doc checkers' fence state inverts from there on. |
+| `unclosed-fence` | lie (error) | A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open: the content after it renders as code, and the doc checkers' fence state inverts from there on. Graduated 2026-09-22 — promoted alongside the shared CommonMark fence walk, with the differential fuzz pinning the walk. |
 ## Experimental checkers
 
 Opt-in checkers are registered but excluded from every default set: run

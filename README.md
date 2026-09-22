@@ -246,8 +246,9 @@ Corrupt or mismatched caches fall back to a full scan silently.
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, and workaround markers (`HACK`, `XXX`, `workaround`) with no ticket or expiry condition. |
 | `stale-entrypoint` | lie (error) | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. Graduated 2026-09-22: 0 false positives over 15,196 files with the checker-error count at 0. |
 | `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module (a test that errors at runtime). Graduated 2026-09-22: 134 Django findings classified, all fixed or documented. |
+| `unclosed-fence` | lie (error) | A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open — the content after it renders as code, and the doc checkers' fence state inverts from there on. Judged by CommonMark, not by counting fences. Graduated 2026-09-22: 0 false positives over 11,564 Markdown files in eight real repos, walk pinned by a differential fuzz. |
 
-Six more checkers ship **opt-in** (`--enable <id>`); they graduate to
+Five more checkers ship **opt-in** (`--enable <id>`); they graduate to
 default-on by measured precision ([tracked here](https://github.com/gonisulaimann/Grounded/tree/main/corpus)):
 
 | ID | Severity | What it reports |
@@ -257,7 +258,6 @@ default-on by measured precision ([tracked here](https://github.com/gonisulaiman
 | `ghost-export` | smell | public symbol with no importers, no use, no API marking |
 | `phantom-package` | drift | import declared in no manifest |
 | `stale-cli-ref` | lie | a documented `grounded` invocation with a subcommand or flag the CLI does not accept (verified against the live parser) |
-| `unclosed-fence` | smell | a Markdown fence that never closes, or one the renderer swallows because an earlier block is still open — the content after it renders as code, and the doc checkers' fence state inverts from there on |
 
 A rule stays silent unless the contradiction is mechanical. Imported names,
 standard library names, parameters, locals, attributes, docstring field
@@ -329,8 +329,13 @@ repos:
   - repo: https://github.com/gonisulaimann/Grounded
     rev: v0.16.0
     hooks:
-      - id: grounded
+      - id: grounded          # dangling references on changed lines
+      - id: grounded-fences   # Markdown fences the renderer will not honour
 ```
+
+The `grounded-fences` hook gates on changed *files* rather than changed
+lines, because one unclosed fence corrupts everything after it — the
+class of defect that survives line-scoped review.
 
 SARIF upload for code scanning: run with `--format sarif --output
 results.sarif`, then upload with `github/codeql-action/upload-sarif`.

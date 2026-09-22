@@ -600,6 +600,55 @@ class TestChangedLines(unittest.TestCase):
             self.assertEqual(out[0]["checker"], "stale-import")
 
 
+class TestMultiPathScan(unittest.TestCase):
+    """`grounded scan FILE [FILE ...]` — pre-commit batches the changed
+    filenames it passes to a `pass_filenames` hook, so the fence hook
+    (`grounded-fences` in .pre-commit-hooks.yaml) needs multi-path scan.
+
+    Semantics follow the single-file rule: each file scopes REPORTING to
+    itself while the index is still built from the whole tree, so
+    cross-file references keep resolving.
+    """
+
+    def test_two_files_one_finding(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "bad.md").write_text("# Guide\n\n```console\ngrounded scan .\n",
+                                         encoding="utf-8")
+            (root / "ok.md").write_text("# Ok\n\n```python\nx = 1\n```\n",
+                                        encoding="utf-8")
+            import contextlib
+            import io
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root / "bad.md"), str(root / "ok.md"),
+                           "--no-color", "--fail-on", "lie",
+                           "--enable", "unclosed-fence"])
+            self.assertEqual(rc, 1)
+            self.assertIn("bad.md", buf.getvalue())
+            self.assertNotIn("ok.md:", buf.getvalue())
+
+    def test_two_files_both_clean(self):
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.md").write_text("```python\nx = 1\n```\n", encoding="utf-8")
+            (root / "b.md").write_text("```python\ny = 2\n```\n", encoding="utf-8")
+            self.assertEqual(
+                main(["scan", str(root / "a.md"), str(root / "b.md"),
+                      "--no-color", "--fail-on", "lie",
+                      "--enable", "unclosed-fence"]), 0)
+
+    def test_zero_files_falls_back_to_dot(self):
+        # pre-commit passes no filenames when nothing matched `files:`; the
+        # hook must stay silent rather than die on `scan` with no path.
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "a.py").write_text("X = 1\n", encoding="utf-8")
+            self.assertEqual(main(["scan", str(td), "--no-color"]), 0)
+
+
 class TestSuppressions(unittest.TestCase):
     def scan(self, root: Path, files: dict[str, str]):
         for rel, text in files.items():
@@ -2210,6 +2259,8 @@ class TestInitAgent(unittest.TestCase):
                 text = (target / ".pre-commit-config.yaml").read_text()
                 self.assertIn("gonisulaimann/Grounded", text)
                 self.assertIn("- id: grounded", text)
+                # Both first-party hooks are offered by default.
+                self.assertIn("- id: grounded-fences", text)
                 (target / ".pre-commit-config.yaml").write_text("mine\n", encoding="utf-8")
                 self.assertEqual(main(["init-agent", "--pre-commit"]), 0)
                 self.assertEqual(
@@ -3212,7 +3263,9 @@ class TestUnclosedFence(unittest.TestCase):
             self.assertEqual(len(findings), 1, findings)
             self.assertEqual(findings[0].line, 5)
             self.assertIn("never closed", findings[0].title)
-            self.assertEqual(findings[0].severity, "smell")
+            # Graduated 2026-09-22: a fence the renderer does not honour is
+            # document corruption, not a style note — it gates like a lie.
+            self.assertEqual(findings[0].severity, "lie")
 
     def test_swallowed_boundary_names_the_open_block(self):
         # The real shape: a missing close, then a second header of the same
@@ -3277,20 +3330,29 @@ class TestUnclosedFence(unittest.TestCase):
                 "# Guide\n\n```console\ngrounded scan .\n", encoding="utf-8")
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = main(["scan", td, "--no-color", "--enable", "unclosed-fence"])
-            # reported by default, and a smell: it needs --fail-on smell to
-            # gate, like every other structural note.
-            self.assertEqual(rc, 0)
+                rc = main(["scan", td, "--no-color"])
+            # Graduated 2026-09-22: collected and gating by default. The
+            # scanner only collects Markdown when one of its checkers runs,
+            # and this checker is always in DEFAULT_ENABLED now.
+            self.assertEqual(rc, 1)
             self.assertIn("unclosed-fence", buf.getvalue())
-            with redirect_stdout(io.StringIO()):
-                gated = main(["scan", td, "--no-color", "--enable", "unclosed-fence",
-                              "--fail-on", "smell"])
-            self.assertEqual(gated, 1)
 
-    def test_off_by_default(self):
+    def test_explicit_opt_out_still_works(self):
+        import io
+        from contextlib import redirect_stdout
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "README.md").write_text(
+                "# Guide\n\n```console\ngrounded scan .\n", encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["scan", td, "--no-color", "--disable", "unclosed-fence"])
+            self.assertEqual(rc, 0)
+
+    def test_on_by_default(self):
         from grounded.checkers import DEFAULT_ENABLED, OPT_IN_CHECKERS
-        self.assertIn("unclosed-fence", OPT_IN_CHECKERS)
-        self.assertNotIn("unclosed-fence", DEFAULT_ENABLED)
+        self.assertIn("unclosed-fence", DEFAULT_ENABLED)
+        self.assertNotIn("unclosed-fence", OPT_IN_CHECKERS)
 
 
 def _reference_scan(text: str) -> list[tuple[int, int | None, str]]:

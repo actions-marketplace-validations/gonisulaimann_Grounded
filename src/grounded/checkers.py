@@ -2724,7 +2724,7 @@ def check_unclosed_fence(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue  # declared nesting scaffold: ````markdown around ```python
             findings.append(Finding(
                 path=facts.path, line=lineno, end_line=lineno,
-                checker="unclosed-fence", severity="smell",
+                checker="unclosed-fence", severity="lie",
                 title=f"Code fence is swallowed by the block opened at line {b['open']}",
                 claim=lines[lineno - 1].strip()[:60],
                 evidence=f"the block opened at line {b['open']} is closed only by a run of "
@@ -2737,7 +2737,7 @@ def check_unclosed_fence(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     if open_at:
         findings.append(Finding(
             path=facts.path, line=open_at, end_line=len(lines),
-            checker="unclosed-fence", severity="smell",
+            checker="unclosed-fence", severity="lie",
             title="Code fence is never closed",
             claim=lines[open_at - 1].strip()[:60],
             evidence=f"this fence has no closer, so the {len(lines) - open_at} "
@@ -2777,7 +2777,7 @@ CHECKER_DESCRIPTIONS = {
     "stale-mock-ref": "@patch/patch.object strings naming symbols absent from the in-repo module (graduated 2026-09-22; re-verified with the checker-error count at 0 — 0 false positives over 15,196 files in svelte/OmniRoute/flask/requests, so the checker demonstrably ran).",
     "phantom-package": "EXPERIMENTAL, opt-in only: imports declared in no manifest (pyproject, requirements, package.json).",
     "stale-cli-ref": "EXPERIMENTAL, opt-in only: documented `grounded` invocations with unknown subcommands or flags.",
-    "unclosed-fence": "EXPERIMENTAL, opt-in only: a Markdown code fence that never closes, or a fence the renderer swallows because an earlier block is still open (both make content render as code and invert the doc checkers' fence state).",
+    "unclosed-fence": "a Markdown code fence that never closes, or a fence the renderer swallows because an earlier block is still open (both make content render as code and invert the doc checkers' fence state). Graduated 2026-09-22; re-verified with the checker-error count at 0 — 0 false positives over 11,564 Markdown files in eight real repos, and the walk pinned by a differential fuzz against an independent CommonMark reference, so the checker demonstrably ran.",
 }
 
 # Opt-in checkers are registered (so --enable/explain work) but excluded
@@ -2786,7 +2786,7 @@ CHECKER_DESCRIPTIONS = {
 # can prove the checker ran — a checker that raises also returns no findings
 # — so graduation requires a checker-error count of 0 (exit code 3).
 OPT_IN_CHECKERS = frozenset({"stale-doc-ref", "stale-contract-ref", "ghost-export",
-                             "phantom-package", "stale-cli-ref", "unclosed-fence"})
+                             "phantom-package", "stale-cli-ref"})
 DEFAULT_ENABLED = frozenset(CHECKERS) - OPT_IN_CHECKERS
 
 # Intentionally unimplemented: docstring contracts and commented-out code
