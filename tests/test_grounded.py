@@ -8,6 +8,7 @@ Tests pin suppression rules, not just detections.
 from __future__ import annotations
 
 import json
+import random
 import re
 import shutil
 import sys
@@ -3292,23 +3293,211 @@ class TestUnclosedFence(unittest.TestCase):
         self.assertNotIn("unclosed-fence", DEFAULT_ENABLED)
 
 
+def _reference_scan(text: str) -> list[tuple[int, int | None, str]]:
+    """Independent fenced-code extraction for the differential fuzz.
+
+    Written from the CommonMark 0.31.2 fenced-code-block clauses but
+    structurally unlike `_fence_scan`: char-by-char scanning, no regexes,
+    no block list. Returns `(open_line, close_line, info)` per block, with
+    `close_line` None when a block runs to EOF. Deliberately shares the
+    scanner's documented contract: top-level (non-list) structure only.
+    """
+    open_char, open_len, open_line, open_info = "", 0, 0, ""
+    blocks: list[tuple[int, int | None, str]] = []
+    for lineno, line in enumerate(text.split("\n"), start=1):
+        stripped = line.rstrip("\r")
+        indent = 0
+        i = 0
+        while i < len(stripped) and stripped[i] == " " and indent < 4:
+            indent += 1
+            i += 1
+        rest = stripped[i:]
+        if not open_char:
+            if indent <= 3 and rest[:3] in ("```", "~~~"):
+                ch = rest[0]
+                n = 0
+                while n < len(rest) and rest[n] == ch:
+                    n += 1
+                if n >= 3:
+                    info = rest[n:]
+                    if ch == "`" and "`" in info:
+                        continue  # info may not contain backticks: not a fence
+                    open_char, open_len = ch, n
+                    open_line, open_info = lineno, info
+            continue
+        if indent <= 3 and rest[:1] == open_char:
+            n = 0
+            while n < len(rest) and rest[n] == open_char:
+                n += 1
+            if n >= open_len and not rest[n:].strip():
+                blocks.append((open_line, lineno, open_info))
+                open_char, open_len, open_line, open_info = "", 0, 0, ""
+    if open_char:
+        blocks.append((open_line, None, open_info))
+    return blocks
+
+
+class TestFenceScanSpec(unittest.TestCase):
+    """`_fence_scan` pinned three ways: spec goldens, differential fuzz,
+    real-document mutation.
+
+    The fence walk is the single source of truth for every doc checker, so
+    a regression there silently corrupts several checkers at once — the
+    failure mode that started this (a naive toggle missing rich-info
+    fences read 10,962 lines of fenced code as prose across 1,032 files).
+    The reference walker above is written from the CommonMark clauses but
+    shares no code or regexes with `_fence_scan`; the fuzz layer mutates
+    real repository Markdown so the corpus of inputs is the repo itself,
+    not just synthetic lines.
+    """
+
+    GOLDENS: list[tuple[str, list[tuple[int, int | None, str]]]] = [
+        # CommonMark 0.31.2 example 141: info line with a backtick inside an
+        # open block is content, and the block still closes on the bare fence.
+        ("```\n``` aaa\n```\n", [(1, 3, "")]),
+        # Example 142: tilde block swallows a backtick fence as content.
+        ("~~~\n```\n", [(1, None, "")]),
+        # Example 143: a longer outer fence; inner fences are content.
+        ("````\n```\naaa\n```\n````\n", [(1, 5, "")]),
+        # Closing fence may be longer than the opener, never shorter.
+        ("```\naaa\n`````\n", [(1, 3, "")]),
+        ("````\naaa\n```\n", [(1, None, "")]),
+        # Characters cannot mix: ~~~ never closes a backtick block.
+        ("```\naaa\n~~~\n", [(1, None, "")]),
+        # Backtick info strings containing a backtick are not fences.
+        ("``` a`b\nfoo\n", []),
+        # ...but the same line inside a tilde block is just content there.
+        ("~~~\n``` a`b\n~~~\n", [(1, 3, "")]),
+        # Tilde info strings may contain backticks freely — the whole rest
+        # of the line is the info string, backticks and all.
+        ("~~~ ```\naaa\n~~~\n", [(1, 3, " ```")]),
+        # An info-carrying fence inside an open block is content — the
+        # exact shape that broke this repo's README (a ```console opened
+        # and a later ```console was swallowed).
+        ("```console\n$ ls\n```py\nx = 1\n```\n", [(1, 5, "console")]),
+        # Indented 4+ is not a fence at all.
+        ("     ```\nfoo\n", []),
+        # Up to 3 spaces of indent open, and close, a fence.
+        ("  ```py\nx = 1\n   ```\n", [(1, 3, "py")]),
+        # Closing fence may carry trailing whitespace, never an info string.
+        ("```\naaa\n```   \n", [(1, 3, "")]),
+        ("```\naaa\n``` py\n", [(1, None, "")]),
+        # Unclosed at EOF: close is None.
+        ("a\n```py\nx = 1\n", [(2, None, "py")]),
+    ]
+
+    _FUZZ_LINES = [
+        "```", "~~~", "````", "~~~~", "```py", "~~~py", "``` a`b", "```a``",
+        "~~~ x~~~", "  ```", "   ~~~", "    ```", "``` ", "```\t", "text",
+        "```md", "~~~~~~", "``````", "```~", "~```", "``` `` ", "console",
+        "$ grounded scan .", "", "   ", "````md", "```{python}", "~```~",
+        "``` ```", "  ~~~py", "```py``", "~~~~~", "     ```", "\t```",
+    ]
+
+    def _walk(self, text: str) -> list[tuple[int, int | None, str]]:
+        from grounded.checkers import _fence_scan
+        blocks, _open_at = _fence_scan(text.split("\n"))
+        return [(b["open"], b["close"], b["info"]) for b in blocks]
+
+    def test_spec_goldens(self) -> None:
+        for text, expected in self.GOLDENS:
+            with self.subTest(text=text):
+                got = self._walk(text)
+                self.assertEqual(got, expected,
+                                 f"reference={_reference_scan(text)!r}")
+
+    def _repo_markdown(self) -> list[Path]:
+        root = Path(__file__).resolve().parent.parent
+        skip = {".git", "node_modules", "__pycache__", "corpus"}
+        return sorted(p for p in root.rglob("*.md")
+                      if not any(part in skip for part in p.parts))
+
+    def test_differential_random_lines(self) -> None:
+        rng = random.Random(0xF11)
+        for seed in range(240):
+            lines = [rng.choice(self._FUZZ_LINES)
+                     for _ in range(rng.randint(2, 12))]
+            text = "\n".join(lines)
+            with self.subTest(seed=seed, text=text):
+                self.assertEqual(self._walk(text), _reference_scan(text),
+                                 f"seed {seed} diverged")
+
+    def test_differential_splice_into_real_docs(self) -> None:
+        rng = random.Random(0xFE2)
+        docs = self._repo_markdown()
+        self.assertGreater(len(docs), 20, "expected repo docs to mutate")
+        for path in docs:
+            text = path.read_text(encoding="utf-8")
+            for _ in range(2):
+                lines = text.split("\n")
+                lines.insert(rng.randrange(len(lines) + 1),
+                             rng.choice(self._FUZZ_LINES))
+                mutated = "\n".join(lines)
+                with self.subTest(doc=str(path)):
+                    self.assertEqual(self._walk(mutated),
+                                     _reference_scan(mutated),
+                                     f"splice into {path.name} diverged")
+
+    def test_differential_mutate_fence_lines_of_real_docs(self) -> None:
+        from grounded.checkers import _FENCE_LINE
+        rng = random.Random(0xFE3)
+        for path in self._repo_markdown():
+            lines = path.read_text(encoding="utf-8").split("\n")
+            fence_idx = [i for i, ln in enumerate(lines) if _FENCE_LINE.match(ln)]
+            for i in rng.sample(fence_idx, min(2, len(fence_idx))):
+                for kind in ("length", "char", "info"):
+                    mutated = list(lines)
+                    if kind == "length":
+                        mutated[i] = mutated[i].replace(
+                            "```", "```" + "`", 1) if "```" in mutated[i] \
+                            else mutated[i] + "~"
+                    elif kind == "char":
+                        mutated[i] = mutated[i].replace("```", "~~~", 1) \
+                            if "```" in mutated[i] else mutated[i].replace(
+                            "~~~", "```", 1)
+                    else:
+                        mutated[i] = mutated[i] + " py"
+                    text = "\n".join(mutated)
+                    with self.subTest(doc=str(path), line=i + 1, kind=kind):
+                        self.assertEqual(self._walk(text),
+                                         _reference_scan(text),
+                                         f"{path.name}:{i + 1} {kind} diverged")
+
+    def test_differential_over_real_corpora_when_present(self) -> None:
+        hosts = [p for p in (Path("/tmp/eval2/svelte"),
+                             Path("/tmp/reverify/flask"),
+                             Path("/tmp/reverify/requests")) if p.is_dir()]
+        if not hosts:
+            self.skipTest("no real-world corpora checked out")
+        for host in hosts:
+            docs = sorted(host.rglob("*.md"))[:250]
+            self.assertGreater(len(docs), 0)
+            for path in docs:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                with self.subTest(host=host.name, doc=str(path)):
+                    self.assertEqual(self._walk(text), _reference_scan(text),
+                                     f"{path} diverged")
+
+
 class TestRepoDocFences(unittest.TestCase):
     """The README's fences must balance.
 
-    Measured 2026-09-22: one unclosed fence in `README.md` inverted the state
-    of every fence after it, so 186 of the file's last 248 lines rendered as a
-    single code block on GitHub — the Rules table, Configuration, Limitations
-    and Contributing sections included. It also disarmed `stale-cli-ref` for
-    the whole tail of the file, since an invocation inside a code block is not
-    parsed as one. Neither symptom is visible in a diff review.
+    Measured 2026-09-22: one ` ```console ` opener at line 216 was never
+    closed, so the paragraphs at lines 220-228 rendered as code on GitHub
+    (verified with GitHub's own renderer: 24 code blocks broken, 25 fixed).
+    It also inverted the doc checkers' fence state for the rest of the file,
+    disarming `stale-cli-ref` for the whole tail. Neither symptom is visible
+    in a diff review. Balance is judged by the shared `_fence_scan` walk —
+    the CommonMark close rule, not a toggle count — so a file with a stray
+    fence-lookalike inside a block still counts as balanced.
     """
 
     def test_readme_fences_are_balanced(self) -> None:
+        from grounded.checkers import _fence_scan
         readme = Path(__file__).resolve().parent.parent / "README.md"
-        toggles = [ln for ln in readme.read_text(encoding="utf-8").splitlines()
-                   if re.match(r"^(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)\s*$", ln.strip())]
-        self.assertEqual(len(toggles) % 2, 0,
-                         f"README.md has {len(toggles)} fences: one is unclosed")
+        _, open_at = _fence_scan(
+            readme.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(open_at, 0, "README.md has an unclosed fence")
 
 
 class TestTomlCompat(unittest.TestCase):
