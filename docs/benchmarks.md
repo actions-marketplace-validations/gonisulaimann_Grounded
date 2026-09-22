@@ -96,3 +96,130 @@ Measuring on real repos paid for itself four times over, all in
 * `from . import X` follows star re-exports and yields to
   `globals().update()` namespaces.
 * `Xxx`/`XXX` placeholder names stay silent in `stale-symbol-ref`.
+
+## Precision round: svelte and a production TypeScript monorepo (measured 2026-09-22)
+
+Machine: MacBook Air (Apple silicon, 10 cores), Python 3.13. Trees are
+shallow clones fetched 2026-09-22. Harness: `grounded scan <tree>
+--format json`, opt-in checkers named per table.
+
+### svelte (`--enable stale-doc-ref,ghost-export`)
+
+| | Findings |
+| --- | ---: |
+| Before | 23 (12 `stale-doc-ref` lies, 11 `ghost-export` smells) |
+| After | **1** (`ghost-export`: `strip_link` in `tests/css/test.ts`) |
+
+Every one of the 12 `stale-doc-ref` lies was a false positive against
+svelte's own docs, in three families: doc examples annotated with
+`+++`/`---` highlight markers (the markers broke identifier extraction,
+turning bound parameters into phantom calls), Playwright fixture
+parameters arriving destructured (`async ({ page }) =>`), and doc-tooling
+directives (`// @noErrors`) marking an example as not-executed config.
+
+Of the 11 `ghost-export` smells, 10 were generated compiler output under
+`tests/snapshot/samples/*/_expected/`, and 1 was a live function called
+on a line opening with an inline `/** @param ... */`. The single
+survivor is a true positive: `strip_link` is defined in
+`tests/css/test.ts` and referenced nowhere in the tree.
+
+### OmniRoute, `src/lib` (default checkers)
+
+| Checker | Before | After |
+| --- | ---: | ---: |
+| `stale-import` | 58 | **0** |
+| `stale-symbol-ref` | 31 | 31 |
+| `stale-file-ref` | 12 | 12 |
+| `fragile-anchor` | 3 | 3 |
+| `number-drift` | 2 | 2 |
+| **Total** | **106** | **48** |
+
+The 58 import lies were all one mechanical mistake: a sub-tree scan
+(`scan src/lib`) resolving `../../shared/...` and `../../../open-sse/...`
+to files that exist one level **above** the scan root. The same tree
+scanned from the repo root reported 3, and after the fix the sub-tree
+scan agrees. Suppression-only change: every other checker is
+count-identical before and after, so the round removed 58 false
+positives with zero recall loss.
+
+### What the round fixed
+
+* **Partial-snapshot absence claims.** A relative specifier that
+  resolves above the scan root is now silent, in both the relative and
+  alias arms of `_resolve_js_target`. A scan cannot report what it did
+  not look at as missing; a sub-tree or single-file scan (the advertised
+  agent loop) previously manufactured up to 51 lies on one tree.
+* **Inline block comments.** `_code_text` kept only the code after a
+  `*/` that closes mid-line instead of blanking the whole line, so a use
+  sitting behind `/** @param ... */` counts as a use.
+* **Generated expected output.** `_GHOST_GENERATED_PATH` keeps
+  `ghost-export` silent under `_expected/`, `__snapshots__/`,
+  `snapshots/`, `generated/`, `codegen/`, and `*.gen.*`. Reachability of
+  generated code is unknowable, so neither is the claim that nobody can
+  reach it.
+* **Documentation diff markers.** Binding extraction and call scanning
+  run on a marker-stripped copy of the line.
+* **Destructured bindings.** `_doc_block_known` collects names bound by
+  `{ a, b }`/`[a, b]` patterns, which is how test fixtures are written.
+* **Ambient platform roots.** `customElements`, `getComputedStyle`,
+  `matchMedia`, the observer/worker constructors and friends joined
+  `_DOC_JS_AMBIENT_ROOTS`.
+* **Doc-tooling directives.** `// @noErrors`, `@errors`, `/// file:` and
+  `---cut---` mark a block as not-executed and are treated like other
+  illustrative markers.
+* **Build-output paths in file references.** `stale-file-ref` now shares
+  the import arms' verdict: a path under a scan-ignored directory is not
+  indexed, so it cannot be judged missing (20 findings removed on the
+  OmniRoute tree, all generated or written at runtime —
+  `dist/docs/openapi.yaml` in CLI help text, `dist/index.cjs` in a setup
+  command).
+* **Elided paths.** `src/.../File.tsx` is shorthand, not a claim. The
+  placeholder list intended this, but the segment split turned `...` into
+  empty segments and never matched (5 more findings removed on the same
+  tree).
+* **Baseline de-duplication.** `grounded baseline` stored duplicate
+  fingerprints and its printed `total` disagreed with the file (277
+  unique vs 284 entries on the same tree).
+* **A silently disabled checker.** `declared_dependencies` returns
+  `None` when no manifest exists anywhere above the file, and
+  `stale-doc-ref` iterated it unconditionally. The exception was
+  swallowed by the scanner's checker guard, so the whole checker was
+  dark on every manifest-less tree. Absence of a manifest is now an
+  empty declared set.
+
+### OmniRoute, whole repository (with a starter `grounded.toml`)
+
+Ignoring the private `_tasks` tree and the local `.freebuff` scratch dir:
+
+| Checker | Before the round | After |
+| --- | ---: | ---: |
+| `stale-file-ref` | 103 | 78 |
+| `fragile-anchor` | 82 | 82 |
+| `stale-symbol-ref` | 55 | 55 |
+| `number-drift` | 23 | 23 |
+| `stale-import` | 2 | 2 |
+| **Total** | **265** | **240** |
+
+11,481 files in ~26 s; 235 unique fingerprints recorded as the adoption
+baseline. Again suppression-only: only `stale-file-ref` moves, so nothing
+else lost recall. `--changed` against the working tree reported 41
+findings (untracked files are fully reported by design) with 199 hidden
+outside changed lines.
+
+### Residuals (measured, deliberately not fixed here)
+
+* Platform and framework API names in comments still report in
+  `stale-symbol-ref`: on the OmniRoute tree the 55 non-fixture symbol
+  refs sampled as `NextResponse.rewrite()` (Next.js), `ws.recv()`,
+  `getCacheDirectory()` (a Next.js internal named in a Next.js-internals
+  comment), and jest/Vitest sentinels (`__anon__`, `__updateSettings__`,
+  `__sessionDedupMap__`). These are the documented platform-API
+  boundary: judge on sight or baseline them.
+* One guarded `require` fallback inside `try { } catch {}`
+  (`electron/loginManager.js`) and one fumadocs-generated `.source/server`
+  import still report at repo root: JS guarded imports are not
+  recognised as guarded the way Python's are, and generated content in a
+  dot-directory is not in the ignore set.
+* `ghost-export` on generated output inside a *test* file
+  (`snapshots`-style names) is silent; genuinely dead helpers in test
+  files still report, which is the intended behavior.
