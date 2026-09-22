@@ -2077,6 +2077,8 @@ def _phantom_py(facts: FileFacts, index: RepoIndex, declared: set[str]) -> list[
         targets = _resolve_py_target(index, facts.path, top, 0)
         if targets is not None and any(t in index.rel_paths for t in targets):
             continue  # first-party (src-layout aware)
+        if top in index.parent_tops:
+            continue  # first-party above the scan root: not a distribution
         if _norm(top) in declared or _norm(_IMPORT_TO_DIST.get(top, top)) in declared:
             continue
         line = lineno if lineno > 1 else _import_line(facts, top)

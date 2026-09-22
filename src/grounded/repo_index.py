@@ -23,6 +23,58 @@ _JS_FUNC_PATTERNS = [
 _JS_METHOD_HINT = re.compile(r"^\s*(?:async\s+|static\s+|get\s+|set\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
 
 
+def _walkup_tops(root: Path) -> set[str]:
+    """First-party top segments above the scan root.
+
+    Finds the nearest ancestor (inclusive) containing pyproject.toml,
+    package.json, or .git and collects importable top names there only:
+    `<pkg>/` dirs containing `.py` files, `<pkg>.py` files, and the same
+    under `src/` and `lib/` prefixes. No marker anywhere up to the
+    filesystem root means no evidence: empty set, never guessed.
+    Presence-only, read once at build: names here suppress "undeclared",
+    never resolve symbols.
+    """
+    cur = root.resolve()
+    project: Path | None = None
+    while True:
+        if ((cur / "pyproject.toml").exists() or (cur / "package.json").exists()
+                or (cur / ".git").exists()):
+            project = cur
+            break
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    if project is None:
+        return set()
+    tops: set[str] = set()
+
+    def harvest(d: Path) -> None:
+        try:
+            children = list(d.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if child.name in (".git", "__pycache__", "node_modules", ".venv"):
+                continue
+            if child.is_dir():
+                try:
+                    inner = list(child.iterdir())
+                except OSError:
+                    continue
+                if any(f.suffix == ".py" for f in inner if f.is_file()):
+                    tops.add(child.name)
+            elif child.suffix == ".py":
+                tops.add(child.stem)
+
+    harvest(project)
+    for prefix in ("src", "lib"):
+        sub = project / prefix
+        if sub.is_dir():
+            harvest(sub)
+    return tops
+
+
 class RepoIndex:
     def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None,
                  alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] | None = None,
@@ -87,6 +139,11 @@ class RepoIndex:
         # edits never affect it, file add/remove recomputes it.
         self.py_prefixes: dict[str, str] = {}
         self._deps_cache: dict | None = None
+        # First-party top segments living ABOVE the scan root (subdirectory
+        # scans: `scan tests/` must still recognize the project's own
+        # `src/<pkg>/` package as first-party, not phantom). Bounded walk
+        # to the project dir; presence-only, read once at build.
+        self.parent_tops: set[str] = _walkup_tops(root)
         # v2: top-level names (repo root entries) for the "claims about this
         # repo" rule: file refs whose first segment is not a repo top-level
         # name (and not ./ ../ /) are external/framework namespaces, not lies.

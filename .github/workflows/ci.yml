@@ -53,5 +53,5 @@ jobs:
         run: |
           OPTS=stale-doc-ref,stale-contract-ref,ghost-export,stale-entrypoint,stale-mock-ref,phantom-package,stale-cli-ref
           for target in docs README.md agent-skill CHANGELOG.md bench demo editors; do
-            grounded scan "$target" --no-color --enable "$OPTS"
+            grounded scan "$target" --no-color --fail-on smell --enable "$OPTS"
           done
