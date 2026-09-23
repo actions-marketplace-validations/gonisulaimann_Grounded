@@ -4255,8 +4255,7 @@ class TestRepairRound(unittest.TestCase):
             syms = [f for f in findings if f.checker == "stale-symbol-ref"]
             self.assertEqual(syms, [])
 
-    def test_doc_example_framed_as_example_is_silent(self):
-        # Narrative above the fence marks the block illustrative
+    def test_doc_example_framed_as_example_is_silent(self):        # Narrative above the fence marks the block illustrative
         # (seen: rich's "Here's an example:" + do_step(step)).
         from grounded.cli import main
         import contextlib
@@ -4279,6 +4278,127 @@ class TestRepairRound(unittest.TestCase):
                 rc2 = main(["scan", str(root), "--no-color", "--enable", "stale-doc-ref"])
             self.assertEqual(rc2, 1)
             self.assertIn("do_step", buf2.getvalue())
+
+    def test_history_frame_is_silent(self):
+        # "We used to use X" documents the past, not a live claim
+        # (seen: httpx's `cgi.parse_header()` + PEP 594 link).
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# We used to use `cgi.parse_header()` here.\n"
+                "# See: https://peps.python.org/pep-0594/#cgi\nX = 1\n",
+                encoding="utf-8")
+            (root / "b.py").write_text(
+                "# We used to call old_helper() for this.\nY = 2\n",
+                encoding="utf-8")
+            findings, _, _ = scan_root(root, Config())
+            syms = [f for f in findings if f.checker == "stale-symbol-ref"]
+            self.assertEqual(syms, [])
+
+    def test_ticket_anchored_block_is_silent(self):
+        # A ticket inside the same comment block marks discussion/history
+        # (seen: preact's SES `lockdown()` + See #5109, React-compat
+        # `UNSAFE_componentDidMount()` + issue link).
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# Hardened envs (SES `lockdown()`) freeze prototypes.\n"
+                "# Copying then throws. See #5109.\nX = 1\n",
+                encoding="utf-8")
+            findings, _, _ = scan_root(root, Config())
+            syms = [f for f in findings if f.checker == "stale-symbol-ref"]
+            self.assertEqual(syms, [])
+
+    def test_work_item_block_keeps_checking(self):
+        # A TODO block names a ticket for the TASK, not the API: a stale
+        # claim inside it must still fire (positive control).
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# TODO(#123): migrate to `new_auth()` when ready.\nX = 1\n",
+                encoding="utf-8")
+            findings, _, _ = scan_root(root, Config())
+            syms = [f for f in findings if f.checker == "stale-symbol-ref"]
+            self.assertTrue(any("new_auth" in f.title for f in syms))
+
+    def test_alias_prefix_respects_segments(self):
+        # tsconfig `paths: {"mylib": [...]}` must not hijack `mylib-extra`
+        # (seen: preact's demo `preact` mapping drifted `preact-router`,
+        # a declared dependency).
+        from grounded.cli import main
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "tsconfig.json").write_text(
+                '{"compilerOptions": {"baseUrl": ".", "paths": '
+                '{"mylib": ["./src/index.js"]}}}', encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "index.js").write_text(
+                "export function real_fn() {}\n", encoding="utf-8")
+            (root / "a.js").write_text(
+                "import { ghost_fn } from 'mylib-extra';\nconsole.log(1);\n",
+                encoding="utf-8")
+            (root / "b.js").write_text(
+                "import { ghost_fn } from 'mylib';\nconsole.log(1);\n",
+                encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root), "--no-color", "--format", "json"])
+            out = json.loads(buf.getvalue())
+            self.assertEqual(rc, 1)
+            # exact alias resolves and the missing name fires; the sibling
+            # package name stays silent
+            self.assertTrue(any("from `mylib`" in f["title"] and "ghost_fn" in f["title"]
+                                for f in out))
+            self.assertFalse(any("mylib-extra" in f["title"] for f in out))
+
+    def test_package_main_build_output_is_silent(self):
+        # A directory import resolving via package.json `main` to build
+        # output (absent pre-build) is unjudgeable (seen: preact's
+        # `../../` test imports with a `dist/` main).
+        from grounded.cli import main
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "package.json").write_text(
+                '{"name": "pkg", "main": "dist/index.js"}', encoding="utf-8")
+            (root / "test").mkdir()
+            (root / "test" / "a.test.js").write_text(
+                "import { thing } from '../';\nconsole.log(thing);\n",
+                encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root), "--no-color", "--format", "json"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(buf.getvalue()), [])
+
+    def test_package_main_real_target_still_checks(self):
+        # ...but when `main` exists in-tree, named bindings verify
+        # against it (positive control: recall survives).
+        from grounded.cli import main
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "package.json").write_text(
+                '{"name": "pkg", "main": "src/index.js"}', encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "index.js").write_text(
+                "export function real_fn() {}\n", encoding="utf-8")
+            (root / "test").mkdir()
+            (root / "test" / "a.test.js").write_text(
+                "import { ghost_fn } from '../';\nconsole.log(ghost_fn);\n",
+                encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root), "--no-color", "--format", "json"])
+            self.assertEqual(rc, 1)
+            self.assertTrue(any("ghost_fn" in f["title"] for f in json.loads(buf.getvalue())))
 
     def test_fix_walk_ignores_symlinked_dirs(self):
         import time

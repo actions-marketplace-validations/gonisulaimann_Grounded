@@ -6,6 +6,13 @@ All notable changes to `grounded` are documented here. Format follows
 ## [Unreleased]
 
 ### Fixed
+- **History notes and ticket-anchored blocks reported as lies** (this
+  round: httpx, preact — see below).
+- **Recall harness phantom misses on case-insensitive filesystems.**
+  README fixtures merged into the host's `Readme.md` matched no
+  expectation by path (7 phantom misses on express). The harness now
+  tracks on-disk names; express and flask recall 100% (23/23, 22/22)
+  across all 13 checkers.
 - **File scans indexed only the parent directory, manufacturing lies.**
   `grounded scan sub/file.py` (and the MCP/LSP file paths) built the
   index from the file's parent, so any name defined elsewhere in the
@@ -43,6 +50,33 @@ All notable changes to `grounded` are documented here. Format follows
   narrative above a doc fence ("Here's an example:") is now
   illustrative. Measured: svelte default 8→6, rich doc-ref 36→17
   (residue: 17 translated READMEs, English-only markers).
+- **History notes and ticket-anchored blocks reported as lies.**
+  "We used to use `cgi.parse_header()`" (httpx), SES `lockdown()`
+  with See #5109 and React-compat `UNSAFE_componentDidMount()` with
+  an issue link (preact) are discussion, not live claims. Past-tense
+  frames and block-level tickets now silence backticked claims —
+  except in `TODO`/`FIXME` blocks, which keep full checking.
+- **Alias prefixes hijacked sibling packages.** tsconfig
+  `paths: {"preact": [...]}` matched `preact-router` by raw
+  string prefix and drifted on a declared dependency. Prefixes now
+  follow TypeScript segment semantics (exact or subtree only).
+- **Directory imports ignored `package.json` entry points.**
+  `import {h} from '../../'` in preact's tests names the package
+  root via `main`; a `dist/` main (absent pre-build) is now silent
+  instead of a lie, while an in-tree main verifies bindings.
+- **Recall harness phantom misses on case-insensitive filesystems.**
+  A `README.md` fixture merged into the host's `Readme.md` matched
+  no expectation by path. The harness now   tracks on-disk names:
+  express and flask recall 100% across all 13 checkers.
+
+### Measured (fresh trees, 2026-09-23)
+- httpx default 1→0, preact default 11→4 (smells only), svelte
+  default stable at 6 smells, gin 2 smells, rich clean.
+- `unclosed-fence` fired once on first contact with cli/cli;
+  renderer-verified mechanically true, classified deliberate (bare
+  balanced scaffolds displaying template source) — documented, no
+  upstream noise. doc-ref and ghost-export stay opt-in: no new real
+  rot found, translations bound the narrative rule.
 
 ### Added
 - `docs/roadmap.md`: the evidence-ordered product plan with

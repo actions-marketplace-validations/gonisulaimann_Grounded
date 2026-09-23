@@ -274,6 +274,15 @@ JavaScript/TypeScript. Commented-out code is covered by
   convention. The Python builtin set is complete for functions and
   constants (`locals()`, `format()`, …); the exception hierarchy stays
   checkable because libraries shadow it (`requests.ConnectionError`).
+* History notes ("we used to use `X()`") and ticket-anchored comment
+  blocks (a ticket or URL anywhere in the contiguous block) are
+  discussion, not live claims — unless the block tracks unfinished
+  work (`TODO`/`FIXME`/…), which keeps full checking.
+* `tsconfig` path prefixes match TypeScript semantics: a bare pattern
+  (`preact`) matches only the exact module, so sibling packages
+  (`preact-router`) are never hijacked. Directory imports resolve
+  through the target's `package.json` entry point; build-output mains
+  (`dist/`) are unjudgeable, in-tree mains verify bindings.
 * **A partial scan never claims absence for what it did not index.** A
   relative import that resolves *above* the scan root (a monorepo's
   sibling package when scanning `src/lib`, say) stays silent, exactly

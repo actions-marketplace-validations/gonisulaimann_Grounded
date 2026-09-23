@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-import", "path": "test/a.test.js", "line": 1, "contains": "ghost_fn"}]}

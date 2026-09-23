@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -126,13 +127,17 @@ def ends_inside_fence(text: str) -> bool:
 
 def plant(case_id: str, into: Path,
           ) -> tuple[list[str], list[str], dict[str, bytes], list[str],
-                     dict[str, int]]:
+                     dict[str, int], dict[str, str]]:
     """Plant a case root-relative.
 
     Returns `(created, skipped, merged originals, hosts whose dangling fence
-    had to be closed first, merged line offsets)`. A merged file's offset is
+    had to be closed first, merged line offsets, actual on-disk rels)`. A merged file's offset is
     the number of lines the plant added ahead of the fixture content, so
     expectations that embed fixture line numbers can be translated.
+    `actual` maps each fixture rel to the rel that really holds it: on a
+    case-insensitive filesystem a `README.md` fixture merges into the
+    host's `Readme.md`, and expectations must match the on-disk name or
+    every such case reports a phantom recall miss.
     """
     case = CASES / case_id
     created: list[str] = []
@@ -140,6 +145,7 @@ def plant(case_id: str, into: Path,
     merged: dict[str, bytes] = {}
     closed: list[str] = []
     offsets: dict[str, int] = {}
+    actual: dict[str, str] = {}
     for src in sorted(p for p in case.rglob("*") if p.is_file()):
         rel = src.relative_to(case).as_posix()
         if rel == "expected.json":
@@ -149,6 +155,17 @@ def plant(case_id: str, into: Path,
             if dest.suffix.lower() not in MERGEABLE:
                 skipped.append(rel)
                 continue
+            # The on-disk name may differ from the fixture rel by case
+            # (case-insensitive filesystems): relative_to is lexical and
+            # would echo the constructed name, so read the directory.
+            try:
+                siblings = os.listdir(dest.parent)
+            except OSError:
+                siblings = []
+            real = next((s for s in siblings
+                         if s.lower() == dest.name.lower()), dest.name)
+            parent_rel = dest.parent.relative_to(into).as_posix()
+            actual[rel] = real if parent_rel == "." else parent_rel + "/" + real
             host = dest.read_bytes()
             merged[rel] = host
             separator = b"\n\n"
@@ -169,7 +186,8 @@ def plant(case_id: str, into: Path,
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
         created.append(rel)
-    return created, skipped, merged, closed, offsets
+        actual[rel] = rel
+    return created, skipped, merged, closed, offsets, actual
 
 
 def unplant(into: Path, created: list[str], merged: dict[str, bytes]) -> None:
@@ -200,7 +218,7 @@ def run_repo(root: Path, cases: list[tuple[str, list[dict]]]) -> dict:
         copy = Path(td) / root.name
         shutil.copytree(root, copy, ignore=COPY_IGNORE, symlinks=True)
         for case_id, expect in cases:
-            created, skipped, merged, closed, offsets = plant(case_id, copy)
+            created, skipped, merged, closed, offsets, actual = plant(case_id, copy)
             unbalanced.update(closed)
             findings, raised = scan(copy)
             errors.extend(raised)
@@ -208,9 +226,13 @@ def run_repo(root: Path, cases: list[tuple[str, list[dict]]]) -> dict:
                      if (f.checker, f.path, f.line) not in baseline_keys]
             measurable = set(created) | set(merged)
             for e in expect:
-                if e["path"] in offsets:
-                    off = offsets[e["path"]]
-                    e = {**e, "line": e.get("line", 0) + off}
+                # The on-disk rel may differ from the fixture rel by case
+                # (case-insensitive filesystems); match what is really there.
+                orig_path = e["path"]
+                want = actual.get(orig_path, orig_path)
+                if orig_path in offsets:
+                    off = offsets[orig_path]
+                    e = {**e, "path": want, "line": e.get("line", 0) + off}
                     if e.get("contains"):
                         # Titles embed opener line numbers
                         # (`swallowed by the block opened at line N`), which
@@ -219,14 +241,16 @@ def run_repo(root: Path, cases: list[tuple[str, list[dict]]]) -> dict:
                             r"line (\d+)",
                             lambda m: f"line {int(m.group(1)) + off}",
                             e["contains"])
+                else:
+                    e = {**e, "path": want}
                 match = [f for f in delta if f.checker == e["checker"]
                          and f.path == e["path"]
                          and (e.get("line") is None or f.line == e["line"])]
                 hit = [f for f in match if e.get("contains", "") in f.title]
                 outcome, detail = "missed", ""
-                if e["path"] in skipped:
+                if orig_path in skipped:
                     outcome, detail = "not-planted", "host already has this path"
-                elif e["path"] not in measurable:
+                elif orig_path not in measurable:
                     outcome, detail = "not-planted", "fixture file absent"
                 elif hit:
                     outcome = "caught"

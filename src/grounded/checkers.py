@@ -300,6 +300,44 @@ def _comment_lines(facts: FileFacts) -> dict[int, str]:
     return by_line
 
 
+# Past-tense frames mark a history note, not a live claim ("We used to
+# use `cgi.parse_header()` here" — measured: httpx). Unambiguous on
+# purpose: "once"/"was" appear in live prose constantly.
+_HISTORICAL = re.compile(r"\b(used to|formerly|previously)\b", re.IGNORECASE)
+
+# Work-item markers: a block tracking unfinished work keeps full
+# checking even when it names a ticket (the TODO may itself name a
+# renamed API). Only discussion/history blocks go silent on tickets.
+_WORKITEM = re.compile(r"\b(TODO|FIXME|HACK|XXX|BUG)\b")
+
+
+def _comment_block_text(facts: FileFacts, line: int, end: int) -> str:
+    """Text of the contiguous comment run enclosing [line, end].
+
+    Consecutive comment lines form one thought (a history paragraph,
+    a ticket-anchored discussion); a code line or blank line ends it.
+    Block comments contribute their own text. Used to judge ticket and
+    history framing wider than a single line without reaching into
+    unrelated neighbors.
+    """
+    parts: list[str] = []
+    for c in facts.comments:
+        if c.is_block:
+            if c.line <= line <= c.end_line or c.line <= end <= c.end_line:
+                return c.text
+            continue
+        parts.append(c)
+    by_line = {c.line: c.text for c in parts if c.line == c.end_line}
+    if line not in by_line and end not in by_line:
+        return ""
+    lo, hi = line, end
+    while lo - 1 in by_line:
+        lo -= 1
+    while hi + 1 in by_line:
+        hi += 1
+    return "\n".join(by_line[ln] for ln in range(lo, hi + 1))
+
+
 def _nearby_ticket(facts: FileFacts, line: int, end_line: int, by_line: dict[int, str] | None = None) -> bool:
     """Ticket links often sit next to the marker ("See <url>" below a
     "Temporarily ..." comment; "#10355" beside a history note). Markers
@@ -531,6 +569,19 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             window = text[max(0, m.start() - 60):m.end() + 40]
             if _NEGATED.search(window):
                 continue
+            # History notes and ticket-anchored discussion ("We used to
+            # use `cgi.parse_header()`", SES `lockdown()` with See #5109,
+            # React-compat semantics with an issue link) describe the
+            # past or point outside on purpose — measured: httpx, preact.
+            # The block (contiguous comment run) is the unit, not the
+            # line: the ticket usually sits lines below the claim.
+            # Work-item blocks keep full checking: a TODO may itself
+            # name a renamed API.
+            block = _comment_block_text(facts, line, end) or text
+            if _HISTORICAL.search(block):
+                continue
+            if _TICKET.search(block) and not _WORKITEM.search(block):
+                continue
             root = name.split(".")[0]
             if root in facts.imports:
                 continue  # resolves via import; outside snapshot analysis
@@ -588,6 +639,9 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue
             # v2: negated contexts discuss other systems, not repo existence.
             if _NEGATED.search(window):
+                continue
+            # Past-tense frames are history, not live claims.
+            if _HISTORICAL.search(window):
                 continue
             root = full.split(".")[0]
             if root in facts.imports:
@@ -836,6 +890,19 @@ def _js_self_names(index: RepoIndex, claimer: str) -> set[str]:
     return names
 
 
+def _alias_prefix_match(spec: str, prefix: str) -> bool:
+    """TypeScript `paths` semantics for a prefix (pattern minus `*`).
+
+    A bare pattern (`preact`) matches only the exact module name; a
+    trailing-slash pattern (`preact/`, `@/`) matches the subtree. Raw
+    startswith hijacked sibling packages (`preact` mapping swallowed
+    `preact-router` — measured: preact's demo drifted on a declared
+    dependency).
+    """
+    return (spec == prefix or spec.startswith(prefix + "/")
+            or (prefix.endswith("/") and spec.startswith(prefix)))
+
+
 def _js_bare_externally_resolved(index: RepoIndex, claimer: str, spec: str) -> bool:
     """True when `spec` is a bare specifier whose resolution lies outside
     the snapshot, so stale-import must stay silent.
@@ -854,7 +921,7 @@ def _js_bare_externally_resolved(index: RepoIndex, claimer: str, spec: str) -> b
         if zone_dir and not (claimer == zone_dir or claimer.startswith(zone_dir + "/")):
             continue
         for prefix, repls in mapping:
-            if not spec.startswith(prefix):
+            if not _alias_prefix_match(spec, prefix):
                 continue
             for repl in repls:
                 if "node_modules" in repl.split("/"):
@@ -930,6 +997,61 @@ def _js_target_in_ignored_dir(index: RepoIndex, claimer: str, spec: str) -> bool
         posixpath.join(posixpath.dirname(claimer), spec)))
 
 
+def _js_dir_main_target(index: RepoIndex, base: str) -> list[str] | None:
+    """Resolve a directory specifier through its package.json entry point.
+
+    `import { h } from '../../'` in preact's own tests names the package
+    root: Node resolves it via `main`/`module`/`exports["."]`. When that
+    entry exists in-tree it becomes the checkable target (existence AND
+    named bindings verify against it); when it points at build output
+    (`dist/`, absent pre-build) or is missing, the import is
+    build-dependent and unjudgeable — silent, never a lie. A directory
+    with no package.json entry keeps the old verdict (index files or
+    missing). Measured: preact's `../../` test imports drifted on a
+    `dist/` main.
+    """
+    if base == ".":
+        base = ""  # normpath spells the scan root "." rather than ""
+    if base and base not in index.dirs:
+        return []
+    try:
+        data = json.loads((index.root / base / "package.json").read_text(
+            encoding="utf-8", errors="ignore"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    entry: str | None = None
+    exports = data.get("exports")
+    if isinstance(exports, dict):
+        dot = exports.get(".")
+        if isinstance(dot, str):
+            entry = dot
+        elif isinstance(dot, dict):
+            for cond in ("import", "require", "default", "module"):
+                cand = dot.get(cond)
+                if isinstance(cand, str):
+                    entry = cand
+                    break
+    if entry is None:
+        for key in ("main", "module"):
+            cand = data.get(key)
+            if isinstance(cand, str):
+                entry = cand
+                break
+    if not entry:
+        return []
+    target = posixpath.normpath(posixpath.join(base, entry))
+    if _base_in_ignored_dir(target) or _target_escapes_root(target):
+        return None  # build output or outside the snapshot: unjudgeable
+    if target in index.rel_paths:
+        return [target]
+    # Entry point genuinely absent and not build output: stale-entrypoint
+    # owns the package.json verdict; the import stays silent here rather
+    # than double-reporting a manifest typo as an import lie.
+    return None
+
+
 def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] | None:
     """Candidate module rel paths for a JS/TS specifier.
 
@@ -945,12 +1067,17 @@ def _resolve_js_target(index: RepoIndex, claimer: str, spec: str) -> list[str] |
             posixpath.join(posixpath.dirname(claimer), spec))
         if _target_escapes_root(base):
             return None  # above the scan root: outside the snapshot
-        return _js_candidates(index, base)
+        found = _js_candidates(index, base)
+        if not found and not posixpath.splitext(base)[1]:
+            # Directory specifier with no index file: resolve through
+            # the package entry point (or stay silent when build-made).
+            return _js_dir_main_target(index, base)
+        return found
     for zone_dir, mapping in index.alias_zones:
         if zone_dir and not (claimer == zone_dir or claimer.startswith(zone_dir + "/")):
             continue
         for prefix, repls in mapping:
-            if not spec.startswith(prefix):
+            if not _alias_prefix_match(spec, prefix):
                 continue
             rest = spec[len(prefix):]
             found: list[str] = []

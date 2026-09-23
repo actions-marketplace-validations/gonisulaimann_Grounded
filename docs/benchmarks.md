@@ -140,6 +140,44 @@ The remaining 17 are the translation boundary: the marker set is
 English, translated docs keep their residue. Documented in
 `docs/rules.md`, not chased.
 
+### New-repo round: httpx, preact (measured 2026-09-23)
+
+Two trees the tool had never been tuned against, default set plus
+classification of everything found:
+
+| Tree | Findings | Verdict |
+| --- | --- | --- |
+| httpx (90 files) | 1 → **0** | `cgi.parse_header()` history note + PEP 594 link: past-tense frame now silent |
+| preact (3,621 files) | 11 → **4** | 3 symbol lies (SES `lockdown` + ticket, React-compat `UNSAFE_*` + issue, both ticket-anchored discussion), 1 alias drift (`preact` mapping hijacked declared `preact-router`), 3 `../../` lies (package `main` points at unbuilt `dist/`) — all fixed; 4 `fragile-anchor` smells remain, legitimate by contract |
+
+No true positives surfaced in either tree (both are clean, well-kept
+codebases — a silent verdict on a clean tree is itself evidence), but
+every false positive became a rule with a corpus case: history frames,
+block tickets with a work-item carve-out, TS segment-boundary aliases,
+and package-main directory resolution (in-tree mains still verify
+bindings: recall preserved, proven by the positive-control corpus
+cases).
+
+### Wild recall: `unclosed-fence` on cli/cli (measured 2026-09-23)
+
+First contact with a fresh tree (943 Go files, never tuned against):
+`unclosed-fence` fired once — `.github/workflows/shared/spam-criteria.md:148`,
+a ` ```shell ` line inside a bare ` ```` ` block opened at line 119.
+Verified against GitHub's own renderer (`POST /markdown`, `mode=gfm`):
+the line renders literally inside a `<pre>` block, never as a fence —
+the checker's claim is mechanically true.
+
+Classified **deliberate, not a defect**: all six ` ```` ` wrappers in
+the file are balanced; the authors display issue-template source, so
+the inner ` ```shell ` is content being shown, not a fence being
+opened. The checker's scaffold exception requires a longer outer fence
+*with an info string*; a bare longer outer fence fires by design
+(the OmniRoute twin of this shape was a genuine 76-line rendering
+defect). No upstream report filed: a mechanically-true,
+intent-false finding reported as a bug would be precisely the noise
+this tool exists to prevent. The boundary is now documented here
+instead.
+
 ### OmniRoute, `src/lib` (default checkers)
 
 | Checker | Before | After |
@@ -276,3 +314,20 @@ post fence-walk fix (see the CHANGELOG):
 
 89 planted expectations, 0 misses, 0 checker errors across all 13
 checkers. Reproduce: `python3 bench/recall.py <repo> [...]`.
+
+Measured 2026-09-23, after the case-insensitivity fix (see below) —
+express and flask re-verified at 100% with the enlarged case set:
+
+| Repo | Files | Caught | Missed | Not planted | Recall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| express | 146 | 23 | 0 | 0 | 100% |
+| flask | 94 | 22 | 0 | 1 | 100% |
+
+The harness itself had a phantom-miss bug: on case-insensitive
+filesystems (macOS APFS) a `README.md` fixture merges into the host's
+`Readme.md`, and expectations matched by exact path reported "no
+finding on that path" for all 7 README plants on express. The harness
+now tracks on-disk names (`plant` returns the real rel via directory
+listing — `relative_to` is lexical and echoes the constructed name)
+and translates expectations. The 7 misses became 7 catches with no
+product change: the findings were always firing, the ruler was bent.
