@@ -16,7 +16,12 @@ def loads(text: str) -> dict:
         line = _strip_comment(raw).strip()
         if not line:
             continue
-        if line.startswith("[") and line.endswith("]"):
+        if line.startswith("["):
+            if not line.endswith("]") or line.startswith("[["):
+                # Array-of-tables ([[x]]) is outside the subset: reject,
+                # never misread as a "[x]"-style key (it used to parse as
+                # the literal key "[x]").
+                raise ValueError(f"bad header: {raw!r}")
             current = root
             for part in line[1:-1].strip().split("."):
                 part = part.strip().strip("\"'")
@@ -32,8 +37,25 @@ def loads(text: str) -> dict:
         key = key.strip().strip("\"'")
         if not key:
             raise ValueError(f"bad line: {raw!r}")
-        current[key] = _value(val.strip(), raw)
+        _assign_dotted(current, key, _value(val.strip(), raw), raw)
     return root
+
+
+def _assign_dotted(current: dict, key: str, value, raw: str) -> None:
+    """Dotted keys (`a.b = 1`) nest like real TOML instead of landing as
+    the flat literal key "a.b" (which silently orphaned config)."""
+    parts = [p.strip().strip("\"'") for p in key.split(".")]
+    if any(not p for p in parts):
+        raise ValueError(f"bad key: {raw!r}")
+    for part in parts[:-1]:
+        nxt = current.setdefault(part, {})
+        if not isinstance(nxt, dict):
+            raise ValueError(f"bad key: {raw!r}")
+        current = nxt
+    parts_last = parts[-1]
+    if parts_last in current:
+        raise ValueError(f"duplicate key: {raw!r}")
+    current[parts_last] = value
 
 
 def _strip_comment(line: str) -> str:
@@ -94,13 +116,28 @@ def _basic_string(text: str, raw: str) -> str:
     out: list[str] = []
     i, n = 1, len(text)
     closed = False
+    simple = {"n": "\n", "t": "\t", "r": "\r", "\"": "\"", "\\": "\\",
+              "b": "\b", "f": "\f"}
     while i < n:
         ch = text[i]
         if ch == "\\" and i + 1 < n:
             nxt = text[i + 1]
-            out.append({"n": "\n", "t": "\t", "r": "\r", "\"": "\"", "\\": "\\"}.get(nxt, nxt))
-            i += 2
-            continue
+            if nxt in simple:
+                out.append(simple[nxt])
+                i += 2
+                continue
+            if nxt in ("u", "U"):
+                width = 4 if nxt == "u" else 8
+                digits = text[i + 2:i + 2 + width]
+                if len(digits) != width or any(
+                        c not in "0123456789abcdefABCDEF" for c in digits):
+                    raise ValueError(f"bad value: {raw!r}")
+                out.append(chr(int(digits, 16)))
+                i += 2 + width
+                continue
+            # Unknown escapes are a corrupt string, not a literal
+            # passthrough: `\u0041` used to decode as the text "u0041".
+            raise ValueError(f"bad value: {raw!r}")
         if ch == "\"":
             closed = True
             i += 1
@@ -158,7 +195,13 @@ def _array(text: str, raw: str) -> list:
     inner = text[1:-1].strip()
     if not inner:
         return []
-    return [_value(p.strip(), raw) for p in _split_top(inner, raw)]
+    # A single trailing comma is valid TOML (`["a",]`); the splitter
+    # yields one empty tail part, which is skipped rather than rejected.
+    # Interior empties (`["a",,]`) stay errors.
+    parts = _split_top(inner, raw)
+    if parts and not parts[-1].strip():
+        parts = parts[:-1]
+    return [_value(p.strip(), raw) for p in parts]
 
 
 def _inline_table(text: str, raw: str) -> dict:

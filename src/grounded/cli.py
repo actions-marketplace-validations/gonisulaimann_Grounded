@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import __version__
 from .checkers import CHECKER_DESCRIPTIONS, CHECKERS, DEFAULT_ENABLED, REMOVED_CHECKERS
-from .config import Config
+from .config import Config, ConfigError
 from .delta import (
     DEFAULT_BASELINE_NAME,
     GitError,
@@ -20,7 +20,7 @@ from .delta import (
 )
 from .models import SEVERITY_RANK, CheckerError
 from .reporters import format_terminal, to_html, to_json, to_sarif
-from .scanner import apply_suppressions, collect_files, scan_root, warn_unknown_suppressions
+from .scanner import apply_suppressions, collect_files, project_root_for, scan_root, warn_unknown_suppressions
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -106,13 +106,34 @@ def build_parser() -> argparse.ArgumentParser:
 def _resolve_enable_disable(config: Config, enable: str | None, disable: str | None) -> Config:
     if enable:
         want = {x.strip() for x in enable.split(",") if x.strip()}
-        config.enabled = {w for w in want if w in CHECKERS} or set(config.enabled)
+        unknown = sorted(w for w in want if w not in CHECKERS)
+        if unknown:
+            # A typo'd id must fail, not silently run a different set:
+            # `--enable stale-symobl` running the full default suite is
+            # the same green-masking class as silent config defaults.
+            raise ConfigError(
+                f"unknown checker id(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(sorted(CHECKERS))}")
+        config.enabled = set(want)
     if disable:
         drop = {x.strip() for x in disable.split(",") if x.strip()}
+        unknown = sorted(d for d in drop if d not in CHECKERS)
+        if unknown:
+            raise ConfigError(
+                f"unknown checker id(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(sorted(CHECKERS))}")
         config.enabled -= drop
     if not config.enabled:
         config.enabled = set(DEFAULT_ENABLED)
     return config
+
+
+def _load_config(root: Path, explicit: str | None) -> Config:
+    try:
+        return Config.load(root, explicit=explicit)
+    except ConfigError as exc:
+        print(f"grounded: {exc}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def _report_checker_errors(errors: list[CheckerError]) -> None:
@@ -141,19 +162,26 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
-    # A file argument scopes REPORTING to that file; the index is still
-    # built from the whole tree so cross-file references keep resolving.
+    # A file argument scopes REPORTING to that file; the index is built
+    # from the file's project (nearest marker ancestor), not its parent
+    # directory: a parent-only snapshot manufactures absence claims about
+    # files it never looked at (see scanner.project_root_for).
     only: str | None = None
     if root.is_file():
+        target = root
+        root = project_root_for(target.parent)
         try:
-            only = root.relative_to(root.parent.resolve()).as_posix()
+            only = target.relative_to(root).as_posix()
         except ValueError:
-            only = root.name
-        root = root.parent
-    config = Config.load(root, explicit=args.config)
+            only = target.name
+    config = _load_config(root, explicit=args.config)
     if args.fail_on:
         config.fail_on = args.fail_on
-    _resolve_enable_disable(config, args.enable, args.disable)
+    try:
+        _resolve_enable_disable(config, args.enable, args.disable)
+    except ConfigError as exc:
+        print(f"grounded: {exc}", file=sys.stderr)
+        return 2
 
     cache_path = Path(args.cache) if args.cache else None
     if cache_path is not None and not cache_path.is_absolute():
@@ -248,8 +276,12 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         return 2
     if root.is_file():
         root = root.parent
-    config = Config.load(root, explicit=args.config)
-    _resolve_enable_disable(config, args.enable, args.disable)
+    config = _load_config(root, explicit=args.config)
+    try:
+        _resolve_enable_disable(config, args.enable, args.disable)
+    except ConfigError as exc:
+        print(f"grounded: {exc}", file=sys.stderr)
+        return 2
     checker_errors: list[CheckerError] = []
     findings, facts, index = scan_root(root, config, checker_errors=checker_errors)
     if checker_errors:
@@ -280,12 +312,13 @@ def cmd_fix(args: argparse.Namespace) -> int:
         return 2
     only: str | None = None
     if root.is_file():
+        target = root
+        root = project_root_for(target.parent)
         try:
-            only = root.relative_to(root.parent.resolve()).as_posix()
+            only = target.relative_to(root).as_posix()
         except ValueError:
-            only = root.name
-        root = root.parent
-    config = Config.load(root, explicit=args.config)
+            only = target.name
+    config = _load_config(root, explicit=args.config)
     findings, facts, index = scan_root(root, config)
     facts_by_path = {f.path: f for f in facts}
     findings, _ = apply_suppressions(findings, facts_by_path)
@@ -484,7 +517,7 @@ def cmd_impact(args: argparse.Namespace) -> int:
         return 2
     if root.is_file():
         root = root.parent
-    config = Config.load(root, explicit=args.config)
+    config = _load_config(root, explicit=args.config)
     _, facts, index = scan_root(root, config, include_claim_surfaces=True)
     result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(args.symbol)
     if args.format == "json":
@@ -540,7 +573,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
 
 def cmd_list(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
-    config = Config.load(root, explicit=args.config)
+    config = _load_config(root, explicit=args.config)
     for f in collect_files(root, config)[0]:
         try:
             print(f.relative_to(root).as_posix())

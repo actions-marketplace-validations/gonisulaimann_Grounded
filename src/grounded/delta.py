@@ -54,7 +54,15 @@ def write_baseline(path: Path, findings: list[Finding]) -> dict[str, int]:
     disagrees with the `total` the caller just printed (measured on a
     10k-file tree: 277 unique fingerprints, 284 findings, file of 284).
     """
-    old = load_baseline(path) if path.exists() else set()
+    old = set()
+    if path.exists():
+        try:
+            old = load_baseline(path)
+        except ValueError:
+            # A corrupt existing baseline is being overwritten anyway:
+            # crash-looping on it would brick every later baseline write.
+            # Stats treat everything as new, which is the honest answer.
+            old = set()
     newset = {fingerprint(f) for f in findings}
     payload = {"version": BASELINE_VERSION, "fingerprints": sorted(newset)}
     path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
@@ -115,6 +123,19 @@ def _resolve_base(root: Path, base: str) -> str:
     return base
 
 
+def _unquote_git_path(ref: str) -> str:
+    """Undo git's quotepath quoting (`"caf\\303\\251.py"` for non-ASCII
+    names when core.quotePath is on): the index keys paths unquoted, so
+    a quoted hunk key never matches and --changed silently hides the
+    finding."""
+    if len(ref) >= 2 and ref.startswith('"') and ref.endswith('"'):
+        try:
+            return ref[1:-1].encode("latin-1").decode("unicode_escape").encode("latin-1").decode("utf-8")
+        except (ValueError, UnicodeError):
+            return ref[1:-1]
+    return ref
+
+
 def _parse_unified0(diff: str) -> dict[str, set[int]]:
     """Added new-file line numbers per path from `git diff -U0` output."""
     hunks: dict[str, set[int]] = {}
@@ -122,7 +143,7 @@ def _parse_unified0(diff: str) -> dict[str, set[int]]:
     new_ln = 0
     for line in diff.splitlines():
         if line.startswith("+++ b/"):
-            cur = line[6:]
+            cur = _unquote_git_path(line[6:])
             hunks.setdefault(cur, set())
             new_ln = 0
         elif line.startswith("@@") and cur is not None:
@@ -147,14 +168,18 @@ def changed_lines(root: Path, base: str) -> tuple[dict[str, set[int]], set[str]]
 
     Covers committed branch changes (merge-base with BASE through HEAD)
     UNION uncommitted worktree changes, so local edits are always gated.
-    Raises GitError outside a repo or when the base cannot be resolved.
+    That includes the index: `git add` stages lines out of the unstaged
+    diff, and a gate that hides staged lines would green-light exactly
+    the change under review. Raises GitError outside a repo or when the
+    base cannot be resolved.
     """
     _git(root, "rev-parse", "--show-toplevel")
     ref = _resolve_base(root, base)
     hunks = _parse_unified0(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", ref, "HEAD", "--"))
-    worktree = _parse_unified0(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--"))
-    for path, lines in worktree.items():
-        hunks.setdefault(path, set()).update(lines)
+    for extra in (_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--cached", "--"),
+                  _git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--")):
+        for path, lines in _parse_unified0(extra).items():
+            hunks.setdefault(path, set()).update(lines)
     try:
         untracked = {p for p in _git(root, "ls-files", "--others", "--exclude-standard").splitlines() if p}
     except GitError:
@@ -176,9 +201,11 @@ def _diff_symbols(diff: str) -> set[str]:
 
 
 def changed_symbols(root: Path, base: str) -> set[str]:
-    """Symbols touched by branch changes plus uncommitted worktree edits."""
+    """Symbols touched by branch changes plus uncommitted worktree edits
+    (staged and unstaged alike)."""
     ref = _resolve_base(root, base)
     out = _diff_symbols(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", ref, "HEAD", "--"))
+    out |= _diff_symbols(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--cached", "--"))
     out |= _diff_symbols(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--"))
     return out
 

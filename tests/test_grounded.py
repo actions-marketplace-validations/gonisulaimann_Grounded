@@ -3473,5 +3473,250 @@ class TestBaselineIntegrity(unittest.TestCase):
             self.assertEqual(len(load_baseline(path)), 1)
 
 
+class TestRepairRound(unittest.TestCase):
+    """Bugs found by the full-codebase audit: config errors must fail,
+    file scans must index the project, partial snapshots must not lie,
+    crashes must not crash, and template slots must not collide."""
+
+    def test_config_empty_sets_are_meaningful(self):
+        self.assertEqual(Config(enabled=set()).enabled, set())
+        self.assertEqual(Config(ignore_dirs=set()).ignore_dirs, set())
+
+    def test_config_explicit_missing_raises(self):
+        from grounded.config import ConfigError
+        with self.assertRaises(ConfigError):
+            Config.load(Path("/tmp"), explicit="/nonexistent-grounded.toml")
+
+    def test_config_corrupt_raises(self):
+        from grounded.config import ConfigError
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "grounded.toml").write_text("enable = [unclosed\n", encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                Config.load(Path(td))
+
+    def test_cli_config_errors_exit_2(self):
+        import contextlib
+        import io
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("X = 1\n", encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as cm:
+                    main(["scan", str(root), "--config", str(root / "nope.toml")])
+            self.assertEqual(cm.exception.code, 2)
+            (root / "grounded.toml").write_text("enable = [unclosed\n", encoding="utf-8")
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as cm:
+                    main(["scan", str(root), "--no-color"])
+            self.assertEqual(cm.exception.code, 2)
+
+    def test_cli_unknown_enable_exits_2(self):
+        import contextlib
+        import io
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("X = 1\n", encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(main(["scan", str(root), "--enable", "stale-symobl"]), 2)
+            self.assertIn("stale-symobl", err.getvalue())
+
+    def test_project_root_for_finds_markers(self):
+        from grounded.scanner import project_root_for
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+            deep = root / "pkg" / "sub"
+            deep.mkdir(parents=True)
+            self.assertEqual(project_root_for(deep), root.resolve())
+            # no markers anywhere: falls back to the start dir
+            lone = Path(tempfile.mkdtemp()) / "x"
+            lone.mkdir()
+            try:
+                self.assertEqual(project_root_for(lone), lone.resolve())
+            finally:
+                import shutil
+                shutil.rmtree(lone.parent, ignore_errors=True)
+
+    def test_project_root_for_respects_stop(self):
+        from grounded.scanner import project_root_for
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".git").mkdir()
+            sub = root / "pkg"
+            sub.mkdir()
+            self.assertEqual(project_root_for(sub, stop=sub), sub.resolve())
+
+    def test_cli_file_scan_indexes_project(self):
+        # sub/file.py references a name defined in other/: a parent-only
+        # index manufactured a lie; the project index stays silent, and
+        # reporting is still scoped to the named file.
+        import contextlib
+        import io
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+            (root / "other").mkdir()
+            (root / "other" / "real.py").write_text("def target_fn():\n    return 1\n", encoding="utf-8")
+            (root / "sub").mkdir()
+            (root / "sub" / "file.py").write_text("# Calls target_fn() for help.\nX = 1\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root / "sub" / "file.py"), "--no-color", "--format", "json"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(buf.getvalue()), [])
+
+    def test_mcp_notification_gets_no_response(self):
+        from grounded.mcp import McpServer
+        with tempfile.TemporaryDirectory() as td:
+            srv = McpServer(Path(td))
+            srv.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            self.assertIsNone(srv.handle({"jsonrpc": "2.0", "method": "tools/list"}))
+            self.assertIsNone(srv.handle({"jsonrpc": "2.0", "method": "ping"}))
+
+    def test_mcp_fail_on_never_never_fails(self):
+        from grounded.mcp import McpServer
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("# Calls `ghost_fn_xyz()`.\nX = 1\n", encoding="utf-8")
+            srv = McpServer(root)
+            srv.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            resp = srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                               "params": {"name": "check_path",
+                                          "arguments": {"path": ".", "fail_on": "never"}}})
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertTrue(payload["findings"])
+            self.assertFalse(payload["failed"])
+
+    def test_mcp_file_target_is_root_relative_and_honest(self):
+        from grounded.mcp import McpServer
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+            (root / "other").mkdir()
+            (root / "other" / "real.py").write_text("def target_fn():\n    return 1\n", encoding="utf-8")
+            (root / "sub").mkdir()
+            (root / "sub" / "file.py").write_text("# Calls target_fn() for help.\nX = 1\n", encoding="utf-8")
+            srv = McpServer(root)
+            srv.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            resp = srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                               "params": {"name": "check_path",
+                                          "arguments": {"path": "sub/file.py"}}})
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertEqual(payload["findings"], [])
+            self.assertFalse(payload["failed"])
+
+    def test_lsp_outside_file_does_not_clobber(self):
+        from grounded.lsp import LspServer
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "foo.py").write_text("def real():\n    return 1\n", encoding="utf-8")
+            srv = LspServer()
+            srv.root = root
+            srv._ensure_index("file://" + str(root / "foo.py"))
+            self.assertTrue(srv.index.has_symbol("real"))
+            outside = Path(td + "-outside")
+            outside.mkdir()
+            (outside / "foo.py").write_text("def evil():\n    return 2\n", encoding="utf-8")
+            srv._reindex_doc("file://" + str(outside / "foo.py"),
+                             "def evil():\n    return 2\n")
+            self.assertTrue(srv.index.has_symbol("real"))
+            self.assertTrue(srv.index.has_symbol("evil"))
+
+    def test_html_placeholders_do_not_collide_with_root(self):
+        h = to_html([], 0, root="__LIE__")
+        self.assertIn("__LIE__", h)
+        self.assertNotIn("<b>__LIE__</b>", h)
+        h2 = to_html([], 0, root="__ROWS__")
+        self.assertIn("__ROWS__", h2)
+        self.assertEqual(h2.count("All beliefs check out"), 1)
+
+    def test_toml_compat_rejects_array_tables(self):
+        from grounded.toml_compat import loads
+        with self.assertRaises(ValueError):
+            loads('[[tool]]\nx = 1\n')
+
+    def test_toml_compat_dotted_keys_nest(self):
+        from grounded.toml_compat import loads
+        self.assertEqual(loads('a.b = 1\n'), {"a": {"b": 1}})
+
+    def test_toml_compat_trailing_comma_ok(self):
+        from grounded.toml_compat import loads
+        self.assertEqual(loads('x = ["a",]\n'), {"x": ["a"]})
+        with self.assertRaises(ValueError):
+            loads('x = ["a",,]\n')
+
+    def test_toml_compat_unicode_escapes(self):
+        from grounded.toml_compat import loads
+        self.assertEqual(loads('x = "\\u0041"\n'), {"x": "A"})
+        with self.assertRaises(ValueError):
+            loads('x = "\\d"\n')
+
+    def test_tsconfig_cycle_does_not_crash(self):
+        from grounded.tsconfig import _exclude_entries, load_tsconfig
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.json").write_text('{"extends": "./b.json"}', encoding="utf-8")
+            (root / "b.json").write_text('{"extends": "./a.json"}', encoding="utf-8")
+            self.assertEqual(load_tsconfig(root / "a.json"), {})
+            self.assertEqual(_exclude_entries(root / "a.json"), [])
+
+    def test_baseline_write_survives_corrupt_file(self):
+        from grounded.delta import load_baseline, write_baseline
+        from grounded.models import Finding
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "b.json"
+            path.write_text("{corrupt", encoding="utf-8")
+            f = Finding(path="a.py", line=1, end_line=1, checker="stale-symbol-ref",
+                        severity="lie", title="t", claim="`ghost()`")
+            stats = write_baseline(path, [f])
+            self.assertEqual(stats["total"], 1)
+            self.assertEqual(len(load_baseline(path)), 1)
+
+    def test_changed_lines_include_staged(self):
+        import subprocess
+        from grounded.delta import changed_lines
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "config", "user.email", "t@t"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+            (root / "a.py").write_text("X = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
+            (root / "a.py").write_text("X = 2\n# staged line\n", encoding="utf-8")
+            subprocess.run(["git", "add", "a.py"], cwd=root, check=True)
+            hunks, _ = changed_lines(root, "HEAD")
+            self.assertIn(1, hunks.get("a.py", set()))
+            self.assertIn(2, hunks.get("a.py", set()))
+
+    def test_changed_lines_unquote_paths(self):
+        import subprocess
+        from grounded.delta import _parse_unified0
+        diff = ('diff --git a/"caf\\303\\251.py" b/"caf\\303\\251.py"\n'
+                '--- a/"caf\\303\\251.py"\n'
+                '+++ b/"caf\\303\\251.py"\n'
+                '@@ -0,0 +1 @@\n+X = 1\n')
+        hunks = _parse_unified0(diff)
+        self.assertIn("caf\u00e9.py", hunks)
+
+    def test_fix_walk_ignores_symlinked_dirs(self):
+        import time
+        from grounded.fix import file_fix_candidates
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "real").mkdir()
+            (root / "real" / "gone.py").write_text("X = 1\n", encoding="utf-8")
+            (root / "link").symlink_to(root / "real", target_is_directory=True)
+            (root / "loop").symlink_to(root, target_is_directory=True)
+            start = time.time()
+            file_fix_candidates([], root)
+            self.assertLess(time.time() - start, 10)
+
+
 if __name__ == "__main__":
     unittest.main()

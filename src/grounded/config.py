@@ -24,6 +24,12 @@ DEFAULT_IGNORE_FILES = {
 DEFAULT_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go", ".c", ".h"}
 
 
+class ConfigError(ValueError):
+    """Unreadable or missing config: usage/environment error (exit 2),
+    never silent defaults. A config the user named must either load or
+    fail loudly — defaults would mask the typo with a green build."""
+
+
 class Config:
     def __init__(
         self,
@@ -33,9 +39,11 @@ class Config:
         fail_on: str = "lie",
         path_aliases: dict[str, list[str]] | None = None,
     ):
-        self.enabled = set(enabled) if enabled else set(DEFAULT_ENABLED)
-        self.ignore_dirs = set(ignore_dirs) if ignore_dirs else set(DEFAULT_IGNORE_DIRS)
-        self.ignore_files = set(ignore_files) if ignore_files else set(DEFAULT_IGNORE_FILES)
+        # Explicit empty sets are meaningful (run nothing, ignore nothing
+        # extra): only None means "defaults". `if x` would conflate the two.
+        self.enabled = set(enabled) if enabled is not None else set(DEFAULT_ENABLED)
+        self.ignore_dirs = set(ignore_dirs) if ignore_dirs is not None else set(DEFAULT_IGNORE_DIRS)
+        self.ignore_files = set(ignore_files) if ignore_files is not None else set(DEFAULT_IGNORE_FILES)
         self.fail_on = fail_on
         self.path_aliases = dict(path_aliases) if path_aliases else {}
 
@@ -45,8 +53,9 @@ class Config:
         cfg_file: Path | None = None
         if explicit:
             cfg_file = Path(explicit)
-            if cfg_file.exists():
-                data = _read_toml(cfg_file)
+            if not cfg_file.exists():
+                raise ConfigError(f"config file does not exist: {explicit}")
+            data = _read_toml(cfg_file)
         else:
             for name in ("grounded.toml", ".grounded.toml", "pyproject.toml"):
                 cand = root / name
@@ -94,14 +103,18 @@ def _read_toml(path: Path) -> dict:
             with open(path, "rb") as fh:
                 val = tomllib.load(fh)
                 return val if isinstance(val, dict) else {}
-        except (OSError, ValueError):
-            return {}
+        except OSError as exc:
+            raise ConfigError(f"config file unreadable: {path} ({exc})") from exc
+        except ValueError as exc:
+            raise ConfigError(f"config file is not valid TOML: {path} ({exc})") from exc
     # Python 3.10 has no tomllib: fall back to the strict subset reader
-    # (grounded/toml_compat.py). Anything outside the subset reads as
-    # unreadable, exactly like a corrupt file on newer Pythons.
+    # (grounded/toml_compat.py). Outside the subset reads as unreadable,
+    # exactly like a corrupt file on newer Pythons.
     from .toml_compat import loads as compat_loads
     try:
         val = compat_loads(path.read_text(encoding="utf-8"))
         return val if isinstance(val, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    except OSError as exc:
+        raise ConfigError(f"config file unreadable: {path} ({exc})") from exc
+    except ValueError as exc:
+        raise ConfigError(f"config file is not valid TOML: {path} ({exc})") from exc

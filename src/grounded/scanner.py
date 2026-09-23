@@ -22,6 +22,36 @@ CACHE_VERSION = 2
 
 _SUPPRESS = re.compile(r"grounded-disable\s*:\s*([A-Za-z0-9_][A-Za-z0-9_\-, ]*)")
 
+_PROJECT_MARKERS = ("grounded.toml", ".grounded.toml", "pyproject.toml",
+                    "package.json", ".git")
+
+
+def project_root_for(start: Path, stop: Path | None = None) -> Path:
+    """Nearest ancestor of `start` (inclusive) holding a project marker.
+
+    A single-file scan must index the project the file belongs to, not
+    just its parent directory: a parent-only snapshot manufactures
+    absence claims about files it never looked at (the partial-snapshot
+    rule). Falls back to `start` when no marker is found (bounded by
+    `stop` when given, e.g. an MCP server root), so behavior on
+    marker-less trees is unchanged.
+    """
+    cur = start.resolve()
+    limit = stop.resolve() if stop is not None else None
+    while True:
+        try:
+            if any((cur / m).exists() for m in _PROJECT_MARKERS):
+                return cur
+        except OSError:
+            break
+        parent = cur.parent
+        if parent == cur:
+            break
+        if limit is not None and (cur == limit or len(parent.parts) < len(limit.parts)):
+            break
+        cur = parent
+    return start.resolve()
+
 
 def warn_unknown_suppressions(facts_list: list[FileFacts]) -> list[tuple[str, int, list[str]]]:
     """Suppression markers naming unknown checker ids.

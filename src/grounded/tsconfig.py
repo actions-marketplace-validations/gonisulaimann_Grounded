@@ -52,6 +52,16 @@ def strip_jsonc(text: str) -> str:
 
 def load_tsconfig(path: Path) -> dict:
     """Parsed compilerOptions with extends resolved (child wins)."""
+    return _load_tsconfig(path, frozenset())
+
+
+def _load_tsconfig(path: Path, seen: frozenset) -> dict:
+    try:
+        key = path.resolve()
+    except OSError:
+        return {}
+    if key in seen:
+        return {}  # cyclic extends: stop, never RecursionError a scan
     try:
         data = json.loads(strip_jsonc(path.read_text(encoding="utf-8", errors="ignore")))
     except (OSError, ValueError):
@@ -65,7 +75,7 @@ def load_tsconfig(path: Path) -> dict:
         if not parent.suffix:
             parent = parent.with_suffix(".json")
         if parent.exists():
-            base = load_tsconfig(parent)
+            base = _load_tsconfig(parent, seen | {key})
     merged = dict(base)
     child_opts = data.get("compilerOptions")
     if isinstance(child_opts, dict):
@@ -78,6 +88,16 @@ def load_tsconfig(path: Path) -> dict:
 def _exclude_entries(path: Path) -> list:
     """Raw `exclude` list with the TS inheritance rule: a child tsconfig's
     exclude fully replaces the inherited one (child-wins per key)."""
+    return _exclude_entries_seen(path, frozenset())
+
+
+def _exclude_entries_seen(path: Path, seen: frozenset) -> list:
+    try:
+        key = path.resolve()
+    except OSError:
+        return []
+    if key in seen:
+        return []
     try:
         data = json.loads(strip_jsonc(path.read_text(encoding="utf-8", errors="ignore")))
     except (OSError, ValueError):
@@ -93,7 +113,7 @@ def _exclude_entries(path: Path) -> list:
         if not parent.suffix:
             parent = parent.with_suffix(".json")
         if parent.exists():
-            return _exclude_entries(parent)
+            return _exclude_entries_seen(parent, seen | {key})
     return []
 
 

@@ -33,6 +33,13 @@ def file_fix_candidates(findings: list[Finding], root: Path,
     while stack:
         cur = stack.pop()
         try:
+            # Never follow a symlinked directory: inside the root it
+            # duplicates a tree walked under its own name (same tie
+            # poisoning as the scanner's OmniRoute case), and a cyclic
+            # link (`loop -> .`) would walk forever. Same guard as
+            # scanner.collect_files.
+            if cur.resolve() != cur:
+                continue
             entries = sorted(cur.iterdir())
         except OSError:
             continue

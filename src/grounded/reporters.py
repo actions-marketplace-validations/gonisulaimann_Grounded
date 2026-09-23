@@ -131,7 +131,7 @@ def to_html(findings: list[Finding], n_files: int, root: str = "") -> str:
             )
         )
     body_rows = "\n".join(rows) if rows else "<tr><td colspan=\"5\" class=\"clean\">All beliefs check out. No findings.</td></tr>"
-    return """<!DOCTYPE html>
+    template = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>grounded report</title>
@@ -190,15 +190,21 @@ btns.forEach(b=>b.onclick=()=>{f=b.dataset.f;btns.forEach(x=>x.setAttribute('ari
 q.oninput=apply;
 function apply(){const s=q.value.toLowerCase();document.querySelectorAll('#rows tr').forEach(tr=>{
 const okF=(f==='all'||tr.dataset.sev===f);const okQ=!s||tr.textContent.toLowerCase().includes(s);
-tr.style.display=(okF&&okQ)?'':'none';});}
-</script></body></html>""".replace(
-        "__ROOT__", html.escape(root or ".")
-    ).replace("__NOW__", now).replace("__NFILES__", str(n_files)).replace(
-        "__LIE__", str(counts.get("lie", 0))
-    ).replace("__DRIFT__", str(counts.get("drift", 0))).replace(
-        "__SMELL__", str(counts.get("smell", 0))
-    ).replace(
-        "__TOTAL__", str(len(findings))
-    ).replace(
-        "__ROWS__", body_rows
-    )
+ tr.style.display=(okF&&okQ)?'':'none';});}
+</script></body></html>"""
+    # One-pass substitution: sequential .replace() calls corrupt any root
+    # containing a placeholder name (`--format html` on a repo literally
+    # named `__LIE__` printed 0 and injected the rows table into the path
+    # slot). Placeholders are matched against the template only.
+    import re as _re
+    slots = {
+        "__ROOT__": html.escape(root or "."),
+        "__NOW__": now,
+        "__NFILES__": str(n_files),
+        "__LIE__": str(counts.get("lie", 0)),
+        "__DRIFT__": str(counts.get("drift", 0)),
+        "__SMELL__": str(counts.get("smell", 0)),
+        "__TOTAL__": str(len(findings)),
+        "__ROWS__": body_rows,
+    }
+    return _re.sub(r"__[A-Z]+__", lambda m: slots.get(m.group(0), m.group(0)), template)
