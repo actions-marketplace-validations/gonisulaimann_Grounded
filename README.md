@@ -8,6 +8,14 @@
     <br>
 </h1>
 
+**Grounded** is a reference integrity firewall: it finds comments, doc
+examples, imports, and config strings that contradict the repository
+they live in. A rule fires only on mechanical contradiction — a name
+that resolves nowhere, a path that does not exist, a default the code
+disagrees with — so a clean scan means something and a finding means
+something. It runs on Python, JavaScript/TypeScript, Go, and C with
+zero dependencies, offline, deterministically.
+
 <p align="center">
     <a href="docs/README_AR.md"><img alt="README بالعربية" title="README بالعربية" src="https://img.shields.io/badge/Arabic-DFE0E5"></a>
     <a href="docs/README_ES.md"><img alt="README en Español" src="https://img.shields.io/badge/Español-DFE0E5"></a>
@@ -55,14 +63,6 @@
   <img src="https://raw.githubusercontent.com/gonisulaimann/Grounded/main/demo/firewall.gif" alt="30-second demo: an agent renames a function in one file; grounded scan --changed catches the stale import in another file pre-commit" width="900">
 </p>
 <p align="center"><em>30 seconds, offline, self-checking — reproduce it: <a href="demo/firewall.sh">demo/firewall.sh</a></em></p>
-
-**Grounded** is a reference integrity firewall: it finds comments, doc
-examples, imports, and config strings that contradict the repository
-they live in. A rule fires only on mechanical contradiction — a name
-that resolves nowhere, a path that does not exist, a default the code
-disagrees with — so a clean scan means something and a finding means
-something. It runs on Python, JavaScript/TypeScript, Go, and C with
-zero dependencies, offline, deterministically.
 
 ```console
 $ grounded scan ./src
