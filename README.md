@@ -56,14 +56,6 @@
 </p>
 <p align="center"><em>30 seconds, offline, self-checking — reproduce it: <a href="demo/firewall.sh">demo/firewall.sh</a></em></p>
 
-**Grounded** is a reference integrity firewall: it finds comments, doc
-examples, imports, and config strings that contradict the repository
-they live in. A rule fires only on mechanical contradiction — a name
-that resolves nowhere, a path that does not exist, a default the code
-disagrees with — so a clean scan means something and a finding means
-something. It runs on Python, JavaScript/TypeScript, Go, and C with
-zero dependencies, offline, deterministically.
-
 ```console
 $ grounded scan ./src
 LIE src/app.py:9 [stale-symbol-ref] Comment references `ghost_service` which is not defined here
