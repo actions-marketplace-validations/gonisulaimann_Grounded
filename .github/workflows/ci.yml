@@ -51,7 +51,7 @@ jobs:
         run: pip install -e .
       - name: Docs integrity sweep (all opt-ins, must report clean)
         run: |
-          OPTS=stale-doc-ref,stale-contract-ref,ghost-export,stale-entrypoint,stale-mock-ref,phantom-package,stale-cli-ref
+          OPTS=stale-doc-ref,stale-contract-ref,ghost-export,stale-entrypoint,stale-mock-ref,phantom-package,stale-cli-ref,unclosed-fence
           for target in docs README.md agent-skill CHANGELOG.md bench demo editors; do
             grounded scan "$target" --no-color --fail-on smell --enable "$OPTS"
           done

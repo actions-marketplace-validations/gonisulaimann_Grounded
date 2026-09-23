@@ -10,6 +10,13 @@ specification, so it loads in Claude Code and other spec-compatible
 agents. It lives in the [agent-skill](https://github.com/gonisulaimann/Grounded/tree/main/agent-skill)
 directory under the name `grounded`.
 
+The [agent-skill](https://github.com/gonisulaimann/Grounded/tree/main/agent-skill)
+directory is **generated**: `src/grounded/skill/` is the single source of
+truth (what `grounded init-agent --skill` installs and what the wheel
+ships), and `python3 scripts/sync-skill.py` regenerates the mirror from it
+(`--check` verifies byte-identity, which CI enforces). Edit the source, not
+the mirror.
+
 ## Installation
 
 One command installs the skill for every project (no paths to memorize,
@@ -59,8 +66,8 @@ the README. No badge is added before the listing is live.
   reference, which tool answers each question, and what each finding
   means. Includes the non-goals: docstring contracts belong to darglint,
   commented-out code belongs to Ruff.
-* **`references/rules.md`**: condensed rule table (the five checkers,
-  severities, exit codes). Loaded when the agent needs exact semantics.
+* **`references/rules.md`**: condensed rule table (the 13 checkers with
+  severities and exit codes). Loaded when the agent needs exact semantics.
 * **`references/commands.md`**: CLI surface (`scan`, `fix`, `impact`,
   `baseline`, `mcp`, `lsp`) with the agent-loop contracts (exit codes,
   single-file checks, dry runs).

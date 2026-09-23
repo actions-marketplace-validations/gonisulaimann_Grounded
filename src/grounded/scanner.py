@@ -206,9 +206,11 @@ def collect_files(root: Path, config: Config, include_claim_surfaces: bool = Fal
                 if name in config.ignore_files:
                     continue
                 suffixes = DEFAULT_SUFFIXES
-                if {"stale-doc-ref", "stale-cli-ref"} & set(config.enabled or ()):
-                    # Markdown is collected only when its checkers run:
-                    # default scans stay byte-identical.
+                if {"stale-doc-ref", "stale-cli-ref", "unclosed-fence"} & set(
+                        config.enabled or ()):
+                    # Markdown is collected only when one of its checkers
+                    # runs. Default configs always enable unclosed-fence, so
+                    # it participates on every default scan.
                     suffixes = DEFAULT_SUFFIXES | {".md", ".markdown", ".mdc"}
                 want_cfg = "stale-entrypoint" in (config.enabled or ())
                 if include_claim_surfaces:

@@ -223,3 +223,39 @@ outside changed lines.
 * `ghost-export` on generated output inside a *test* file
   (`snapshots`-style names) is silent; genuinely dead helpers in test
   files still report, which is the intended behavior.
+
+## Recall round: corpus rot replayed inside real repos (measured 2026-09-22)
+
+Precision answers "are the findings real?"; recall answers "would they
+still be found?". The adversarial corpus proves a checker fires in the
+smallest tree that shows the behavior — it cannot say whether the
+finding survives a real repository around it, where a definition two
+directories away, a manifest that declares the package, or a build
+directory that looks generated can silence it. Context only ever
+silences, so isolation truth and repo truth are different claims.
+
+`bench/recall.py` closes that gap: every firing corpus case is planted
+into a copy of a real repo at its original relative path, one case at a
+time, and the expected finding must still appear — as a delta against a
+baseline scan of the pristine tree, so pre-existing findings are never
+credited to the plant. A plant that may not overwrite a host file (a
+fixture cannot replace the host's `pyproject.toml`) reports "not
+planted" and is excluded, never counted as a miss. Prose fixtures merge
+into the host's own `README.md` (the rot is just as real at the end of
+real prose); the harness closes a host's dangling fence first so the
+plant lands in well-formed context, and lists every such host because an
+unbalanced host is a real defect. And like the scan itself, the harness
+refuses to state a number at all if a checker raised.
+
+Machine: MacBook Air (Apple silicon), Python 3.13. Measured 2026-09-22,
+post fence-walk fix (see the CHANGELOG):
+
+| Repo | Files | Caught | Missed | Not planted | Recall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Grounded | 157 | 22 | 0 | 1 | 100% |
+| flask | 94 | 22 | 0 | 1 | 100% |
+| requests | 51 | 22 | 0 | 1 | 100% |
+| svelte | 3,625 | 23 | 0 | 0 | 100% |
+
+89 planted expectations, 0 misses, 0 checker errors across all 13
+checkers. Reproduce: `python3 bench/recall.py <repo> [...]`.

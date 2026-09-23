@@ -32,7 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("scan", help="scan a directory for dangling references")
-    s.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
+    s.add_argument("paths", nargs="*", default=None,
+                   help="directories or files to scan (default: .); several file "
+                        "arguments scope reporting to those files (used by "
+                        "pass_filenames hooks)")
     s.add_argument("--format", choices=["terminal", "json", "sarif", "html"], default="terminal")
     s.add_argument("--output", "-o", default=None, help="write report to file instead of stdout")
     s.add_argument("--fail-on", choices=["lie", "drift", "smell", "never"], default=None,
@@ -156,24 +159,42 @@ def _report_checker_errors(errors: list[CheckerError]) -> None:
           f"Fix the checker, or disable it explicitly with --disable <id>.", file=sys.stderr)
 
 
+def _report_key(resolved: Path, root: Path) -> str:
+    """Findings report repo-relative POSIX paths (scanner.py builds them the
+    same way); files outside the scan root fall back to their bare name."""
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError:
+        return resolved.name
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
-    given = Path(args.path)
+    paths = [Path(p) for p in (getattr(args, "paths", None) or ["."])]
+    given = paths[0]
     root = given.resolve()
     if not root.exists():
-        print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
+        print(f"grounded: path does not exist: {given}", file=sys.stderr)
         return 2
-    # A file argument scopes REPORTING to that file; the index is built
-    # from the file's project (nearest marker ancestor), not its parent
+    # A file argument scopes REPORTING to those files; the index is built
+    # from the files' project (nearest marker ancestor), not the parent
     # directory: a parent-only snapshot manufactures absence claims about
-    # files it never looked at (see scanner.project_root_for).
-    only: str | None = None
+    # files it never looked at (see scanner.project_root_for). Several
+    # file arguments (pre-commit batches the filenames a `pass_filenames`
+    # hook receives) each scope reporting; the FIRST one anchors the
+    # project root and the rest must live under it.
+    only_set: set[str] | None = None
     if root.is_file():
-        target = root
-        root = project_root_for(target.parent)
-        try:
-            only = target.relative_to(root).as_posix()
-        except ValueError:
-            only = target.name
+        root = project_root_for(root.parent)
+        only_set = {_report_key(p.resolve(), root) for p in paths}
+        for p in paths[1:]:
+            rp = p.resolve()
+            if not rp.exists():
+                print(f"grounded: path does not exist: {p}", file=sys.stderr)
+                return 2
+            if rp != root and root not in rp.parents:
+                print(f"grounded: all paths must share a directory tree "
+                      f"({paths[0]} and {p} do not)", file=sys.stderr)
+                return 2
     config = _load_config(root, explicit=args.config)
     if args.fail_on:
         config.fail_on = args.fail_on
@@ -196,8 +217,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print(f"grounded: warning: unknown checker id(s) in suppression at "
               f"{wpath}:{wline}: {', '.join(wids)} (known: {', '.join(sorted(CHECKERS))})",
               file=sys.stderr)
-    if only is not None:
-        findings = [f for f in findings if f.path == only]
+    if only_set is not None:
+        findings = [f for f in findings if f.path in only_set]
 
     suppressed_note = ""
     facts_by_path = {f.path: f for f in facts}
@@ -373,6 +394,7 @@ def _precommit_conf() -> str:
         f"    rev: v{__version__}\n"
         "    hooks:\n"
         "      - id: grounded\n"
+        "      - id: grounded-fences\n"
     )
 
 

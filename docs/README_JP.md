@@ -2,7 +2,7 @@
 
 > 要約翻訳です。[英語の README](https://github.com/gonisulaimann/Grounded#readme)が正式なリファレンスです。
 
-**Grounded** はコードコメント内の宙ぶらりん参照を検出します：存在しない関数、欠落ファイル、壊れたインポート。決定的、オフライン、依存関係ゼロ。Python、JavaScript/TypeScript、Go、C に対応。
+**Grounded** は参照整合性のファイアウォールです：リポジトリと矛盾するコメント・ドキュメント例・インポート・設定文字列を検出します——存在しない関数、欠落ファイル、壊れたインポート、無効になった例。決定的、オフライン、依存関係ゼロ。Python、JavaScript/TypeScript、Go、C に対応。
 
 ## インストール
 
@@ -32,6 +32,12 @@ grounded impact my_function .      # シンボルに関する全情報：定義�
 | `stale-file-ref` | lie | コメントが指すパスがリポジトリに存在しない |
 | `number-drift` | drift | コメント内の数値が隣接コードと矛盾する |
 | `fragile-anchor` | smell | 脆弱な行番号アンカー、チケットなしの workaround マーカー |
+| `stale-entrypoint` | lie | `pyproject` のスクリプトや `package.json` の bin/main がリポジトリに存在しない対象を指す |
+| `stale-mock-ref` | lie | `@patch` 文字列がモジュールに存在しないシンボルを指す |
+| `unclosed-fence` | lie | レンダラーが閉じられない Markdown コードフェンス——以降がコードとして表示される |
+
+13 ルールのうち 8 件はデフォルトで有効、残り 5 件は opt-in
+（`--enable <id>`）です。
 
 ## リンク
 

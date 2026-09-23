@@ -17,16 +17,21 @@ All notable changes to `grounded` are documented here. Format follows
   file, reported on stderr grouped by cause (one broken checker over a
   10k-file tree is one line, not 10k), and a scan that has any of them can no
   longer print the word `clean`.
-- **The README's fences did not balance, so 186 of its last 248 lines
-  rendered as one code block on GitHub** — the `stale-symbol-ref` table,
-  Configuration, Limitations and Contributing sections included. A
-  ` ```console ` block opened at line 216 was never closed, and in Markdown
-  an unterminated fence runs to EOF, so every fence after it inverted: 49
-  fences, odd. The rendering damage was the visible half; the silent half is
-  that `stale-cli-ref` stopped checking the whole tail of the file, since an
-  invocation inside a code block is not parsed as one. Now 50 fences,
-  balanced, with a test pinning the parity so the class cannot return
-  unnoticed.
+- **The README's fence count was odd, because one ` ```console ` opened at
+  line 216 was never closed.** A closing fence must be at least as long as its
+  opener and carry no info string, so the block ran on to the next bare fence
+  and the paragraphs at lines 220-228 rendered as code. Verified against
+  GitHub's own renderer (`POST /markdown`, `mode=gfm`): 24 code blocks in the
+  broken file, 25 after the fix, every heading correctly rendered in both.
+  **An earlier draft of this entry claimed 186 of the last 248 lines rendered
+  as one code block, and that figure does not reproduce** — it came from this
+  tool's own fence toggle rather than from a renderer, which is exactly the
+  mistake this project's rules warn about. The toggle's view is still real,
+  and it is the quiet half: it inverts for the rest of the file, so
+  `stale-cli-ref` stopped checking the whole tail (186 of the last 248 lines
+  read as code from the toggle's side) and two corpus plants reported as
+  phantom recall misses. Now 50 fences, balanced, with a test pinning the
+  parity so the class cannot return unnoticed.
 - Releases were shipping **three of four macOS/desktop binaries without
   saying so**. The `darwin-amd64` leg asked for `runs-on: macos-13`, an image
   GitHub retired, and a job pointed at a retired runner does not fail — it
@@ -75,9 +80,29 @@ All notable changes to `grounded` are documented here. Format follows
   requests and svelte (3,922 files): 77 expectations, **0 misses, 0 checker
   errors**.
 - Three corpus cases for the checkers that had no firing fixture at all
-  (`stale-symbol-ref`, `number-drift`, `fragile-anchor`), so all 12 checkers
+  (`stale-symbol-ref`, `number-drift`, `fragile-anchor`), so all 13 checkers
   are now held to a designed true positive instead of only to silence. The
-  corpus goes 37 → **40 cases**.
+  corpus goes 37 → **45 cases**.
+- `unclosed-fence` (opt-in), a checker for the defect that started this: a
+  Markdown fence that never closes, or an info-carrying fence the renderer
+  swallows because an earlier block is still open. Fences are judged by
+  CommonMark instead of counted, because counting is what gets it wrong: a
+  closer must be a run of the same character, at least as long as its opener,
+  with no info string. Two legitimate shapes stay silent — a *declared*
+  nesting scaffold (a longer enclosing fence that carries its own info string,
+  which is how svelte's docs show Svelte inside HTML on purpose) and a bare
+  fence inside a block (the illustrated closer of a nested example). Measured
+  2026-09-22 over **11,564 Markdown files** in eight real repos (svelte,
+  vuejs/docs, rust-lang/book, markdown-it, flask, requests, OmniRoute, this
+  repo): **0 false positives**, and the only findings were its own corpus
+  fixtures plus one real document — OmniRoute's
+  `docs/frameworks/OPEN_SSE_ARCHITECTURE.md`, where a stray bare four-backtick
+  fence makes GitHub render a 76-line code block holding `## Services (117
+  modules)`, `### Common Patterns` and the surrounding prose. Known residue: a
+  *bare* fence inside a block is never reported, so an over-long fence used by
+  mistake stays silent where the identical shape is a legitimate scaffold —
+  `docs/guides/USAGE_QUOTA_GUIDE.md` is the measured example, 33 lines
+  swallowed.
 - `scripts/sync-skill.py` — the agent skill is now generated, not
   maintained: `src/grounded/skill/` is the source of truth (it is what
   `init --agent` installs and what the wheel ships) and the top-level
@@ -91,6 +116,39 @@ All notable changes to `grounded` are documented here. Format follows
   `libpython3.11.dylib` both report `x86_64 arm64`), then gates the output
   with `lipo -archs`. A thin binary can therefore never be published, least
   of all under the amd64 name.
+- **One CommonMark fence walk shared by every fence consumer.**
+  `stale-doc-ref` and `stale-cli-ref` tracked fences with a line-by-line
+  toggle that flipped on any bare fence-looking line and ignored lines whose
+  info string was not a bare tag, so a swallowed boundary inverted their
+  view of every line after it and fenced code with a rich info string
+  (` ```bash title="x" `) or an indented fence was analyzed as prose.
+  `_fence_scan` is now the single walk (`_doc_fence_blocks`,
+  `check_stale_cli_ref`, `check_unclosed_fence`, and the graph query all
+  run on it), so the checkers and the `unclosed-fence` checker agree by
+  construction. `bench/recall.py` imports the walk instead of re-deriving
+  the retired toggle, and translates merged-plant expectations (line
+  numbers and opener references shift when a fixture lands under host
+  content) — a fixture's `opened at line 5` finding lands at line 12 under
+  a 5-line host and is judged caught there, not as a phantom title miss.
+  Measured A/B of the retired scan vs the walk over 10,857 Markdown files
+  (Grounded, OmniRoute, svelte, flask, requests): 1 file with prose wrongly
+  skipped (41 lines, an i18n doc with header text glued to its fence
+  lines), and 1,032 files / 10,962 lines of fenced code the old scan
+  wrongly analyzed as prose. An earlier note citing "238 files / 20,681
+  lines" came from a comparison that mixed line populations and is
+  retracted.
+- **Documentation audit against v0.16.0 reality.** Fresh measured numbers
+  everywhere: 279 unit tests (was 238 on the landing page, 269 in the
+  README), 45 corpus cases (was 37), 13 checkers — 7 default-on, 6 opt-in —
+  with `stale-cli-ref` and `unclosed-fence` now in the README's opt-in
+  table (was 4), and the recall harness at 89/89 expectations over 3,927
+  files. `pyproject.toml` keywords now describe what the tool actually is
+  (documentation rot, AI agents, MCP, LSP), classifiers updated to Beta
+  with Python 3.14 and OS-independent, Documentation and Bug Tracker URLs
+  added; the VS Code extension manifest version follows the wheel (0.16.0);
+  `docs/agent-skill.md` documents that `agent-skill/` is generated from
+  `src/grounded/skill/` by `scripts/sync-skill.py`; `docs/benchmarks.md`
+  documents the recall harness and its measured run alongside the corpus.
 
 ### Changed
 - `docs/rules.md` no longer treats isolation precision as repo recall, and no

@@ -7,13 +7,11 @@
 | `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, or untracked markers (`HACK`, `XXX`, `FIXME`, `workaround`) with no ticket or expiry condition. |
-| `stale-doc-ref` | lie (error), **experimental, opt-in only** | A fenced code example (explicit `python`/`js`/`ts`/`go`/`c` tag) calls a symbol bound nowhere in the example and defined nowhere in the repo. |
-| `stale-contract-ref` | lie/drift, **experimental, opt-in only** | A deprecation notice naming a nonexistent replacement, a lock-holder claim (`must hold X`) naming nothing, or a comment stating an env default the code contradicts. |
-| `ghost-export` | smell (note), **experimental, opt-in only** | A public symbol with no importers anywhere, no use in its own file, and no deliberate API marking (`__all__`, exports, `__init__`). |
 | `stale-entrypoint` | lie (error) | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. Graduated 2026-09-22. |
 | `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module. Graduated 2026-09-22. |
 | `phantom-package` | drift (warning), **experimental, opt-in only** | An absolute import declared in no manifest (`pyproject.toml`, `requirements*.txt`, `package.json`). |
 | `stale-cli-ref` | lie (error), **experimental, opt-in only** | A documented `grounded` invocation with an unknown subcommand or flag (verified against the live parser). |
+| `unclosed-fence` | lie (error) | A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open: the content after it renders as code, and the doc checkers' fence state inverts from there on. Graduated 2026-09-22 — promoted alongside the shared CommonMark fence walk, with the differential fuzz pinning the walk. |
 ## Experimental checkers
 
 Opt-in checkers are registered but excluded from every default set: run
@@ -108,6 +106,32 @@ reports). Synopsis meta-syntax, `cmd:`-style program output, and
 positionals never report. The spec is introspected from argparse, so
 checker and CLI cannot drift apart.
 
+`unclosed-fence`: fences are judged by CommonMark, not by counting
+fences, because the two disagree exactly where it matters. A blocking
+fence is closed only by a run of the *same character*, **at least as
+long**, with **no info string** — so a ` ```console ` arriving while a
+block is open cannot open one, it is content. Two shapes are reported:
+a fence that never closes (everything after it renders as code to the
+end of the file), and an info-carrying fence swallowed by an open block.
+Silence is deliberate in two places: a *declared* nesting scaffold (an
+enclosing fence that is longer **and** carries its own info string, like
+` ````markdown ` around ` ```python `, which is how svelte's docs show
+Svelte inside HTML on purpose), and a bare fence inside a block (the
+illustrated closer of a nested example). Known residue: a *bare* fence
+inside a block is never reported, so a longer fence used by mistake
+where a scaffold of the same shape is legitimate is missed — measured on
+OmniRoute's `docs/guides/USAGE_QUOTA_GUIDE.md`, where a 4-backtick `ts`
+fence swallows 33 lines including a heading; the correct reading there
+is a typo, and the same shape is a legitimate scaffold elsewhere.
+Measured 2026-09-22 over **11,564 Markdown files** in eight real repos
+(svelte, vuejs/docs, rust-lang/book, markdown-it, flask, requests,
+OmniRoute, this repo): **0 false positives**, and the only findings were
+the corpus fixtures plus one real document — OmniRoute's
+`docs/frameworks/OPEN_SSE_ARCHITECTURE.md`, where a stray bare
+` ```` ` fence made the renderer produce a 76-line code block holding
+`## Services (117 modules)`, `### Common Patterns` and the surrounding
+prose, confirmed against GitHub's own renderer.
+
 Measurement lives in [`corpus/`](https://github.com/gonisulaimann/Grounded/tree/main/corpus):
 planted-staleness fixtures with exact expected findings, run in CI with
 zero tolerance (a missing finding and an extra finding both fail). Current
@@ -125,8 +149,8 @@ numbers (2026-09-21):
   single reference repo-wide), **0 false positives** after the aliased-
   import fix. Default scans are byte-identical (Markdown is collected
   only when `stale-doc-ref` runs).
-* New checkers ride the same track: 40 corpus cases hold every checker
-  at 1.00 precision (`corpus/run.py`, CI-enforced — all 12 checkers
+* New checkers ride the same track: 45 corpus cases hold every checker
+  at 1.00 precision (`corpus/run.py`, CI-enforced — all 13 checkers
   have a firing fixture), and `stale-entrypoint`, `stale-mock-ref`, and
   `phantom-package` are silent on this repo's real code (the only
   finding is a planted corpus fixture).
@@ -135,8 +159,8 @@ numbers (2026-09-21):
   behavior, while `bench/recall.py` replays each firing case inside a
   copy of a real repository, where definitions, manifests and
   generated directories are the context that can silence it. Measured
-  2026-09-22 over Grounded, flask, requests and svelte (3,922 files):
-  **77 planted expectations, 0 misses, 0 checker errors**. 3 cases
+  2026-09-22 over Grounded, flask, requests and svelte (3,927 files):
+  **89 planted expectations, 0 misses, 0 checker errors**. 4 cases
   were not plantable — a fixture may not overwrite a host's own
   `pyproject.toml`, which would change what the host *is* — and are
   excluded from the number rather than counted as failures.

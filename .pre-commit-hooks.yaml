@@ -6,3 +6,20 @@
   pass_filenames: false
   # grounded is dependency-free; pin a released version once installed from PyPI:
   #   additional_dependencies: ['grounded-lint==0.7.1']
+
+# Fence-only companion hook. Gated on the changed FILE, not the changed
+# LINE: an unclosed fence anchors at its opener and corrupts everything
+# after it, so line filtering would hide the finding unless the opener
+# itself was edited in this pass — exactly the slow-burn case the checker
+# exists for. Scanning only the changed Markdown keeps the hook fast
+# (changed source code is not re-scanned here; the `grounded` hook does
+# that). An `enable`-only run replaces the default set, so this hook is
+# fence-precise; repo config can still narrow it with `disable`.
+- id: grounded-fences
+  name: grounded markdown fences
+  description: Reject Markdown files whose code fences the renderer does not honour
+  language: python
+  pass_filenames: true
+  files: \.(markdown|md|mdc)$
+  entry: grounded scan
+  args: ["--fail-on", "lie", "--enable", "unclosed-fence", "--no-color"]

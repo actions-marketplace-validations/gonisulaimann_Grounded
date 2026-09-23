@@ -1416,6 +1416,50 @@ _DOC_FENCE_LANGS = {
     "c": "c",
 }
 
+# CommonMark fenced-code line: up to three spaces of indent, a run of at
+# least three backticks or tildes, then the info string.
+_FENCE_LINE = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+
+
+def _fence_scan(lines: list[str]) -> tuple[list[dict], int]:
+    """One CommonMark fenced-code walk, shared by every fence consumer.
+
+    Returns `(blocks, open_at)`: `blocks` holds one record per block —
+    `open`/`close` are 1-based fence lines (`close` is None when the block
+    runs to EOF), `info` is the raw info string, `char`/`len` the fence run —
+    and `open_at` is the opener line of a block still open at EOF (0 if
+    none). A block closes only on a run of the same character, at least as
+    long, with no info string; a fence-looking line inside a block is
+    content, which is exactly where the old per-checker toggles went wrong.
+    A backtick fence whose info string contains a backtick is not a fence.
+    """
+    blocks: list[dict] = []
+    open_char = ""
+    open_len = 0
+    for lineno, raw in enumerate(lines, start=1):
+        m = _FENCE_LINE.match(raw)
+        if not blocks or blocks[-1]["close"] is not None:
+            if not m:
+                continue
+            fence, info = m.group("fence"), m.group("info")
+            if fence[0] == "`" and "`" in info:
+                continue
+            blocks.append({"open": lineno, "close": None, "info": info,
+                           "char": fence[0], "len": len(fence)})
+            open_char, open_len = fence[0], len(fence)
+            continue
+        if m:
+            fence, info = m.group("fence"), m.group("info")
+            if fence[0] == open_char and len(fence) >= open_len and not info.strip():
+                blocks[-1]["close"] = lineno
+    open_at = blocks[-1]["open"] if blocks and blocks[-1]["close"] is None else 0
+    return blocks, open_at
+
+
+def _fence_info_word(info: str) -> str:
+    """The info string's first word, lowercased (CommonMark's language tag)."""
+    parts = info.strip().split()
+    return parts[0].lower() if parts else ""
 _DOC_CALL = re.compile(r"(?<![A-Za-z0-9_$.])([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)*)\s*\(")
 
 _DOC_PLACEHOLDER_NAMES = {
@@ -1461,23 +1505,18 @@ _DOC_JS_CALL_KEYWORDS = frozenset({
 
 def _doc_fence_blocks(lines: list[str]) -> list[tuple[str, int, int]]:
     """(language, start_lineno_1based, end_lineno_exclusive) for fenced
-    code blocks with a supported language tag. Unclosed fences are
-    ignored; inner fences of greater depth are treated as content."""
+    code blocks with a supported language tag, per the shared CommonMark
+    walk (`_fence_scan`). Unclosed fences are ignored; a shorter inner
+    fence is content, so a declared nesting scaffold is one block, not
+    three."""
+    blocks, _ = _fence_scan(lines)
     out: list[tuple[str, int, int]] = []
-    i, n = 0, len(lines)
-    while i < n:
-        m = re.match(r"^(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)\s*$", lines[i])
-        if not m:
-            i += 1
+    for b in blocks:
+        if b["close"] is None:
             continue
-        fence, tag = m.group(1), m.group(2).lower()
-        lang = _DOC_FENCE_LANGS.get(tag)
-        j = i + 1
-        while j < n and not re.match(r"^" + re.escape(fence[0]) + r"{3,}\s*$", lines[j]):
-            j += 1
-        if j < n and lang:
-            out.append((lang, i + 2, j + 1))
-        i = j + 1 if j < n else n
+        lang = _DOC_FENCE_LANGS.get(_fence_info_word(b["info"]))
+        if lang:
+            out.append((lang, b["open"] + 1, b["close"]))
     return out
 
 
@@ -2481,6 +2520,11 @@ def _cli_spec() -> dict:
     return spec
 
 
+_CLI_CONSOLE_TAGS = ("", "console", "bash", "sh", "shell", "text", "plaintext",
+                     "terminal", "zsh")
+_CONSOLE_FENCE_TAGS = frozenset(_CLI_CONSOLE_TAGS)
+
+
 def _cli_argv_segments(line: str) -> list[list[str]]:
     """Split a line into `grounded ...` argv lists (shell-aware)."""
     import shlex
@@ -2568,21 +2612,23 @@ def check_stale_cli_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     subcommand or flag: "the grounded skill teaches" is prose, not an
     invocation, and never reports. Synopsis meta-syntax (`[--flag]`,
     `UPPER` placeholders) is positional and never flagged.
+
+    Fenced blocks are identified by the shared CommonMark walk
+    (`_fence_scan`), not a line-by-line toggle: a fence-looking line
+    inside an open block is content, and treating it as a boundary used
+    to invert the checker's view of every line after it — the exact
+    failure the `unclosed-fence` checker exists for.
     """
     if facts.language != "markdown":
         return []
     findings: list[Finding] = []
     spec = _cli_spec()
-    in_fence = False
-    fence_tag = ""
+    blocks, _ = _fence_scan(facts.lines)
+    console_lines: set[int] = set()
+    for b in blocks:
+        if _fence_info_word(b["info"]) in _CONSOLE_FENCE_TAGS:
+            console_lines.update(range(b["open"] + 1, (b["close"] or len(facts.lines) + 1)))
     for lineno, text in enumerate(facts.lines, start=1):
-        fm = re.match(r"^(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)\s*$", text.strip())
-        if fm:
-            if in_fence:
-                in_fence = False
-            else:
-                in_fence, fence_tag = True, fm.group(2).lower()
-            continue
         segments: list[tuple[list[str], bool]] = []
         for m in re.finditer(r"`([^`\n]+)`", text):
             span = m.group(1)
@@ -2590,9 +2636,7 @@ def check_stale_cli_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 for argv in _cli_argv_segments(span):
                     segments.append((argv, span.strip().startswith("grounded")))
         stripped = text.strip()
-        in_console = in_fence and fence_tag in ("", "console", "bash", "sh", "shell",
-                                                "text", "plaintext", "terminal", "zsh")
-        if stripped.startswith("$") or (in_console and "grounded" in text):
+        if stripped.startswith("$") or (lineno in console_lines and "grounded" in text):
             body = stripped[1:].strip() if stripped.startswith("$") else stripped
             for argv in _cli_argv_segments(body):
                 if argv and argv[0] == "grounded":
@@ -2619,8 +2663,91 @@ def check_stale_cli_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     return _dedupe(findings)
 
 
+def check_unclosed_fence(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """Fenced code blocks that never close, judged by CommonMark.
+
+    Markdown only. Two shapes, one cause — the author wrote a block boundary
+    the renderer does not honor, so content lands inside a code block:
+
+    * **never closed**: the fence runs to the end of the file, and every line
+      after it renders as code;
+    * **swallowed boundary**: a closing fence accepts only a run of the same
+      character, at least as long, carrying no info string. A line like
+      ```` ```console ```` arriving while a block is still open therefore
+      cannot open one: it is content, and the block the author thought they
+      had opened does not exist.
+
+    Nesting is not a defect, so the one legitimate shape stays silent: an
+    enclosing fence that is **longer** than the inner one *and* carries an
+    info string of its own — ` `````markdown ` around ` ```python `, where the
+    outer fence declares itself as a nesting scaffold. Everything else is
+    reported, because a bare enclosing fence declares nothing, so a block
+    header inside it cannot be nesting: the two shapes measured in the wild
+    are a repeated header of the same length (a missing close) and a bare
+    4-backtick line that the author read as a closer while the renderer read it
+    as an opener. A bare inner fence stays silent either way — inside a block
+    that is the illustrated closer of a nested example, which is exactly what
+    a nesting scaffold is for.
+
+    This is also the shape that disarms the doc checkers. `stale-doc-ref` and
+    `stale-cli-ref` used to track fences with a line-by-line toggle that
+    flipped on every fence-looking line, so a swallowed boundary inverted
+    their view of every line after it — and a fence whose info string was
+    not a bare tag (`` ```bash title="x" ``, an indented fence) was ignored
+    entirely, leaving blocks analyzed as prose. Both now share the
+    CommonMark walk above. Measured 2026-09-22: one missing close in this
+    repository's `README.md` made two `stale-cli-ref` corpus plants report
+    as phantom recall misses until the fence was fixed.
+
+    Verified against GitHub's own renderer (`POST /markdown`, `mode=gfm`) on
+    that README: 24 code blocks before the fix and 25 after, with the
+    paragraphs at 220-228 rendered as code before and as prose after.
+    """
+    if facts.language != "markdown":
+        return []
+    findings: list[Finding] = []
+    lines = facts.lines
+    blocks, open_at = _fence_scan(lines)
+    for b in blocks:
+        last = b["close"] - 1 if b["close"] is not None else len(lines)
+        for lineno in range(b["open"] + 1, last + 1):
+            m = _FENCE_LINE.match(lines[lineno - 1])
+            if not m:
+                continue
+            fence, info = m.group("fence"), m.group("info")
+            if not info.strip():
+                continue  # bare inner fence: the illustrated closer of a nested example
+            if b["info"].strip() and b["len"] > len(fence):
+                continue  # declared nesting scaffold: ````markdown around ```python
+            findings.append(Finding(
+                path=facts.path, line=lineno, end_line=lineno,
+                checker="unclosed-fence", severity="lie",
+                title=f"Code fence is swallowed by the block opened at line {b['open']}",
+                claim=lines[lineno - 1].strip()[:60],
+                evidence=f"the block opened at line {b['open']} is closed only by a run of "
+                         f"at least {b['len']} `{b['char']}` with no info string, so this "
+                         f"line is content inside it — and so is everything after it until "
+                         f"the next {b['len']}-`{b['char']}` fence on its own line",
+                fix=f"Close the block opened at line {b['open']} before this fence.",
+                confidence=0.9,
+            ))
+    if open_at:
+        findings.append(Finding(
+            path=facts.path, line=open_at, end_line=len(lines),
+            checker="unclosed-fence", severity="lie",
+            title="Code fence is never closed",
+            claim=lines[open_at - 1].strip()[:60],
+            evidence=f"this fence has no closer, so the {len(lines) - open_at} "
+                     f"line(s) after it render as one code block to the end of the file",
+            fix="Add the closing fence.",
+            confidence=0.95,
+        ))
+    return _dedupe(findings)
+
+
 CHECKERS = {
     "stale-symbol-ref": check_stale_symbol,
+    "unclosed-fence": check_unclosed_fence,
     "stale-file-ref": check_stale_file,
     "stale-import": check_stale_import,
     "number-drift": check_number_drift,
@@ -2647,6 +2774,7 @@ CHECKER_DESCRIPTIONS = {
     "stale-mock-ref": "@patch/patch.object strings naming symbols absent from the in-repo module (graduated 2026-09-22; re-verified with the checker-error count at 0 — 0 false positives over 15,196 files in svelte/OmniRoute/flask/requests, so the checker demonstrably ran).",
     "phantom-package": "EXPERIMENTAL, opt-in only: imports declared in no manifest (pyproject, requirements, package.json).",
     "stale-cli-ref": "EXPERIMENTAL, opt-in only: documented `grounded` invocations with unknown subcommands or flags.",
+    "unclosed-fence": "a Markdown code fence that never closes, or a fence the renderer swallows because an earlier block is still open (both make content render as code and invert the doc checkers' fence state). Graduated 2026-09-22; re-verified with the checker-error count at 0 — 0 false positives over 11,564 Markdown files in eight real repos, and the walk pinned by a differential fuzz against an independent CommonMark reference, so the checker demonstrably ran.",
 }
 
 # Opt-in checkers are registered (so --enable/explain work) but excluded
