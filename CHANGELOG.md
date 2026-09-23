@@ -6,6 +6,47 @@ All notable changes to `grounded` are documented here. Format follows
 ## [Unreleased]
 
 ### Fixed
+- **File scans indexed only the parent directory, manufacturing lies.**
+  `grounded scan sub/file.py` (and the MCP/LSP file paths) built the
+  index from the file's parent, so any name defined elsewhere in the
+  repo reported as missing. File targets now index the file's project
+  (nearest marker ancestor, bounded); reporting stays scoped to the
+  named files, and MCP paths are server-root-relative.
+- **Config failures were silent defaults.** A missing `--config` file,
+  a corrupt `grounded.toml`, and unknown checker ids in `--enable`,
+  `--disable`, `enable`, or `disable` now fail with exit 2 instead of
+  running a different configuration with a green build.
+- **`--changed` hid staged lines.** Only branch + unstaged diffs were
+  gated; `git add` moved lines out of the gate. Staged (`--cached`)
+  hunks and symbols are now included, and non-ASCII paths are unquoted
+  before matching.
+- **A corrupt baseline crashed `grounded baseline`.** Overwriting a
+  corrupt file now treats it as empty instead of tracebacking.
+- **Cyclic tsconfig `extends` crashed the scan** with `RecursionError`.
+  Cycles now resolve to empty.
+- **MCP `fail_on: "never"` still failed** on lies, and notifications
+  received responses with `id: null`. Report-only is now total, and
+  notifications are silent per JSON-RPC.
+- **An LSP outside-workspace file overwrote its same-named in-root
+  file's index entry**, deleting real symbols. Outside files are now
+  keyed collision-free.
+- **`fix` followed symlinked directories** (duplicate ties, and a
+  cyclic link walked forever). Same guard as the scanner.
+- **HTML report placeholders collided with repo names**: a root
+  literally named `__LIE__` printed 0 and injected the rows table.
+  Single-pass substitution.
+- **TOML fallback misread** `[[tables]]`, dotted keys, trailing
+  commas, and `\u` escapes on Python 3.10. Now rejects or decodes
+  per spec.
+- **Metasyntactic calls (`foo()`, `blah()`) reported as lies**;
+  Python builtins (`locals()`, …) were incomplete; tutorial
+  narrative above a doc fence ("Here's an example:") is now
+  illustrative. Measured: svelte default 8→6, rich doc-ref 36→17
+  (residue: 17 translated READMEs, English-only markers).
+
+### Added
+- `docs/roadmap.md`: the evidence-ordered product plan with
+  falsifiers, non-goals, and how to propose work.
 - **A checker that raised was silently skipped, and the scan still reported
   `clean`.** `_scan_one` caught `Exception` and continued, so a crash was
   indistinguishable from a checker that found nothing: the summary printed

@@ -71,11 +71,22 @@ class Config:
             enabled = {str(x) for x in data["enable"]}
         elif "enabled" in data:
             enabled = {str(x) for x in data["enabled"]}
+        if enabled is not None:
+            # Unknown ids fail, exactly like --enable: a typo'd id that
+            # silently runs a different set masks drift with a green build.
+            unknown = sorted(e for e in enabled if e not in CHECKERS)
+            if unknown:
+                raise ConfigError(
+                    f"unknown checker id(s) in {cfg_file or 'config'}: "
+                    f"{', '.join(unknown)}. Known: {', '.join(sorted(CHECKERS))}")
         if "disable" in data:
             dis = {str(x) for x in data["disable"]}
-            enabled = (enabled or set(DEFAULT_ENABLED)) - dis
-        if enabled is not None:
-            enabled = {e for e in enabled if e in CHECKERS} or set(DEFAULT_ENABLED)
+            unknown = sorted(d for d in dis if d not in CHECKERS)
+            if unknown:
+                raise ConfigError(
+                    f"unknown checker id(s) in {cfg_file or 'config'}: "
+                    f"{', '.join(unknown)}. Known: {', '.join(sorted(CHECKERS))}")
+            enabled = (enabled if enabled is not None else set(DEFAULT_ENABLED)) - dis
         ignore_dirs = set(DEFAULT_IGNORE_DIRS)
         if "ignore_dirs" in data:
             ignore_dirs |= {str(x) for x in data["ignore_dirs"]}

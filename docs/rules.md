@@ -264,6 +264,16 @@ JavaScript/TypeScript. Commented-out code is covered by
   `/// file:`, `---cut---`) are treated as illustrative. Documentation
   highlight markers (`+++`/`---`) are stripped before identifiers are
   extracted, so an annotated example parses like the code it shows.
+  A block whose immediately preceding prose line is an illustrative
+  marker ("Here's an example:") is illustrative too — tutorial helpers
+  (`do_step(step)`) are user-supplied, not repo claims. The marker set
+  is English: translated docs keep their residue (measured: rich's
+  17 translated READMEs).
+* Metasyntactic call names (`foo()`, `bar()`, `blah()`) in comments are
+  placeholders, never references — same silence class as the `Xxx`
+  convention. The Python builtin set is complete for functions and
+  constants (`locals()`, `format()`, …); the exception hierarchy stays
+  checkable because libraries shadow it (`requests.ConnectionError`).
 * **A partial scan never claims absence for what it did not index.** A
   relative import that resolves *above* the scan root (a monorepo's
   sibling package when scanning `src/lib`, say) stays silent, exactly

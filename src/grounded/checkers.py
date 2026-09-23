@@ -55,7 +55,24 @@ PYTHON_BUILTINS = {
     # Python 2 historical builtins still referenced in old comments/docs
     "execfile", "unicode", "long", "xrange", "raw_input", "basestring",
     "reduce", "apply", "intern", "coerce",
+    # Function/constant builtins the set missed (measured: `locals()` in
+    # rich's README reported as a repo lie). Deliberately NOT the
+    # exception hierarchy: libraries shadow those names with their own
+    # exceptions (`requests.ConnectionError`), so they stay checkable.
+    "all", "any", "ascii", "bin", "breakpoint", "bytes", "bytearray",
+    "chr", "compile", "complex", "delattr", "dir", "eval", "exec",
+    "exit", "quit", "format", "frozenset", "globals", "hash", "help",
+    "hex", "locals", "memoryview", "oct", "ord", "slice", "vars",
+    "aiter", "anext", "__import__", "Ellipsis", "NotImplemented",
+    "copyright", "credits", "license",
 }
+
+# Metasyntactic call names: `foo()`, `bar()`, `blah()` in a comment are
+# the author's "some function", never a reference (seen: svelte's
+# "`foo` in `foo.bar` or `foo()`" reported as a lie). Same silence class
+# as the Xxx convention and the doc/file placeholder lists. Kept to the
+# Jargon-File core: `spam`/`eggs`/`thing` are real names too often.
+_METASYNTACTIC_CALLS = frozenset({"foo", "bar", "baz", "blah", "qux", "quux"})
 
 JS_GLOBALS = {
     "console", "log", "warn", "error", "info", "debug", "assert",
@@ -497,6 +514,8 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue
             if "xxx" in base.lower():
                 continue  # Xxx placeholder convention (protobuf)
+            if base.lower() in _METASYNTACTIC_CALLS:
+                continue  # foo()/bar()/blah(): metasyntactic, never a ref
             if _is_reserved(base, facts.language):
                 continue
             # v2: non-call backticked names are fields/attrs/prose, except
@@ -547,6 +566,8 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue
             if "xxx" in base.lower():
                 continue  # Xxx placeholder convention (protobuf)
+            if base.lower() in _METASYNTACTIC_CALLS:
+                continue  # foo()/bar()/blah(): metasyntactic, never a ref
             if _is_reserved(base, facts.language):
                 continue
             if f"`{full}()`" in text or f"`{base}()`" in text:
@@ -1463,7 +1484,7 @@ def _fence_info_word(info: str) -> str:
 _DOC_CALL = re.compile(r"(?<![A-Za-z0-9_$.])([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)*)\s*\(")
 
 _DOC_PLACEHOLDER_NAMES = {
-    "foo", "bar", "baz", "qux", "quux", "example", "sample", "demo",
+    "foo", "bar", "baz", "blah", "qux", "quux", "example", "sample", "demo",
     "placeholder", "something", "anything", "whatever", "todo",
 }
 
@@ -1680,6 +1701,17 @@ def check_stale_doc_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     for lang, start, end in _doc_fence_blocks(facts.lines):
         block = facts.lines[start - 1:end - 1]
         if _doc_block_is_illustrative(block):
+            continue
+        # Tutorial narrative lives outside the fence ("Here's an example:"
+        # directly above the block, with user-supplied helpers like
+        # `do_step(step)` inside — measured: rich's README). Only the
+        # immediately preceding non-blank line counts: a wider window
+        # would let distant prose launder real staleness. (start is the
+        # first content line, so the fence itself is start - 1.)
+        k = start - 3
+        while k >= 0 and not facts.lines[k].strip():
+            k -= 1
+        if k >= 0 and _ILLUSTRATIVE.search(facts.lines[k]):
             continue
         known = _doc_block_known(block, lang) | file_known
         if lang == "javascript" and declared is None:

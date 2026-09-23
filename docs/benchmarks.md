@@ -123,6 +123,23 @@ on a line opening with an inline `/** @param ... */`. The single
 survivor is a true positive: `strip_link` is defined in
 `tests/css/test.ts` and referenced nowhere in the tree.
 
+### Follow-up round (measured 2026-09-23)
+
+Re-scanned with the repair round plus three new silences (metasyntactic
+calls, completed Python builtins, narrative-framed doc blocks):
+
+| Tree | Before | After | Residue |
+| --- | ---: | ---: | --- |
+| svelte, default set | 8 (6 smells, 2 lies) | **6** (smells only) | `fragile-anchor` smells, legitimate by contract |
+| rich, `stale-doc-ref` | 36 | **17** | all `do_step()` in 17 translated READMEs (English framing only) |
+
+The 2 svelte lies were `` `foo` ``/`` `blah` `` metasyntactic names.
+The 19 removed rich findings were `locals()` (missing builtin, now in
+the set) and `do_step()` under "Here's an example:" (narrative frame).
+The remaining 17 are the translation boundary: the marker set is
+English, translated docs keep their residue. Documented in
+`docs/rules.md`, not chased.
+
 ### OmniRoute, `src/lib` (default checkers)
 
 | Checker | Before | After |

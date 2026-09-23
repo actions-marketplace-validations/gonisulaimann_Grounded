@@ -4004,6 +4004,24 @@ class TestRepairRound(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 Config.load(Path(td))
 
+    def test_config_unknown_ids_raise(self):
+        from grounded.config import ConfigError
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "grounded.toml").write_text('enable = ["stale-symobl"]\n', encoding="utf-8")
+            with self.assertRaises(ConfigError) as cm:
+                Config.load(root)
+            self.assertIn("stale-symobl", str(cm.exception))
+            (root / "grounded.toml").write_text('disable = ["nope"]\n', encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                Config.load(root)
+
+    def test_config_enable_empty_means_none(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "grounded.toml").write_text('enable = []\n', encoding="utf-8")
+            self.assertEqual(Config.load(root).enabled, set())
+
     def test_cli_config_errors_exit_2(self):
         import contextlib
         import io
@@ -4213,6 +4231,54 @@ class TestRepairRound(unittest.TestCase):
                 '@@ -0,0 +1 @@\n+X = 1\n')
         hunks = _parse_unified0(diff)
         self.assertIn("caf\u00e9.py", hunks)
+
+    def test_metasyntactic_calls_are_silent(self):
+        # `foo()`/`blah()` in comments are placeholders, never references
+        # (seen: svelte's "`foo` in `foo.bar` or `foo()`" reported as lies).
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# The `foo` in `foo.bar` or `foo()` is safe.\n"
+                "# Calls blah() when done.\nX = 1\n", encoding="utf-8")
+            findings, _, _ = scan_root(root, Config())
+            syms = [f for f in findings if f.checker == "stale-symbol-ref"]
+            self.assertEqual(syms, [])
+
+    def test_missing_builtin_locals_is_silent(self):
+        from grounded.scanner import scan_root
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text(
+                "# Calls locals() for debugging.\nX = 1\n", encoding="utf-8")
+            findings, _, _ = scan_root(root, Config())
+            syms = [f for f in findings if f.checker == "stale-symbol-ref"]
+            self.assertEqual(syms, [])
+
+    def test_doc_example_framed_as_example_is_silent(self):
+        # Narrative above the fence marks the block illustrative
+        # (seen: rich's "Here's an example:" + do_step(step)).
+        from grounded.cli import main
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "README.md").write_text(
+                "Here's an example:\n\n```python\nfrom pkg import track\n\n"
+                "do_step(step)\n```\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["scan", str(root), "--no-color", "--enable", "stale-doc-ref"])
+            self.assertEqual(rc, 0)
+            # without the framing line the same call still fires
+            (root / "README.md").write_text(
+                "Usage:\n\n```python\nfrom pkg import track\n\ndo_step(step)\n```\n",
+                encoding="utf-8")
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                rc2 = main(["scan", str(root), "--no-color", "--enable", "stale-doc-ref"])
+            self.assertEqual(rc2, 1)
+            self.assertIn("do_step", buf2.getvalue())
 
     def test_fix_walk_ignores_symlinked_dirs(self):
         import time
