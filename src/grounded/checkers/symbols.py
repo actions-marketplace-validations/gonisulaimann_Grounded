@@ -7,6 +7,7 @@ import re
 from ..models import FileFacts, Finding
 from ..repo_index import RepoIndex
 from ._shared import (
+    JS_GLOBALS,
     REFERENCE_VERBS,
     _BACKTICK_SYMBOL,
     _DUNDER_OK,
@@ -35,6 +36,29 @@ from ._shared import (
 
 # ---------------------------------------------------------------- checkers
 
+def _foreign_root(root: str, index: RepoIndex) -> bool:
+    """A lowercase dotted claim is about the repo only when its root is
+    something the repo owns: a symbol it defines, a module file or package it contains,
+    or a top-level entry. `jax.numpy.select()` and `nn.utils.weight_norm()`
+    in a comment name other libraries' APIs (seen: transformers, where
+    `nn`/`jax` were not imported in the commenting file)."""
+    if not root[:1].islower():
+        # Class-like roots (a `TestCase` subclass and its method) are usually the repo's
+        # own, renamed or deleted: keep judging them. Foreign namespaces
+        # in comments are module aliases, lowercase by convention.
+        return False
+    if root in index.all_symbols or root in index.top_names or root in index.py_prefixes:
+        return False
+    stems = index.__dict__.get("_module_stems")
+    if stems is None:
+        stems = set()
+        for rel in index.rel_paths:
+            parts = rel.lstrip("./").split("/")
+            stems.update(p.rsplit(".", 1)[0] for p in parts)
+        index.__dict__["_module_stems"] = stems
+    return root not in stems
+
+
 def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     """Backticked calls, verb-anchored bare calls, and dunder typos only.
 
@@ -52,7 +76,10 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         if c.line in dead and c.end_line in dead:
             continue  # commented-out code block, not a reference
         texts.append((c.text, c.line, c.end_line))
-    for f in facts.functions:
+    # Go doc comments are the `//` lines above a func, already scanned one
+    # line each as comments; scanning the joined doc again reported every
+    # claim in them twice, at two different lines.
+    for f in (facts.functions if facts.language != "go" else ()):
         if f.docstring:
             scrubbed = _scrub_docstring(f.docstring, facts.language)
             if scrubbed.strip():
@@ -128,6 +155,10 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue  # variant-family member (je_ wrappers, _withSecret)
             if index.has_symbol(name) or index.has_symbol(base):
                 continue
+            if "." in name and facts.language == "javascript" and root in JS_GLOBALS:
+                continue  # `Math.random`, `Symbol.iterator`: platform API
+            if "." in name and _foreign_root(root, index):
+                continue  # `jax.numpy.select()`: a namespace this repo does not own
             if "." in name and not is_call:
                 continue  # dotted non-call that survived: path/module prose
             hint = _suggest(base, index)
@@ -197,6 +228,10 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             if _appears_as_suffix(base, code, minimum=4):
                 continue
             if index.has_symbol(full) or index.has_symbol(base):
+                continue
+            if "." in full and facts.language == "javascript" and root in JS_GLOBALS:
+                continue
+            if "." in full and _foreign_root(root, index):
                 continue
             hint = _suggest(base, index)
             findings.append(Finding(

@@ -154,6 +154,10 @@ class RepoIndex:
         self.file_dynamic_ns: set[str] = set()
         # Files that register modules at runtime (see _REGISTERS_MODULES).
         self.file_registers_modules: set[str] = set()
+        # Modules that replace themselves in sys.modules
+        # (`sys.modules[__name__] = _LazyModule(...)`): their attribute
+        # surface is whatever the replacement object serves.
+        self.file_replaces_self: set[str] = set()
         self.file_export_stars: dict[str, list[str]] = {}
         # Files with a bare `export *` (external re-export): export set unknown.
         self.file_export_unknown: set[str] = set()
@@ -270,7 +274,7 @@ class RepoIndex:
     # builds silently drop it (pinned by TestParallelIndexBuild).
     _PER_FILE_DICTS = ("file_symbols", "file_imports", "file_attr_uses",
                        "file_exports", "file_stars", "file_export_stars")
-    _PER_FILE_SETS = ("file_esm", "file_dynamic_ns", "file_registers_modules",
+    _PER_FILE_SETS = ("file_esm", "file_dynamic_ns", "file_registers_modules", "file_replaces_self",
                       "file_export_unknown", "parse_failed")
     _NAME_SETS = ("py_symbols", "js_symbols", "go_symbols", "c_symbols")
 
@@ -421,6 +425,7 @@ class RepoIndex:
     # Seen: requests/packages.py aliases `requests.packages.urllib3.*` onto
     # urllib3, and `from requests.packages.urllib3.poolmanager import ...`
     # read as a missing module.
+    _REPLACES_SELF = re.compile(r"sys\.modules\s*\[\s*__name__\s*\]\s*=(?!=)")
     _REGISTERS_MODULES = re.compile(
         r"sys\.modules\s*(?:\[[^\]\n]+\]\s*=(?!=)|\.\s*(?:update|setdefault)\s*\()")
 
@@ -458,10 +463,13 @@ class RepoIndex:
             self.file_dynamic_ns.add(rel)
         if suffix == ".py" and self._REGISTERS_MODULES.search(text):
             self.file_registers_modules.add(rel)
+            if self._REPLACES_SELF.search(text):
+                self.file_replaces_self.add(rel)
         if rebuild:
             self._rebuild_unions()
 
-    _LAZY_DERIVED = ("_underscore_suffixes", "_dunder_symbols", "_dunder_typo_memo")
+    _LAZY_DERIVED = ("_underscore_suffixes", "_dunder_symbols", "_dunder_typo_memo",
+                     "_module_stems")
 
     def _rebuild_unions(self) -> None:
         # Derived lookups follow all_symbols: drop them so LSP edits that
@@ -575,6 +583,7 @@ class RepoIndex:
         self.file_esm.discard(rel)
         self.file_dynamic_ns.discard(rel)
         self.file_registers_modules.discard(rel)
+        self.file_replaces_self.discard(rel)
         self.file_attr_uses.pop(rel, None)
         self.file_stars.pop(rel, None)
         self.file_exports.pop(rel, None)
@@ -703,12 +712,12 @@ class RepoIndex:
                     self._record(self.js_symbols, m.group(1), rel)
                     break
             em = re.match(
-                r"^\s*export\s+(?:async\s+)?(?:function\*?\s+|class\s+|"
-                r"(?:const|let|var)\s+|(?:abstract\s+class\s+)|"
-                r"(?:interface|type|enum)\s+)([A-Za-z_$][A-Za-z0-9_$]*)", line)
+                r"^\s*export\s+(?:declare\s+)?(?:async\s+)?(?:function\*?\s+|class\s+|"
+                r"const\s+enum\s+|(?:const|let|var)\s+|(?:abstract\s+class\s+)|"
+                r"(?:opaque\s+type|interface|type|enum|namespace|module)\s+)([A-Za-z_$][A-Za-z0-9_$]*)", line)
             if em:
                 self.file_exports.setdefault(rel, set()).add(em.group(1))
-                if not re.match(r"^\s*export\s+(?:interface|type)\b", line):
+                if not re.match(r"^\s*export\s+(?:opaque\s+)?(?:interface|type)\b", line):
                     # Value export (enum counts: it emits runtime code).
                     # Pure type exports are erased and prove nothing about
                     # the runtime module system.

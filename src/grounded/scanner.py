@@ -292,10 +292,14 @@ def collect_files(root: Path, config: Config, include_claim_surfaces: bool = Fal
 # indexed (other files may reference them); only their own findings are
 # withheld. Deliberately narrow: `tests/` alone is code, not data.
 _FIXTURE_SEGMENTS = frozenset({"fixtures", "fixture", "__fixtures__", "testdata",
-                               "test_data", "test-data", "__snapshots__"})
+                               "test_data", "test-data", "__snapshots__",
+                               "__testfixtures__", "testfixtures", "__mocks__"})
 _TEST_ROOTS = frozenset({"tests", "test", "testing", "__tests__", "spec", "specs"})
 _TEST_DATA_SEGMENTS = frozenset({"data", "cases", "format", "samples", "inputs",
-                                 "outputs", "expected"})
+                                 "outputs", "expected", "input", "snapshot", "snapshots"})
+# Under a test root, `input.js` / `output.ts` / `expected.py` are
+# transformer fixtures (turbopack's tests/analyzer/**/input.js).
+_TEST_DATA_STEMS = frozenset({"input", "output", "expected", "actual"})
 
 
 def is_fixture_path(rel: str) -> bool:
@@ -315,6 +319,8 @@ def is_fixture_path(rel: str) -> bool:
         stem = all_parts[-1].rsplit(".", 1)[0]
         if any(q.startswith("broken") for q in below + [stem]):
             return True
+        if stem in _TEST_DATA_STEMS or stem.split(".")[-1] in _TEST_DATA_STEMS:
+            return True  # `input.js`, `with-imports.input.tsx`
     return False
 
 
@@ -371,7 +377,8 @@ def _scan_one(args: tuple[str, str, list[str]]) -> tuple[FileFacts | None, list[
             # reads exactly like a clean file in every summary, so record it
             # and let the caller fail instead of reporting `clean`.
             errors.append(CheckerError(checker_id, rel, f"{type(exc).__name__}: {exc}"))
-    facts.__dict__.pop("_comment_line_map", None)  # checker-local cache, not a fact
+    for cache in ("_comment_line_map", "_windows_context"):
+        facts.__dict__.pop(cache, None)  # checker-local caches, not facts
     return facts, findings, errors
 
 
@@ -540,9 +547,17 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
         # Workers get the index without its text buffers: each file's text
         # already travels in its own payload, and the few checkers that
         # need another file's raw text read it on demand (text_of).
-        with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker,
-                                 initargs=(index.worker_copy(),)) as pool:
-            results = list(pool.map(_scan_one, payloads, chunksize=chunksize))
+        from concurrent.futures.process import BrokenProcessPool
+        try:
+            with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker,
+                                     initargs=(index.worker_copy(),)) as pool:
+                results = list(pool.map(_scan_one, payloads, chunksize=chunksize))
+        except (OSError, BrokenProcessPool):
+            # A worker died (OOM killer, sandbox) or processes cannot be
+            # spawned: finish serially rather than lose the scan. Checkers
+            # are pure, so the result is identical.
+            _INDEX = index
+            results = [_scan_one(p) for p in payloads]
     for facts, file_findings, file_errors in results:
         if facts is None:
             continue

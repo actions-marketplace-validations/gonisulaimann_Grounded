@@ -1,0 +1,5 @@
+{"enable": null, "expect": [
+  {"checker": "stale-symbol-ref", "path": "go/m.go", "line": 4, "contains": "NewRealPodControl"},
+  {"checker": "stale-symbol-ref", "path": "py/models.py", "line": 5, "contains": "UserProfile"},
+  {"checker": "stale-symbol-ref", "path": "js/r.js", "line": 2, "contains": "renderLegacyRoot"}
+]}
