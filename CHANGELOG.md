@@ -23,6 +23,12 @@ All notable changes to `grounded` are documented here. Format follows
   layout explanations (`my`-prefixed package nouns, `x`/`y`/`z` stems) are
   placeholders unless the file really exists (corpus:
   `adv-metasyntactic-path`, with a real stale path as positive control).
+- **Runtime module aliases read as missing modules.** An ancestor module
+  that writes `sys.modules` (requests' `packages.py` aliasing
+  `requests.packages.urllib3.*`) now makes dotted imports below it
+  unknowable instead of a `stale-import` lie. requests: 1 lie -> 0
+  (corpus: `adv-sys-modules-alias`, with a missing sibling module as
+  positive control).
 - **History notes and ticket-anchored blocks reported as lies** (this
   round: httpx, preact — see below).
 - **Recall harness phantom misses on case-insensitive filesystems.**

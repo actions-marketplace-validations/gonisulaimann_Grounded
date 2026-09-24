@@ -150,6 +150,8 @@ class RepoIndex:
         self.file_esm: set[str] = set()
         # Files with dynamic namespace injection (see _DYNAMIC_NS).
         self.file_dynamic_ns: set[str] = set()
+        # Files that register modules at runtime (see _REGISTERS_MODULES).
+        self.file_registers_modules: set[str] = set()
         self.file_export_stars: dict[str, list[str]] = {}
         # Files with a bare `export *` (external re-export): export set unknown.
         self.file_export_unknown: set[str] = set()
@@ -301,6 +303,13 @@ class RepoIndex:
     # names (`globals().update(...)` in __init__). Files flagged here make
     # `from . import X` unknowable for their package: suppress, don't guess.
     _DYNAMIC_NS = re.compile(r"globals\(\)\s*\.\s*update\s*\(")
+    # Runtime module registration: `sys.modules[name] = mod` (or update /
+    # setdefault) creates importable dotted paths with no file behind them.
+    # Seen: requests/packages.py aliases `requests.packages.urllib3.*` onto
+    # urllib3, and `from requests.packages.urllib3.poolmanager import ...`
+    # read as a missing module.
+    _REGISTERS_MODULES = re.compile(
+        r"sys\.modules\s*(?:\[[^\]\n]+\]\s*=(?!=)|\.\s*(?:update|setdefault)\s*\()")
 
     @staticmethod
     def _attr_pairs(text: str) -> set[tuple[str, str]]:
@@ -334,6 +343,8 @@ class RepoIndex:
             self.file_attr_uses[rel] = self._attr_pairs(text)
         if self._DYNAMIC_NS.search(text):
             self.file_dynamic_ns.add(rel)
+        if suffix == ".py" and self._REGISTERS_MODULES.search(text):
+            self.file_registers_modules.add(rel)
         if rebuild:
             self._rebuild_unions()
 
@@ -444,6 +455,7 @@ class RepoIndex:
         self.file_imports.pop(rel, None)
         self.file_esm.discard(rel)
         self.file_dynamic_ns.discard(rel)
+        self.file_registers_modules.discard(rel)
         self.file_attr_uses.pop(rel, None)
         self.file_stars.pop(rel, None)
         self.file_exports.pop(rel, None)

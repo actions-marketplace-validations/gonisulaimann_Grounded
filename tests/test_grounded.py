@@ -3879,6 +3879,32 @@ class TestDirectoryScanScope(unittest.TestCase):
             self.assertFalse(_is_placeholder_path(ref), ref)
 
 
+class TestRuntimeModuleRegistration(unittest.TestCase):
+    """`sys.modules[...] = mod` makes dotted imports resolvable with no
+    file behind them (requests.packages). Silence needs that evidence in an
+    ancestor module; without it a missing module is still a lie."""
+
+    def _scan(self, alias_src: str) -> list:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+            (root / "pkg" / "packages.py").write_text(alias_src, encoding="utf-8")
+            (root / "use.py").write_text(
+                "from pkg.packages.urllib3.poolmanager import PoolManager\n", encoding="utf-8")
+            findings, _, _ = scan_root(root, Config())
+            return [f for f in findings if f.checker == "stale-import"]
+
+    def test_registered_alias_is_silent(self):
+        for src in ('import sys\nsys.modules["pkg.packages.urllib3"] = object()\n',
+                    "import sys\nsys.modules.update(extra)\n",
+                    'import sys\nsys.modules.setdefault("x", m)\n'):
+            self.assertEqual(self._scan(src), [], src)
+
+    def test_without_registration_still_fires(self):
+        self.assertEqual(len(self._scan("import sys\nif sys.modules['x'] == 1:\n    pass\n")), 1)
+
+
 class TestGhostExportSuppression(unittest.TestCase):
     def _scan(self, root):
         return scan_root(root, Config(enabled={"ghost-export"}))[0]

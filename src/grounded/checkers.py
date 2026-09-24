@@ -821,6 +821,8 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 ))
                 break
             if not existing:
+                if _registered_at_runtime(index, targets):
+                    break  # an ancestor module fills sys.modules: unknowable
                 findings.append(Finding(
                     path=facts.path, line=lineno, end_line=lineno,
                     checker="stale-import", severity="lie",
@@ -854,6 +856,21 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 confidence=0.8,
             ))
     return _dedupe(findings)
+
+
+def _registered_at_runtime(index: RepoIndex, targets: list[str]) -> bool:
+    """Whether an ancestor module of a missing import target writes
+    `sys.modules`, which makes dotted paths below it importable with no
+    file behind them (requests.packages -> urllib3)."""
+    for t in targets:
+        stem = t[:-len("/__init__.py")] if t.endswith("/__init__.py") else t[:-3]
+        parts = stem.split("/")
+        for i in range(len(parts) - 1, 0, -1):
+            anc = "/".join(parts[:i])
+            if (anc + ".py" in index.file_registers_modules
+                    or anc + "/__init__.py" in index.file_registers_modules):
+                return True
+    return False
 
 
 def _resolve_py_base(claimer: str, level: int) -> list[str]:
