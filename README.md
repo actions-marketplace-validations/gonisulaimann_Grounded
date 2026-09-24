@@ -36,7 +36,7 @@ zero dependencies, offline, deterministically.
     <a href="https://clawhub.ai/gonisulaimann/grounded"><img src="https://img.shields.io/badge/Clawhub-darkred?style=flat&label=OpenClaw" alt="OpenClaw Skill"></a>
     <br/>
     <a href="https://www.ko-fi.com/gonisulaiman"><img src="https://srv-cdn.himpfen.io/badges/kofi/kofi-flat.svg" alt="Ko-Fi"></a>
-    <img src="https://img.shields.io/badge/Scan%20Latency-0.6ms-blueviolet" alt="0.6ms Latency">
+    <img src="https://img.shields.io/badge/Per--file%20recheck-0.6ms-blueviolet" alt="0.6 ms per-file recheck (in-process, editor/LSP)">
     <img src="https://img.shields.io/badge/Dependencies-0%20(stdlib)-brightgreen" alt="Zero Dependencies">
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <br/>
