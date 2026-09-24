@@ -1,0 +1,1 @@
+{"enable": ["stale-cli-flag"], "expect": [{"checker": "stale-cli-flag", "path": "docs/usage.rst", "line": 7, "contains": "--listen"}]}

@@ -1514,6 +1514,8 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue
             if index.has_exact_path(ref) or index.exists_near(ref, facts.path):
                 continue
+            if _passes_through_file(index, ref):
+                continue  # `pyproject.toml/.coveragerc.toml`: alternatives, not a path
             # "<project>'s path/to/file" names another project's tree
             # (seen: vite's "Copy from rolldown's packages/rolldown/src/...",
             # whose first segment collides with vite's own `packages/`).
@@ -1550,6 +1552,20 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             _scan(_drop_literal_blocks(f.docstring), f.docstring_lineno or f.lineno,
                   f.docstring_lineno or f.lineno, "Docstring")
     return _dedupe(findings)
+
+
+def _passes_through_file(index: RepoIndex, ref: str) -> bool:
+    """A path whose directory part names an existing *file* cannot exist;
+    prose uses the slash for alternatives ("in pyproject.toml/.coveragerc.toml",
+    seen: coverage.py's tests)."""
+    parts = ref.strip("./").split("/")
+    for i in range(1, len(parts)):
+        try:
+            if (index.root / "/".join(parts[:i])).is_file():
+                return True
+        except OSError:
+            return False
+    return False
 
 
 def _drop_literal_blocks(doc: str) -> str:
@@ -2587,6 +2603,13 @@ def _mock_split(path: str) -> tuple[str, str] | None:
 
 
 def _mock_provided(index: RepoIndex, target: str, symbol: str) -> bool:
+    if target.endswith("__init__.py"):
+        # A package provides its submodules as attributes once imported
+        # (`from build import _ctx; patch.object(_ctx, ...)`, seen:
+        # pypa/build's src/build/_ctx.py).
+        pkg = target[: -len("__init__.py")]
+        if pkg + symbol + ".py" in index.rel_paths or pkg + symbol + "/__init__.py" in index.rel_paths:
+            return True
     provided = symbol in _effective_symbols(index, target)
     dynamic = ("__getattr__" in index.file_symbols.get(target, set())
                or target in index.file_dynamic_ns)
@@ -3079,6 +3102,12 @@ def check_stale_cli_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     return _dedupe(findings)
 
 
+def check_stale_cli_flag(facts: FileFacts, index: RepoIndex) -> list[Finding]:
+    """See grounded/cli_flags.py (kept in its own module)."""
+    from .cli_flags import check_stale_cli_flag as _impl
+    return _impl(facts, index)
+
+
 def check_unclosed_fence(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     """Fenced code blocks that never close, judged by CommonMark.
 
@@ -3179,9 +3208,11 @@ CHECKERS = {
     "stale-mock-ref": check_stale_mock_ref,
     "phantom-package": check_phantom_package,
     "stale-cli-ref": check_stale_cli_ref,
+    "stale-cli-flag": check_stale_cli_flag,
 }
 
 CHECKER_DESCRIPTIONS = {
+    "stale-cli-flag": "Docs invoke one of this repo's own programs with a long flag no argparse/click/pytest/flag/cobra/commander definition in the repo declares (experimental, opt-in).",
     "stale-symbol-ref": "Comment names a call (foo() or `foo()`) that is not defined, imported, or used in-file (v2: import- and scope-aware).",
     "stale-file-ref": "Comment claims a path inside this repo's tree that does not exist (namespace- and placeholder-aware).",
     "stale-import": "Resolvable `from M import N` where the module is missing or N is not defined, re-exported, or a submodule there.",
@@ -3203,7 +3234,7 @@ CHECKER_DESCRIPTIONS = {
 # can prove the checker ran — a checker that raises also returns no findings
 # — so graduation requires a checker-error count of 0 (exit code 3).
 OPT_IN_CHECKERS = frozenset({"stale-doc-ref", "stale-contract-ref", "ghost-export",
-                             "phantom-package", "stale-cli-ref"})
+                             "phantom-package", "stale-cli-ref", "stale-cli-flag"})
 DEFAULT_ENABLED = frozenset(CHECKERS) - OPT_IN_CHECKERS
 
 # Intentionally unimplemented: docstring contracts and commented-out code

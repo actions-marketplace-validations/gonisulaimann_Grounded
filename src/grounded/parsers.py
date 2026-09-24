@@ -672,6 +672,10 @@ def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
         return parse_c(path, rel, text)
     if suffix in {".md", ".markdown", ".mdc"}:
         return parse_markdown(path, rel, text)
+    if suffix == ".rst" or (suffix == ".txt" and re.search(r"(^|/)docs?/", rel)):
+        # reStructuredText: lines only (stale-cli-flag reads `$ ` prompts
+        # and ``literal`` spans); no other checker reads rst.
+        return FileFacts(path=rel, language="rst", lines=text.splitlines())
     if suffix == ".toml" or (suffix == ".json" and path.name == "package.json"):
         return parse_config(path, rel, text)
     return None

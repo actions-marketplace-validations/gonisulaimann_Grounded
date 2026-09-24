@@ -224,7 +224,9 @@ def collect_files(root: Path, config: Config, include_claim_surfaces: bool = Fal
         for e in entries:
             name = e.name
             if e.is_dir():
-                if name in config.ignore_dirs or name.startswith(".") and name in (".git", ".hg", ".svn"):
+                if name in config.ignore_dirs and not _is_source_package(e, name, config):
+                    continue
+                if name.startswith(".") and name in (".git", ".hg", ".svn"):
                     continue
                 # always skip hidden cache-ish dirs
                 if name in {".git", "__pycache__", "node_modules", ".venv"}:
@@ -241,12 +243,19 @@ def collect_files(root: Path, config: Config, include_claim_surfaces: bool = Fal
                 if name in config.ignore_files:
                     continue
                 suffixes = DEFAULT_SUFFIXES
-                if {"stale-doc-ref", "stale-cli-ref", "unclosed-fence"} & set(
+                if {"stale-doc-ref", "stale-cli-ref", "unclosed-fence", "stale-cli-flag"} & set(
                         config.enabled or ()):
                     # Markdown is collected only when one of its checkers
                     # runs. Default configs always enable unclosed-fence, so
                     # it participates on every default scan.
                     suffixes = DEFAULT_SUFFIXES | {".md", ".markdown", ".mdc"}
+                if "stale-cli-flag" in (config.enabled or ()):
+                    # reST, including Sphinx sources kept as .txt under
+                    # docs/ (seen: django).
+                    suffixes = suffixes | {".rst"}
+                    if e.suffix.lower() == ".txt" and ("/docs/" in f"/{e.relative_to(root).as_posix()}"
+                                                       or "/doc/" in f"/{e.relative_to(root).as_posix()}"):
+                        suffixes = suffixes | {".txt"}
                 want_cfg = "stale-entrypoint" in (config.enabled or ())
                 if include_claim_surfaces:
                     # Rename mapping reads docs and manifests; query paths
@@ -307,6 +316,24 @@ def is_fixture_path(rel: str) -> bool:
         if any(q.startswith("broken") for q in below + [stem]):
             return True
     return False
+
+
+# Default ignore names that are also common package names: `coverage/` is
+# coverage.py's source package, `build/` is pypa/build's (both used to be
+# skipped wholesale as build output). A directory holding `__init__.py` is
+# a package, not output, unless the user ignored the name explicitly.
+_OUTPUT_NAMES_THAT_MAY_BE_PACKAGES = frozenset({"coverage", "build", "dist", "out"})
+
+
+def _is_source_package(path: Path, name: str, config: Config) -> bool:
+    if name not in _OUTPUT_NAMES_THAT_MAY_BE_PACKAGES:
+        return False
+    if name in getattr(config, "explicit_ignore_dirs", ()):
+        return False
+    try:
+        return (path / "__init__.py").is_file()
+    except OSError:
+        return False
 
 
 _INDEX: RepoIndex | None = None
