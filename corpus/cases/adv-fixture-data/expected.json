@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-import", "path": "src/app.js", "line": 1, "contains": "./gone.js"}]}

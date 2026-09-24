@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-import", "path": "src/use.js", "line": 3, "contains": "fastGlob"}]}

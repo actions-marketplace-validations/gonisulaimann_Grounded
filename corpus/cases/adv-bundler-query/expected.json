@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-import", "path": "src/main.js", "line": 4, "contains": "missing-worker"}]}

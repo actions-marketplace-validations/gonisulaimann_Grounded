@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-symbol-ref", "path": "src/io.c", "line": 9, "contains": "rioClearError"}]}

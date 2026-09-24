@@ -1,0 +1,5 @@
+{"enable": null, "expect": [
+  {"checker": "stale-import", "path": "src/pkg/use.py", "line": 4, "contains": "MissingModel"},
+  {"checker": "stale-import", "path": "src/pkg/use.py", "line": 5, "contains": "pkg.gone"},
+  {"checker": "stale-file-ref", "path": "src/pkg/use.py", "line": 8, "contains": "src/pkg/settings.py"}
+]}

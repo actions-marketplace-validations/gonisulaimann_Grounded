@@ -598,10 +598,31 @@ class RepoIndex:
                 self.file_exports.setdefault(rel, set()).add("default")
                 self.file_esm.add(rel)
         # export { a, b as c } / export type { T } / export * from './x'
+        # export const { a, b: c, ...rest } = obj / export const [x, y] = arr.
+        # Destructured value exports bind every target name (seen: prettier's
+        # `export const { optionCategories, fastGlob, ... } = sharedWithCli`
+        # reported as 9 stale imports).
+        for m in re.finditer(r"export\s+(?:const|let|var)\s*([{\[])([^}\]]*)[}\]]\s*=", text):
+            self.file_esm.add(rel)
+            body = re.sub(r"//[^\n]*|/\*.*?\*/", "", m.group(2), flags=re.S)
+            for part in body.split(","):
+                part = part.strip()
+                if part.startswith("..."):
+                    part = part[3:]
+                if m.group(1) == "{" and ":" in part:
+                    part = part.split(":", 1)[1]
+                name = part.split("=", 1)[0].strip()
+                if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name or ""):
+                    self._record(self.js_symbols, name, rel)
+                    self.file_exports.setdefault(rel, set()).add(name)
         for m in re.finditer(r"export\s+(?:(type)\s+)?\{\s*([^}]+)\}", text):
             if not m.group(1):
                 self.file_esm.add(rel)
-            for part in m.group(2).split(","):
+            # Comments inside the braces may contain commas
+            # (seen: prettier's `// Shared with <file>, will remove later`):
+            # strip them before splitting, or the next name is lost.
+            names = re.sub(r"//[^\n]*|/\*.*?\*/", "", m.group(2), flags=re.S)
+            for part in names.split(","):
                 part = part.strip()
                 if not part:
                     continue
@@ -655,6 +676,91 @@ class RepoIndex:
             last = name.split(".")[-1]
             if last in self.all_symbols:
                 return True
+        return False
+
+    def is_gitignored(self, rel: str) -> bool:
+        """Whether rel matches the project's root `.gitignore`.
+
+        A missing file the repo itself ignores is a build or test artifact
+        (setuptools-scm's `_version.py`, generated clients), written after
+        checkout: its absence in a snapshot is not evidence of rot. Root
+        file only, `!` negations respected conservatively (any negation that
+        matches means "not ignored"). Suppression-only.
+        """
+        import fnmatch
+        rel = rel.lstrip("./")
+        parts = rel.split("/")
+        hit = False
+        # Every .gitignore from the root down to the file's directory, each
+        # matching paths relative to its own directory (git's semantics,
+        # minus nothing that could *add* a finding: this only suppresses).
+        for depth in range(0, len(parts)):
+            base = "/".join(parts[:depth])
+            pats = self._gitignore_patterns(base)
+            if not pats:
+                continue
+            sub = parts[depth:]
+            prefixes = ["/".join(sub[:i]) for i in range(1, len(sub) + 1)]
+            for neg, anchored, dir_only, pat in pats:
+                cands = prefixes[:-1] if dir_only else prefixes
+                ok = False
+                for c in cands:
+                    tail = c.split("/")[-1]
+                    if anchored or "/" in pat:
+                        ok = fnmatch.fnmatchcase(c, pat)
+                    else:
+                        ok = fnmatch.fnmatchcase(tail, pat)
+                    if ok:
+                        break
+                if ok:
+                    if neg:
+                        return False
+                    hit = True
+        return hit
+
+    def _gitignore_patterns(self, base: str = "") -> list[tuple[bool, bool, bool, str]]:
+        cache = getattr(self, "_gitignore_cache", None)
+        if not isinstance(cache, dict):
+            cache = self._gitignore_cache = {}
+        if base in cache:
+            return cache[base]
+        out: list[tuple[bool, bool, bool, str]] = []
+        try:
+            raw = (self.root / base / ".gitignore").read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            raw = ""
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            neg = line.startswith("!")
+            line = line[1:] if neg else line
+            dir_only = line.endswith("/")
+            line = line.rstrip("/")
+            anchored = line.startswith("/")
+            line = line.lstrip("/").replace("**/", "")
+            if line:
+                out.append((neg, anchored, dir_only, line))
+        cache[base] = out
+        return out
+
+    def exists_near(self, ref: str, claimer: str) -> bool:
+        """Whether ref names a real file relative to one of the claiming
+        file's ancestor directories (below the root). Examples and nested
+        packages write paths relative to themselves: grpc-go's
+        `examples/route_guide/server/server.go` names
+        `testdata/route_guide_db.json`, which lives in
+        `examples/route_guide/testdata/`."""
+        r = ref.strip().strip("'\"`").lstrip("./").split("?")[0].split("#")[0]
+        if not r:
+            return False
+        parts = claimer.split("/")[:-1]
+        for i in range(len(parts), 0, -1):
+            try:
+                if (self.root.joinpath(*parts[:i]) / r).exists():
+                    return True
+            except OSError:
+                return False
         return False
 
     def has_exact_path(self, ref: str) -> bool:

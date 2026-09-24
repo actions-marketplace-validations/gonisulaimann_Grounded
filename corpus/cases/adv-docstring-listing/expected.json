@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-file-ref", "path": "src/pkg/rewrite.py", "line": 2, "contains": "src/pkg/resolver.py"}]}
