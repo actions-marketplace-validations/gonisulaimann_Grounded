@@ -1,0 +1,59 @@
+name: Precision gate
+
+# Every lie/drift the default checkers report on 25 pinned real repos must be
+# classified in bench/precision/ledger.json. Unlabeled findings, new false
+# positives, and vanished true positives fail. See bench/precision.py.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "bench/precision.py"
+      - "bench/precision/**"
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+jobs:
+  precision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Cache pinned repos
+        uses: actions/cache@v4
+        with:
+          path: .precision-repos
+          key: precision-repos-${{ hashFiles('bench/precision/repos.json') }}
+      - name: Precision gate
+        run: python bench/precision.py --json precision-report.json
+      - name: Report
+        if: always()
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          p = pathlib.Path("precision-report.json")
+          if not p.exists():
+              print("### Precision gate\n\nNo report (the gate did not finish).")
+              raise SystemExit
+          r = json.loads(p.read_text())
+          print("### Precision gate\n")
+          print(f"Overall precision **{r['precision']:.3f}** (TP {r['tp']}, FP {r['fp']}).\n")
+          print("| checker | TP | FP | unlabeled |\n|---|---|---|---|")
+          for name, c in sorted(r["per_checker"].items()):
+              print(f"| `{name}` | {c['tp']} | {c['fp']} | {c['unlabeled']} |")
+          for label, key in (("Unlabeled", "unlabeled"), ("Vanished TP", "vanished_tp")):
+              if r[key]:
+                  print(f"\n**{label}:**\n")
+                  for k in r[key]:
+                      print(f"- `{k}`")
+          EOF
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: precision-report
+          path: precision-report.json

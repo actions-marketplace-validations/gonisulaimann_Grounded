@@ -13,7 +13,31 @@ All notable changes to `grounded` are documented here. Format follows
   already did. Finding paths are project-relative (`src/app/x.py`, not
   `app/x.py`); regenerate baselines written from a subdirectory scan.
 
+### Added
+- **Real-repo precision gate** (`bench/precision.py`, CI
+  `precision.yml`): 25 repos pinned by SHA; every lie/drift must be
+  labeled TP/FP in `bench/precision/ledger.json`. Precision on that set
+  went from 0.17 (30 of 175) to 0.77 (30 of 39) in this round with no
+  true positive lost.
+
 ### Fixed
+- **Precision round (25 real repos, 136 false positives removed).** Test
+  fixture data (`tests/format/`, `tests/data/`, `fixtures/`, `testdata/`,
+  `broken_*`) no longer reports; bundler resource queries, Node CJS
+  extension appending, package.json `main`/`browser` resolution and
+  symlinked sources resolve like Node does; destructured
+  `export const {...}` and comments inside `export {...}` lists are
+  parsed; gitignored build artifacts (nested `.gitignore` included),
+  `.pyi`-only compiled modules and lazy string-keyed exports are
+  evidence of existence; non-typo dunders, `Type#method()`, pluralized C
+  calls, Win32 and included-library C APIs and `_suffix()` fragments are
+  not repo claims; docstring path listings are samples; paths relative
+  to the claiming file's directory and `<project>'s path` references
+  resolve; number-drift compares the keyword's own value (including
+  `==` comparisons); `require()` quoted inside strings is not an import;
+  fences of a different character inside a declared fence are nesting.
+- **C includes were invisible.** The include pattern lacked
+  `re.MULTILINE`, so only an include on a file's first line was seen.
 - **Subdirectory scans manufactured lies.** A comment in `src/` naming a
   helper defined in `scripts/` was a `stale-symbol-ref` lie under
   `scan src` and clean under `scan .`; the same partial snapshot hid

@@ -25,6 +25,65 @@ pre-test-filter benchmark (best of 7, wall clock)
 * No test-runner comparison is published: tests catch everything, and
   any head-to-head number without a fixed fixture would be marketing.
 
+## Precision gate: every finding on 25 pinned repos, classified (measured 2026-09-24)
+
+`bench/precision.py` scans 25 real repositories pinned to exact commits
+(`bench/precision/repos.json`: 14 Python, 5 JS/TS, 3 Go, 3 C) with the
+default checkers and requires every lie and drift to be labeled in
+`bench/precision/ledger.json`, with a one-line reason. CI
+(`.github/workflows/precision.yml`) fails on an unlabeled finding, a new
+false positive, or a true positive that stopped firing.
+
+```console
+python3 bench/precision.py [--repos-dir DIR] [--only flask,redis]
+```
+
+| | lie + drift findings | true | false | precision |
+|---|---:|---:|---:|---:|
+| Before this round (v0.16.0 + scope fix) | 175 | 30 | 145 | 0.17 |
+| After this round | 39 | 30 | 9 | **0.77** |
+
+Every true positive survived the round (recall on planted rot: 115/115
+corpus plants caught in flask, requests and express via `bench/recall.py`).
+The false-positive families removed, each with a corpus case and a
+positive control that still fires:
+
+* test-fixture data (`tests/format/`, `tests/data/cases/`, `fixtures/`,
+  `testdata/`, `broken_*` fixtures): about 90 findings in prettier, black,
+  vite, pydantic, django;
+* bundler resource queries (`./worker?worker`), Node CJS extension
+  appending (`require('./x.tsx')` -> `x.tsx.js`), `package.json` `main`
+  resolution and `browser` maps, symlinked sources;
+* destructured `export const { a, b } = obj` and comments inside
+  `export { ... }` lists (prettier: 9 findings);
+* build artifacts named by any `.gitignore` on the path, `.pyi`-only
+  compiled extensions, lazy string-keyed exports (celery, transformers
+  style);
+* non-typo dunders, `Type#method()` notation, pluralized C calls, Win32
+  and included-library C APIs, `_suffix()` family fragments, and a C
+  include parser that only ever saw the first line of a file;
+* number-drift comparing against any number near the keyword instead of
+  the keyword's own value.
+
+The 9 remaining false positives are listed with reasons in the ledger's
+`known_fp` (test-time `tsc` output, intentionally broken fixtures,
+external API methods named in Python comments, tzcode internals).
+
+True positives found (all verified by hand): flask `Module`, typer
+`_extract_default()`, sqlmodel `_partial_init()`, pytest
+`_get_stderr_fileno()`, django `CookieTests.test_cookie_max_length()`,
+celery `get_default_timezone()`, `from celery import task` (x3),
+`test_deamonization.py`, `patch('celery.result.copy')`, cobra
+`ParsedFlags()`, curl `Curl_req_flush()`, `tests/ech_test.sh`, fastapi
+`fastapi.temp_pydantic_v1_params`, grpc-go `NewContextWithHandshakeInfo()`,
+`callStarted()`, `toLoadReport()`, prettier `parse/json.js`,
+`builtin-plugins-proxy.js`, pydantic `docs/javascripts/search-worker.js`
+and two stale benchmark paths, redis `rioClearError()`,
+`RedisModule_DigestAddElement()`, `RedisModule_AuthClientWithUser()`,
+`zmalloc_register_reserved_thread()`, `render_sequence()`,
+`hnsw_update()`, jemalloc `extent_head_no_merge()`, scrapy
+`_shutdown_graceful_reactorless()`, vite `plugin/assets.ts`.
+
 ## Full-tree scans (measured 2026-09-21)
 
 Machine: MacBook Air (Apple silicon, 10 cores), Python 3.14.6.

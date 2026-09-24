@@ -90,6 +90,13 @@ Measured 2026-09-21 (harness: `bench/run.py`; full tables in
 Benchmarking on real repos is part of development here: every round so
 far has surfaced and fixed a precision bug before release.
 
+**Precision gate:** every lie and drift on 25 pinned repos (Python,
+JS/TS, Go, C) is classified by hand in `bench/precision/ledger.json`,
+and CI fails on anything unclassified. Current: 30 true, 9 false
+(precision 0.77), including real rot in redis, curl, grpc-go, django,
+celery, pydantic and prettier
+([details](https://grounded.readthedocs.io/en/latest/benchmarks/)).
+
 ## Install
 
 ### 1-Line Quick Install (Zero Dependencies)
