@@ -8,13 +8,20 @@
     <br>
 </h1>
 
-**Grounded** is a reference integrity firewall: it finds comments, doc
-examples, imports, and config strings that contradict the repository
-they live in. A rule fires only on mechanical contradiction — a name
-that resolves nowhere, a path that does not exist, a default the code
-disagrees with — so a clean scan means something and a finding means
-something. It runs on Python, JavaScript/TypeScript, Go, and C with
-zero dependencies, offline, deterministically.
+**Grounded** catches the references your code no longer backs up: the
+import of a function someone renamed, the mock that patches a name that
+moved, the comment pointing at a file that was deleted, the doc example
+calling an API that is gone. Every finding is a mechanical
+contradiction (a name that resolves nowhere, a path that does not
+exist), checked against the repository itself, so a clean scan means
+something and a finding means something.
+
+It is built for the moment code changes, especially when an agent
+changed it: `grounded scan --changed` reports what an edit broke
+anywhere in the repo, in about two seconds (median) on a tree the size
+of CPython.
+Python, JavaScript/TypeScript, Go and C. Zero dependencies, offline,
+deterministic, no LLM anywhere.
 
 <p align="center">
     <a href="docs/README_AR.md"><img alt="README بالعربية" title="README بالعربية" src="https://img.shields.io/badge/Arabic-DFE0E5"></a>
@@ -64,149 +71,243 @@ zero dependencies, offline, deterministically.
 </p>
 <p align="center"><em>30 seconds, offline, self-checking — reproduce it: <a href="demo/firewall.sh">demo/firewall.sh</a></em></p>
 
+After renaming `fetch_user` to `load_user` in `app/core.py`:
+
 ```console
-$ grounded scan ./src
-LIE src/app.py:9 [stale-symbol-ref] Comment references `ghost_service` which is not defined here
-    claim: `ghost_service()`
-    evidence: `ghost_service` is not defined, imported, or used in this file,
-              and no definition was found in 84 indexed source files.
-    fix: Update the comment to the current name, or remove the reference.
+$ grounded scan . --changed
+LIE app/views.py:1 [stale-import] `fetch_user` imported from `app/core.py` but never defined there
+    claim: from app.core import fetch_user
+    evidence: `app/core.py` exists but defines no `fetch_user`.
+    fix: Check for a rename in `app/core.py` (or a moved submodule).
+
+grounded: 1 finding(s) in 4 file(s), 1 lie(s), 0 drift(s), 0 smell(s).
+grounded: (--changed: 2 file(s) checked against the base; findings older than the change are not shown).
 ```
 
-Zero dependencies. No network access. Works on Python, JavaScript/TypeScript, Go, and C.
+## What it catches
+
+| Rule | Example of what it reports |
+|---|---|
+| `stale-import` | `from app.core import fetch_user` after `fetch_user` was renamed or removed (Python, and JS/TS with tsconfig aliases) |
+| `stale-mock-ref` | `patch("app.core.helper")` when `app/core.py` no longer has `helper`: the test errors at runtime |
+| `stale-symbol-ref` | a comment saying ``calls `legacy_parse()` `` when no such function exists anywhere |
+| `stale-file-ref` | a comment pointing at `tests/ech_test.sh` when the file is `tests/ech_tests.sh` |
+| `stale-entrypoint` | a `[project.scripts]` or `package.json` `bin` target that points at nothing |
+| `unclosed-fence` | a Markdown fence that never closes, so everything after it renders as code |
+
+Plus two softer rules (`number-drift`, `fragile-anchor`) and six opt-in
+checkers; see [Rules](#rules). A rule stays silent unless the
+contradiction is mechanical: imports, stdlib names, parameters, locals,
+docstring field lists and illustrative examples never produce findings.
 
 ## Proven on real code
 
-Measured 2026-09-21 (harness: `bench/run.py`; full tables in
-[docs](https://grounded.readthedocs.io/en/latest/benchmarks/)):
+**Precision is measured, not asserted.** Every lie and drift on 25
+pinned repositories (Python, JS/TS, Go, C) is classified by hand in
+[`bench/precision/ledger.json`](bench/precision/ledger.json), and CI
+fails on any finding nobody has classified. Current: 30 true, 9 false
+(precision 0.77). The true ones are real rot in redis, curl, grpc-go,
+django, celery, pydantic, prettier, pytest, vite, typer, sqlmodel,
+cobra, flask, fastapi and scrapy: renamed functions still named in
+comments, examples importing a decorator removed in Celery 5, a test
+fixture importing `flask.Module` (removed in Flask 1.0), lint config
+listing a file that moved.
 
-| Tree | Files | Scan | Result (all classified) |
+**`--changed` matches ground truth.** It reports what the change
+introduced; on every sample its output equaled the difference of two
+full scans (worktree minus base), plus findings on changed lines: 29
+consecutive cpython commits, 30 django commits and 10 constructed
+refactors (renames, deleted modules, mock targets): 32 introduced
+findings, 0 missed, 0 extra.
+
+| `--changed` on real commits (`bench/changed.py`) | p50 | p95 |
+|---|---|---|
+| cpython (3,605 files) | 1.9 s | 3.4 s |
+| django (2,986 files) | 1.2 s | 3.3 s |
+
+Full scans (measured 2026-09-24, MacBook Air M-series, fresh process,
+[`bench/`](bench/README.md)):
+
+| Tree | Files | Cold | Warm index |
 |---|---|---|---|
-| django | 2,977 | 16.7 s | 1 true lie (stale test cross-reference) + fixture noise |
-| cpython | 3,049 | 47.2 s | true moved-file references + fixture noise |
-| grpc-go | 1,068 | 4.4 s | true missing implementation (`NewContextWithHandshakeInfo`) |
-| express | 141 | 0.6 s | clean (was 101 false alarms before the CJS-interop fix) |
+| cpython | 3,605 | 37.9 s | 32.1 s |
+| django | 2,986 | 11.1 s | 8.4 s |
+| prettier | 6,255 | 3.3 s | 2.5 s |
+| grpc-go | 1,141 | 4.0 s | 3.0 s |
 
-Benchmarking on real repos is part of development here: every round so
-far has surfaced and fixed a precision bug before release.
-
-**Precision gate:** every lie and drift on 25 pinned repos (Python,
-JS/TS, Go, C) is classified by hand in `bench/precision/ledger.json`,
-and CI fails on anything unclassified. Current: 30 true, 9 false
-(precision 0.77), including real rot in redis, curl, grpc-go, django,
-celery, pydantic and prettier
-([details](https://grounded.readthedocs.io/en/latest/benchmarks/)).
+Details and every classification: [Benchmarks](https://grounded.readthedocs.io/en/latest/benchmarks/).
 
 ## Install
 
-### 1-Line Quick Install (Zero Dependencies)
+One line, no Python needed (installs the standalone binary, or uses your
+existing `uv`/`pip`/`brew`):
 
-No Python or package manager required. Automatically installs the standalone binary (or uses your existing `uv`/`pip`/`brew`):
-
-**macOS & Linux**:
 ```console
 curl -fsSL https://raw.githubusercontent.com/gonisulaimann/Grounded/main/install.sh | sh
 ```
 
-**Windows (PowerShell)**:
 ```powershell
 irm https://raw.githubusercontent.com/gonisulaimann/Grounded/main/install.ps1 | iex
 ```
 
-### macOS & Linux (Homebrew)
+Or with a package manager:
 
 ```console
 brew install gonisulaimann/tap/grounded
+pip install grounded-lint                        # or: uv tool install grounded-lint
+uvx --from grounded-lint grounded scan .         # run without installing
 ```
 
-### Python Package (pip / uv)
+From source: `git clone https://github.com/gonisulaimann/Grounded.git && pip install -e Grounded`.
+
+## Quick start
 
 ```console
-pip install grounded-lint
-# or with uv
-uv tool install grounded-lint
+grounded scan .                          # whole tree; exit 1 on any lie
+grounded scan . --changed                # what your uncommitted work broke
+grounded scan . --changed origin/main    # what this branch broke (CI)
+grounded fix . --dry-run                 # unambiguous renames and path moves
 ```
 
-No Python management needed (measured 0.05s cached startup):
+`grounded scan` exits `1` when a finding meets `--fail-on` (default
+`lie`), `0` when clean, `2` on usage errors and `3` when a checker raised
+so the scan is incomplete. `--format json|sarif|markdown|html` for
+tooling; SARIF uploads to GitHub code scanning.
+
+## For coding agents
+
+One command wires Grounded into Claude Code, Cursor and Aider:
 
 ```console
-uvx --from grounded-lint grounded scan .
+grounded init-agent                 # Claude hook + Cursor rule + Aider config
+grounded init-agent --skill         # teach every project: ~/.claude/skills/grounded
 ```
 
-From source:
-
-```console
-git clone https://github.com/gonisulaimann/Grounded.git
-cd Grounded
-pip install -e .
-```
-
-## Usage
-
-```console
-grounded scan [PATH] [--format terminal|json|sarif|markdown|html] [--output FILE]
-               [--fail-on lie|drift|smell|never]
-               [--enable CHECKER,...] [--disable CHECKER,...]
-               [--baseline FILE] [--show-baselined]
-               [--changed [BASE]] [--cache [FILE]] [--no-index-cache] [--jobs N]
-               [--config FILE] [--no-color] [--quiet]
-grounded baseline [PATH] [--output FILE]  # record findings for delta gating
-grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale refs
-grounded impact SYMBOL [PATH] [--format terminal|json]
-                     # show everything touching a symbol: definers,
-                     # importers, comment claims
-grounded list [PATH]       # show files that would be scanned
-grounded explain CHECKER   # describe a checker (including removed ones)
-grounded init [--force]    # write a starter grounded.toml
-grounded init-agent [--claude|--cursor|--aider] [--skill] [--skill-project] [--force] [--dry-run]
-grounded mcp [--root .]    # MCP server over stdio for coding agents
-grounded lsp               # LSP 3.17 server over stdio for editors
-```
-
-`grounded scan` exits with status `1` when any finding meets `--fail-on`
-(default: `lie`), `0` otherwise. Point it at CI and gate on the default.
-
-Example output formats for tooling: `--format json` for scripts,
-`--format sarif` for GitHub code scanning, `--format html` for a
-self-contained report page (no external assets, works opened from disk).
-
-Large trees scan in parallel automatically (512+ files); `--jobs N`
-overrides, `--jobs 1` forces serial. Output is identical either way.
-
-In VS Code, wire the bundled problem matcher through a task
-(`.vscode/tasks.json`, paths relative to the workspace):
+**Claude Code.** `init-agent --claude` installs a PostToolUse hook:
 
 ```json
 {
-  "version": "2.0.0",
-  "tasks": [
-    {
-      "label": "grounded",
-      "type": "shell",
-      "command": "grounded scan . --no-color",
-      "problemMatcher": {
-        "owner": "grounded",
-        "pattern": [
-          {
-            "regexp": "^(LIE|DRIFT|SMELL)\\s+(.+?):(\\d+)\\s+\\[(.+?)\\]\\s+(.*)$",
-            "file": 2,
-            "line": 3,
-            "code": 4,
-            "message": 5
-          }
-        ]
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "grounded hook claude-code" }]
       }
-    }
-  ]
+    ]
+  }
 }
 ```
 
+After every edit, `grounded hook claude-code` checks the changed lines
+plus what the edit broke in other files, and exits `2` with the findings
+on stderr, which Claude Code feeds back to the model. Its own failures
+exit `1` and never wedge the agent loop. Hooks installed by older
+versions (`grounded scan . --changed --quiet`) only reached the human;
+re-run `grounded init-agent --claude` to upgrade in place.
+
+**Cursor.** `grounded init-agent --cursor` writes
+`.cursor/rules/grounded.mdc` (Cursor loads only `.mdc` with
+frontmatter, not `.md`). By hand, in agent-requested mode:
+
+```markdown
+---
+description: Verify code references with grounded before building on edited code
+alwaysApply: false
+---
+
+After editing source files, run `grounded scan . --changed` and fix
+reported lies (dangling function names, missing files) before running
+tests or committing.
+```
+
+**Aider** (`--lint-cmd` gets filenames and expects non-zero on failure):
+
+```console
+aider --lint-cmd "sh -c 'for f; do grounded scan \"$f\" --quiet || exit 1; done' sh"
+```
+
+**MCP.** `grounded mcp` serves three tools over stdio: `check_path`
+(scan a path under the server root, which paths cannot escape),
+`explain_checker`, and `blast_radius` (definers, importers and comment
+claims for a symbol: ask before renaming). Protocol versions
+`2024-11-05` through `2025-06-18`; stdout carries only MCP messages.
+
+```json
+{
+  "mcpServers": {
+    "grounded": { "command": "grounded", "args": ["mcp", "--root", "."] }
+  }
+}
+```
+
+Cost: 0.6 ms for an in-process single-file check, 58 ms from a cold CLI
+(Python startup dominates; best of 7, `examples/bench/bench.py`). Tests
+catch everything; grounded is the millisecond pre-filter before you pay
+for them.
+
+## Editors (LSP)
+
+`grounded lsp` speaks Language Server Protocol 3.17 over stdio: live
+diagnostics (lie as error, drift as warning, smell as information) and
+quickfixes for unambiguous renames and path moves. On **Cursor**,
+**Windsurf** and **VSCodium**, install the
+[Open VSX extension](https://open-vsx.org/extension/gonisulaimann/grounded).
+Neovim:
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = { "python", "javascript", "typescript", "go", "c" },
+  callback = function()
+    vim.lsp.start({ name = "grounded", cmd = { "grounded", "lsp" } })
+  end,
+})
+```
+
+Any generic LSP client (VS Code, Zed, Emacs eglot) can run the same
+command. For a VS Code task instead, see the
+[editor docs](https://grounded.readthedocs.io/en/latest/editors/).
+
+## CI, pre-commit, and GitHub Action
+
+```yaml
+- uses: gonisulaimann/Grounded@v0.16.0
+  with:
+    changed-base: origin/main   # what this pull request broke
+    fail-on: lie
+```
+
+The Action annotates the pull request inline and writes a findings table
+to the job summary. For whole-tree gating, record a baseline instead
+(`baseline: .grounded-baseline.json`, see below).
+
+```yaml
+repos:
+  - repo: https://github.com/gonisulaimann/Grounded
+    rev: v0.16.0
+    hooks:
+      - id: grounded          # dangling references in your changes
+      - id: grounded-fences   # Markdown fences the renderer will not honour
+```
+
+`grounded-fences` gates changed *files*, not lines: one unclosed fence
+corrupts everything after it, the defect a line-scoped review misses.
+
 ## Adopting on an existing codebase
 
-Two mechanisms, composable. Both keep the full-tree scan and filter
-reporting only.
+**Gate only what changes.** `--changed` needs nothing set up. On a
+changed line or in a new file every finding reports. Anywhere else, a
+finding reports when the change introduced it: a full scan of your tree
+has it and a full scan of the base does not. Rename a function, and
+every file still importing the old name shows up; older findings that
+merely share a word with the diff stay hidden. It gets there without
+two full scans: the base index reuses every unchanged file, and only
+files that can reach a changed name are checked. When the change edits a
+file checkers read from disk (`pyproject.toml`, `package.json`,
+`.gitignore`, `tsconfig.json`), it falls back to a broader, noisier rule
+and says so on stderr. Outside a git repo, or with an unresolvable base,
+it exits `2` instead of silently scanning everything.
 
-Record a baseline once, commit it, gate on the delta:
+**Or record a baseline** once, commit it, and gate on anything new:
 
 ```console
 grounded baseline . --output .grounded-baseline.json   # record today
@@ -214,45 +315,23 @@ git add .grounded-baseline.json
 grounded scan . --baseline .grounded-baseline.json     # new findings only
 ```
 
-Fingerprints cover checker, path, and claim text, not line numbers, so
-unrelated edits do not churn the file. Editing the offending line itself
-re-triggers the gate. `--show-baselined` lists suppressed findings.
+Fingerprints cover checker, path and claim text, not line numbers, so
+unrelated edits do not churn the file; editing the offending line
+re-triggers the gate. `--show-baselined` lists what is suppressed.
 
-Gate pull requests on changed lines only:
+**Accept a single finding** where it sits:
 
-```console
-grounded scan . --changed                # uncommitted work vs HEAD
-grounded scan . --changed origin/main    # branch vs base (CI)
+```python
+# Calls `legacy_parse()` for old dumps.  # grounded-disable: stale-symbol-ref
 ```
 
-Untracked files are fully reported. Off the diff, `--changed` reports
-what the change *introduced*: a finding a full scan of your tree has and
-a full scan of the base does not (rename a function, and every file
-still importing the old name shows up). Older findings that merely
-share a word with the diff stay hidden. It gets there without two full
-scans: the base index reuses every unchanged file, and only files that
-can reach a changed name are checked. When the change edits a file
-checkers read from disk (`pyproject.toml`, `package.json`,
-`.gitignore`, `tsconfig.json`), it falls back to a broader, noisier
-rule and says so on stderr. Outside a git repo, or with an unresolvable
-base, `--changed` exits `2` with the git error instead of silently
-scanning everything.
-
-The repo index is cached in the git directory (`.git/grounded/`) and
-reused for every file whose size and mtime are unchanged, so a repeat
-scan re-indexes only what you edited. It needs no configuration; opt
-out with `--no-index-cache` or `GROUNDED_NO_INDEX_CACHE=1`.
-
-`--cache` additionally replays whole per-file results, but only while
-nothing else in the tree changed (any edit anywhere can change another
-file's findings), so it helps repeated scans of an unchanged tree, such
-as CI retries:
-
-```console
-grounded scan . --cache                # writes .grounded-cache.json
-```
-
-Corrupt or mismatched caches fall back to a full scan silently.
+**Speed.** The repo index is cached in the git directory
+(`.git/grounded/`) per file, by size and mtime, so a repeat scan
+re-indexes only what you edited; opt out with `--no-index-cache` or
+`GROUNDED_NO_INDEX_CACHE=1`. `--cache` also replays whole per-file
+results while nothing else in the tree changed (CI retries). Large scans
+run in parallel automatically; `--jobs N` overrides and the output is
+identical either way.
 
 ## Rules
 
@@ -261,14 +340,15 @@ Corrupt or mismatched caches fall back to a full scan silently.
 | `stale-symbol-ref` | lie (error) | A comment names a call that resolves nowhere: not defined in the repo, not imported in the file, not used in the file, not a builtin or keyword. Prints rename suggestions when a close match exists. |
 | `stale-import` | lie (error) | A resolvable import whose module is missing, or whose name is not defined, re-exported, or a submodule there. Python `from`/`import`, JS/TS relative imports (tsconfig aliases resolved). Guarded, stdlib, and external imports never report. |
 | `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
+| `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module (a test that errors at runtime). Graduated 2026-09-22: 134 Django findings classified, all fixed or documented. |
+| `stale-entrypoint` | lie (error) | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. Graduated 2026-09-22: 0 false positives over 15,196 files. |
+| `unclosed-fence` | lie (error) | A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open. Judged by CommonMark, not by counting fences. Graduated 2026-09-22: 0 false positives over 11,564 Markdown files, walk pinned by a differential fuzz. |
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, and workaround markers (`HACK`, `XXX`, `workaround`) with no ticket or expiry condition. |
-| `stale-entrypoint` | lie (error) | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. Graduated 2026-09-22: 0 false positives over 15,196 files with the checker-error count at 0. |
-| `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module (a test that errors at runtime). Graduated 2026-09-22: 134 Django findings classified, all fixed or documented. |
-| `unclosed-fence` | lie (error) | A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open — the content after it renders as code, and the doc checkers' fence state inverts from there on. Judged by CommonMark, not by counting fences. Graduated 2026-09-22: 0 false positives over 11,564 Markdown files in eight real repos, walk pinned by a differential fuzz. |
 
-Five more checkers ship **opt-in** (`--enable <id>`); they graduate to
-default-on by measured precision ([tracked here](https://github.com/gonisulaimann/Grounded/tree/main/corpus)):
+Six more checkers ship **opt-in** (`--enable <id>`) and graduate to
+default-on only by measured precision
+([tracked here](https://github.com/gonisulaimann/Grounded/tree/main/corpus)):
 
 | ID | Severity | What it reports |
 |---|---|---|
@@ -276,12 +356,8 @@ default-on by measured precision ([tracked here](https://github.com/gonisulaiman
 | `stale-contract-ref` | lie / drift | deprecation target, lock claim, or env default contradicting the repo |
 | `ghost-export` | smell | public symbol with no importers, no use, no API marking |
 | `phantom-package` | drift | import declared in no manifest |
-| `stale-cli-ref` | lie | a documented `grounded` invocation with a subcommand or flag the CLI does not accept (verified against the live parser) |
-
-A rule stays silent unless the contradiction is mechanical. Imported names,
-standard library names, parameters, locals, attributes, docstring field
-lists (`:param:`, `@param`), and illustrative examples ("For example …")
-never produce findings.
+| `stale-cli-ref` | lie | a documented `grounded` invocation the live CLI parser rejects |
+| `stale-cli-flag` | lie | a documented invocation of the repo's own CLI with a long flag no argparse, click, cobra, commander or Go `flag` definition declares |
 
 ## Configuration
 
@@ -300,178 +376,49 @@ ignore_files = ["generated.py"]
 # path_aliases = { "@/" = "src/", "~/" = "app/" }
 ```
 
-Path aliases (`@/`, `~/`, and any tsconfig `paths` entries) resolve
-against the nearest `tsconfig.json` (which may use comments and
-`extends`). Unresolvable alias targets report as drift, never as lies:
-they are often build-generated. Mappings into `node_modules` are
-always skipped. Bare specifiers whose only visible resolution is
-external — a package's own name (self-import through its exports map)
-or any alias whose replacements are types-only `.d.ts` surfaces — are
-also silent: the scan cannot see the real resolution, so it never
-claims a lie about it. Only aliases that map onto the scanned tree
-stay fully checked.
+Path aliases resolve against the nearest `tsconfig.json` (comments and
+`extends` supported). Unresolvable alias targets report as drift, never
+as lies: they are often build-generated. Mappings into `node_modules`
+are skipped, and bare specifiers whose only visible resolution is
+external (a package's own name, types-only `.d.ts` surfaces) stay
+silent: the scan cannot see the real resolution, so it never claims a
+lie about it.
 
-Suppress a single accepted finding where it sits (reviewable, local):
-
-```python
-# Calls `legacy_parse()` for old dumps.  # grounded-disable: stale-symbol-ref
-```
-
-```js
-// Calls `legacyParse()` for old dumps.  // grounded-disable: stale-symbol-ref
-```
-
-## CI, pre-commit, and GitHub Action
-
-Gate pull requests with the first-party Action (inline PR annotations
-included via problem matchers):
-
-```yaml
-- uses: gonisulaimann/Grounded@v0.16.0
-  with:
-    changed-base: origin/main   # new findings on edited lines only
-    fail-on: lie
-```
-
-Or with a baseline file for whole-tree delta gating:
-
-```yaml
-- uses: gonisulaimann/Grounded@v0.16.0
-  with:
-    baseline: .grounded-baseline.json
-```
-
-As a pre-commit hook (runs on uncommitted changes):
-
-```yaml
-repos:
-  - repo: https://github.com/gonisulaimann/Grounded
-    rev: v0.16.0
-    hooks:
-      - id: grounded          # dangling references on changed lines
-      - id: grounded-fences   # Markdown fences the renderer will not honour
-```
-
-The `grounded-fences` hook gates on changed *files* rather than changed
-lines, because one unclosed fence corrupts everything after it — the
-class of defect that survives line-scoped review.
-
-SARIF upload for code scanning: run with `--format sarif --output
-results.sarif`, then upload with `github/codeql-action/upload-sarif`.
-
-## Coding agents
-
-`grounded scan <file>` checks one file (exit 1 on findings, 0 when clean,
-3 when a checker raised so the scan is incomplete), which is the contract
-agent lint loops expect. Verified recipes:
-
-Aider (`--lint-cmd` accepts filenames, expects non-zero on failure):
+## Command reference
 
 ```console
-aider --lint-cmd "sh -c 'for f; do grounded scan \"$f\" --quiet || exit 1; done' sh"
+grounded scan [PATH] [--format terminal|json|sarif|markdown|html] [--output FILE]
+               [--fail-on lie|drift|smell|never]
+               [--enable CHECKER,...] [--disable CHECKER,...]
+               [--baseline FILE] [--show-baselined]
+               [--changed [BASE]] [--cache [FILE]] [--no-index-cache] [--jobs N]
+               [--config FILE] [--no-color] [--quiet]
+grounded baseline [PATH] [--output FILE]  # record findings for delta gating
+grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale refs
+grounded impact SYMBOL [PATH] [--format terminal|json]
+                     # show everything touching a symbol: definers,
+                     # importers, comment claims
+grounded list [PATH]       # show files that would be scanned
+grounded explain CHECKER   # describe a checker (including removed ones)
+grounded init [--force]    # write a starter grounded.toml
+grounded init-agent [--claude|--cursor|--aider] [--skill] [--skill-project] [--force] [--dry-run]
+grounded hook claude-code  # Claude Code PostToolUse adapter (stdin event)
+grounded mcp [--root .]    # MCP server over stdio for coding agents
+grounded lsp               # LSP 3.17 server over stdio for editors
 ```
 
-Claude Code (`.claude/settings.json`, runs after every file edit):
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [{ "type": "command", "command": "grounded hook claude-code" }]
-      }
-    ]
-  }
-}
-```
-
-`grounded hook claude-code` reads the edit event from stdin, checks the
-changed lines (plus rename fallout in other files), and exits `2` with the
-findings on stderr, which is the exit code Claude Code feeds back to the
-model. Earlier versions installed `grounded scan . --changed --quiet`,
-whose exit `1` only reached the human; re-run `grounded init-agent
---claude` to upgrade it in place.
-
-Cursor rules are generated, not hand-written (`.md` files in
-`.cursor/rules/` are ignored by Cursor; only `.mdc` with frontmatter
-loads):
-
-```console
-grounded init-agent                 # Claude hook + Cursor rule + Aider config
-grounded init-agent --cursor        # just .cursor/rules/grounded.mdc
-grounded init-agent --skill         # teach every project: ~/.claude/skills/grounded
-```
-
-Or write the rule by hand (agent-requested mode: description, no globs):
-
-```markdown
----
-description: Verify code references with grounded before building on edited code
-alwaysApply: false
----
-
-After editing source files, run `grounded scan . --changed` and fix
-reported lies (dangling function names, missing files) before running
-tests or committing.
-```
-
-For agents that speak MCP, use `grounded mcp` (see below) instead of
-shelling out.
-
-Measured cost (best of 7, wall clock, `examples/bench/bench.py`):
-in-process single-file check 0.6 ms, cold CLI single-file check 58 ms
-(Python startup dominates). No pytest comparison is claimed here: tests
-catch everything, grounded is the millisecond pre-filter before you pay
-for them.
-
-`grounded` serves itself over stdio as a Model Context Protocol server,
-so agents can verify references instead of trusting them:
-
-```json
-{
-  "mcpServers": {
-    "grounded": { "command": "grounded", "args": ["mcp", "--root", "."] }
-  }
-}
-```
-
-Three tools: `check_path` (scan a path under the server root; paths cannot
-escape it), `explain_checker`, and `blast_radius` (definers, importers,
-and comment claims for a symbol: ask before renaming). Protocol versions `2024-11-05` through
-`2025-06-18` are negotiated per the spec; logs go to stderr, stdout
-carries only MCP messages. Scan tools honor the `grounded.toml` in the
-scanned root.
-
-## Editors (LSP)
-
-`grounded lsp` speaks Language Server Protocol 3.17 over stdio: instant
-diagnostics (lie as error, drift as warning, smell as information) plus
-quickfix actions for unambiguous renames and path moves. Neovim:
-
-```lua
-vim.api.nvim_create_autocmd("FileType", {
-  pattern = { "python", "javascript", "typescript", "go", "c" },
-  callback = function()
-    vim.lsp.start({ name = "grounded", cmd = { "grounded", "lsp" } })
-  end,
-})
-```
-
-Any editor with a generic LSP client (VS Code, Cursor, Zed, Emacs
-eglot) can point at the same command. On **Cursor**, **Windsurf**, and
-**VSCodium**, you can also install the 1-click [Open VSX Extension](https://open-vsx.org/extension/gonisulaimann/grounded)
-directly from the Extensions tab.
+Full flag documentation: [CLI reference](https://grounded.readthedocs.io/en/latest/cli-reference/).
 
 ## Non-goals
 
-Docstring contracts (parameter lists, return sections, raised exceptions)
-are covered precisely by [darglint](https://github.com/terrencepreilly/darglint)
-and [pydoclint](https://github.com/jsh9/pydoclint) for Python and
+No LLM in detection, ever: findings are deterministic and reproducible
+offline. No style or "smell" rules that add noise. Docstring contracts
+(parameters, returns, raises) are covered precisely by
+[darglint](https://github.com/terrencepreilly/darglint) and
+[pydoclint](https://github.com/jsh9/pydoclint) for Python and
 [eslint-plugin-jsdoc](https://github.com/gajus/eslint-plugin-jsdoc) for
-JavaScript/TypeScript. Commented-out code is covered by
-[Ruff ERA001](https://docs.astral.sh/ruff/rules/commented-out-code/) and
-equivalent ESLint rules. `grounded` intentionally does not duplicate them;
+JavaScript/TypeScript; commented-out code by
+[Ruff ERA001](https://docs.astral.sh/ruff/rules/commented-out-code/).
 `grounded explain <id>` points at the right tool for each removed check.
 
 ## Limitations
@@ -491,9 +438,9 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
   parentheses (`forks()`) can still report; judge those on sight.
 - Rename suggestions use string similarity only; the first guess can miss.
   `grounded fix` applies a symbol rename only with exactly one similar,
-  same-directory candidate.
-- `grounded fix` rewrites stale file paths only on unambiguous
-  same-basename matches in comments (never docstrings, never ties).
+  same-directory candidate, and rewrites stale file paths only on
+  unambiguous same-basename matches in comments (never docstrings, never
+  ties).
 - Generated or build-time content (`tsc` declaration dirs, `dist/`
   outputs) and dynamic namespaces (`globals().update()`) stay silent
   rather than guessed about.
@@ -501,26 +448,27 @@ equivalent ESLint rules. `grounded` intentionally does not duplicate them;
 ## Development
 
 ```console
-python -m unittest discover -s tests   # 279 tests, stdlib only, no extras
+python -m unittest discover -s tests   # stdlib only, no extras
+python3 corpus/run.py                  # precision corpus, exact-match
 grounded scan src                      # self-scan gate, must report clean
 grounded scan examples/v2demo          # fixture tree, expect 10 findings
-python3 corpus/run.py                  # precision corpus, exact-match
+python3 bench/precision.py             # precision gate on pinned repos
+python3 bench/changed.py ~/some/clone  # --changed latency on real history
 python3 bench/recall.py ~/some/repo    # recall: corpus rot replayed in a real tree
 ./demo/firewall.sh                     # 30-second firewall demo, self-checking
 ```
 
 ## Contributing
 
-Issues and pull requests are welcome. Please include:
+Issues and pull requests are welcome. Please include a minimal fixture
+(a few lines showing the reference and the code), current vs expected
+output, and the checker id in the title.
 
-- a minimal fixture (a few lines showing the comment and the code),
-- current output vs expected output,
-- the checker id in the issue title.
-
-New checkers are accepted only with a fixture, tests, a corpus case
-(`corpus/cases/`), and no new runtime
-dependencies (stdlib only is a project rule). New trigger classes ship
-opt-in and graduate by measured precision, never by volume.
+New checkers need a fixture, tests, a corpus case (`corpus/cases/`), a
+real-repo measurement, and no runtime dependencies (stdlib only is a
+project rule); they ship opt-in and graduate by measured precision,
+never by volume. See
+[Adding or changing a rule](CONTRIBUTING.md#adding-or-changing-a-rule).
 
 ## License
 
