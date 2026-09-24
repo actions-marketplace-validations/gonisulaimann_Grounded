@@ -3583,9 +3583,12 @@ class TestTomlCompat(unittest.TestCase):
 
     def test_rejects_non_subset(self):
         from grounded import toml_compat
-        for bad in ["a = 2026-09-21\n", "[a\n", "a = 'x\n", "a = [\n\"x\",\n]\n"]:
+        for bad in ["a = 2026-09-21\n", "[a\n", "a = 'x\n", "a = [\n\"x\",\n"]:
             with self.assertRaises(ValueError, msg=bad):
                 toml_compat.loads(bad)
+        # Multi-line arrays joined the subset (valid TOML, and the shape of
+        # nearly every real pyproject.toml); an unterminated one stays an error.
+        self.assertEqual(toml_compat.loads("a = [\n\"x\",\n]\n"), {"a": ["x"]})
 
     def test_config_loads_without_tomllib(self):
         import grounded.config as config_mod
