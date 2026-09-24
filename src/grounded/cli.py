@@ -12,6 +12,7 @@ from .delta import (
     DEFAULT_BASELINE_NAME,
     GitError,
     changed_lines,
+    changed_file_filter,
     changed_symbols,
     filter_changed,
     load_baseline,
@@ -228,8 +229,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if cache_path is not None and not cache_path.is_absolute():
         cache_path = root / cache_path
     checker_errors: list[CheckerError] = []
+    check_only = None
+    if args.changed is not None:
+        try:
+            hunks, untracked = changed_lines(root, args.changed)
+            symbols = changed_symbols(root, args.changed)
+        except GitError as exc:
+            print(f"grounded: --changed unavailable: {exc}", file=sys.stderr)
+            return 2
+        check_only = changed_file_filter(hunks, untracked, symbols)
     findings, facts, index = scan_root(root, config, jobs=args.jobs, cache_path=cache_path,
-                                       checker_errors=checker_errors)
+                                       checker_errors=checker_errors, check_only=check_only)
     n_files = len(facts)
     n_unparsed = len(index.parse_failed)
     _report_checker_errors(checker_errors)
@@ -250,12 +260,6 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if n_suppressed:
         suppressed_note = f" ({n_suppressed} suppressed by grounded-disable)"
     if args.changed is not None:
-        try:
-            hunks, untracked = changed_lines(root, args.changed)
-            symbols = changed_symbols(root, args.changed)
-        except GitError as exc:
-            print(f"grounded: --changed unavailable: {exc}", file=sys.stderr)
-            return 2
         before = len(findings)
         findings = filter_changed(findings, hunks, untracked, symbols)
         suppressed_note = f" ({before - len(findings)} outside changed lines hidden)"
