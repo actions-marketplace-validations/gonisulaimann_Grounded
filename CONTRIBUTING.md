@@ -113,6 +113,19 @@ Grounded enforces a three-pillar verification standard for any checker modificat
    - Run: `python3 corpus/run.py`
    - **Must report 100% pass**: precision `1.00` and recall `1.00` across all registered corpus cases. Regressions are not accepted.
 
+4. **Real-repo precision gate** (anything touching `src/`):
+   - Run: `python3 bench/precision.py` (clones 25 pinned repos once into `.precision-repos/`).
+   - Every lie/drift must already be labeled in `bench/precision/ledger.json`. A new finding needs a verdict (`TP`/`FP`) and a one-line reason; a new FP also needs an entry in `known_fp` and should come with a fix or a stated reason there is none.
+
+### Adding or changing a rule
+
+1. **Start with the corpus case**, not the code: `corpus/cases/<checker>-<behavior>/` with the smallest tree that shows the behavior. Every silence case needs a **positive control**, a planted real rot in the same case that must still fire, or the case can pass vacuously.
+2. **Put the code in its family module** under `src/grounded/checkers/` (or a new module for a new family), and register a new checker in `checkers/__init__.py`: `CHECKERS`, `CHECKER_DESCRIPTIONS`, and `OPT_IN_CHECKERS` (new checkers always start opt-in).
+3. **Suppressions only ever silence.** Write each one as a named, commented rule that cites where the false positive was seen (`seen: django's ...`). Never "fix" a fixture to make a case pass.
+4. **Measure on real repos:** `bench/precision.py` for default checkers, and `bench/recall.py` to prove planted rot still fires inside real trees. Graduating an opt-in checker to default needs a recorded real-repo precision round (see `docs/rules.md`).
+5. **Tests** go in the topic file under `tests/` (`test_imports.py`, `test_docs.py`, ...).
+6. **Watch `.gitignore`.** Fixture directories named `build/` or `dist/` are ignored by this repo's `.gitignore`: `git add -f` them, and check the case passes from a clean clone.
+
 ---
 
 ## Practical Contributing Advice

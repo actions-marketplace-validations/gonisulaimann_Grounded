@@ -22,8 +22,12 @@ collect_files → read texts once → RepoIndex → parse + check per file
   JavaScript/TypeScript, Go, and C via constrained line scanners plus
   import extraction. Broken Python buffers degrade to comment-only
   facts instead of failing.
-* **Check** (`checkers.py`): each checker a pure function of
-  file facts plus the index (8 default, 5 opt-in). A checker never crashes a scan.
+* **Check** (`checkers/`, one module per rule family: `symbols`,
+  `imports`, `files`, `comments`, `docs`, `contracts`, `ghost`,
+  `entrypoints`, `mocks`, `phantom`, `cli_ref`, shared vocabulary in
+  `_shared`; `stale-cli-flag` lives in `cli_flags.py`): each checker a pure
+  function of file facts plus the index (8 default, 6 opt-in), registered
+  in `checkers/__init__.py`. A checker never crashes a scan.
 * **Report** (`reporters.py`): terminal, JSON, SARIF 2.1.0, self-contained
   HTML. Sorted deterministically by path, line, checker.
 
