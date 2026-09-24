@@ -50,7 +50,8 @@ def _mock_provided(index: RepoIndex, target: str, symbol: str) -> bool:
             return True
     provided = symbol in _effective_symbols(index, target)
     dynamic = ("__getattr__" in index.file_symbols.get(target, set())
-               or target in index.file_dynamic_ns)
+               or target in index.file_dynamic_ns
+               or target in index.file_replaces_self)
     return provided or dynamic
 
 
@@ -172,22 +173,22 @@ def check_stale_mock_ref(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 # absolute: don't re-prepend. The attr itself stays
                 # unjudged (method/meta gap by design).
                 if orig is not None:
-                    tail = [orig] + parts[1:]
+                    # from m import X (as Y): m + X + rest
+                    tail = (mod.split(".") if mod else []) + [orig] + parts[1:]
                 elif mod and mod != parts[0]:
-                    tail = mod.split(".") + parts[1:]  # import-as alias
+                    # import a.b.c as Y: a.b.c + rest (the module path is
+                    # the alias; prepending it again doubled it, seen:
+                    # transformers' `import ...deepgemm as dg`).
+                    tail = mod.split(".") + parts[1:]
                 else:
-                    tail = parts
+                    tail = parts  # bare `import a` used as `a.b.X`
                 if level:
                     base = _resolve_py_base(facts.path, level)
                     if not base and level - 1 > len(facts.path.split("/")[:-1]):
                         continue
-                    full = base + ((mod.split(".") if mod else []) + tail
-                                   if orig is not None or (mod and mod != parts[0])
-                                   else tail)
+                    full = base + tail
                 else:
-                    full = ((mod.split(".") if mod else []) + tail
-                            if orig is not None or (mod and mod != parts[0])
-                            else tail)
+                    full = tail
                 jobs.append(full)
         if not jobs:
             continue

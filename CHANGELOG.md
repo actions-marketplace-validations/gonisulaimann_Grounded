@@ -5,6 +5,36 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed (wide round: 55 repositories)
+- **Lazy modules read as thousands of missing names.** A module that
+  replaces itself (`sys.modules[__name__] = _LazyModule(...)`, the
+  transformers/diffusers idiom) now has an unknowable export surface:
+  transformers 5,157 lies -> 181 before the rest of this round.
+- **Codegen templates:** relative imports that climb to a non-package repo
+  root (transformers' `examples/modular-transformers`), ALL-CAPS module
+  placeholders (`components.NEW_DOMAIN`), and outputs of Panda CSS, GraphQL
+  Mesh, EdgeDB and fumadocs generators.
+- **Local folders shadowing installed packages:** a top-level directory
+  without `__init__.py` (home-assistant's `pylint/`) no longer captures
+  imports of the real package (161 findings).
+- **JS/TS/Flow parsing:** `export const enum`, `export declare`,
+  `export namespace`, Flow `export opaque type`; export-less build shims
+  (React's `ReactFiberConfig.js`); directory imports of folders named like
+  build output (`../build` -> `build/index.ts`, next.js).
+- **More fixture conventions:** jscodeshift `__testfixtures__`, Jest
+  `__mocks__`, `input`/`snapshot` folders and `input.*`/`output.*` files
+  under test roots (turbopack).
+- **Platform APIs in comments:** syscall/libc names in Go and Python,
+  Win32 APIs in Python files with Windows evidence, ECMAScript abstract
+  operations and globals (`Symbol`, `Math.random`) in JS, and lowercase
+  dotted names of namespaces the repo does not own (`jax.numpy.select()`).
+- **Go doc comments were reported twice** (once per `//` line, once as the
+  joined doc at another line).
+- **stale-mock-ref doubled `import a.b.c as m` paths**
+  (`a.b.c.a.b.c`), reporting every `patch.object(m, ...)` as missing.
+- **A killed worker lost the whole scan.** The checker pool now falls back
+  to the serial path like the index pool does.
+
 ### Added
 - **`stale-cli-flag`** (experimental, opt-in): documented invocations of
   the repository's own programs using a long flag no parser in the repo

@@ -101,7 +101,7 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         _scan(c.text, c.line, c.end_line, "Comment")
     # docstrings too (minus indented literal blocks: listings of example
     # paths introduced by a colon, the reST convention for samples)
-    for f in facts.functions:
+    for f in (facts.functions if facts.language != "go" else ()):  # see symbols.py
         if f.docstring:
             _scan(_drop_literal_blocks(f.docstring), f.docstring_lineno or f.lineno,
                   f.docstring_lineno or f.lineno, "Docstring")

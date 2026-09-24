@@ -44,6 +44,12 @@ def _resolve_py_target(index: RepoIndex, claimer: str, module: str | None, level
         base = _resolve_py_base(claimer, level)
         if not base and level - 1 > len(claimer.split("/")[:-1]):
             return None
+        if not base and len(claimer.split("/")) > 1 and "__init__.py" not in index.rel_paths:
+            # Climbs to the repo root, which is not a package: Python can
+            # only resolve this after the file is copied into a package
+            # (codegen templates, seen: transformers'
+            # examples/modular-transformers, 123 findings). Unknowable.
+            return None
         if module:
             base = base + module.split(".")
         prefix = "/".join(base)
@@ -66,7 +72,7 @@ def _resolve_py_target(index: RepoIndex, claimer: str, module: str | None, level
 
 
 def _dynamic_ns(index: RepoIndex, rel: str) -> bool:
-    return rel in index.file_dynamic_ns
+    return rel in index.file_dynamic_ns or rel in index.file_replaces_self
 
 
 def _effective_symbols(index: RepoIndex, rel: str, depth: int = 0,
@@ -144,6 +150,10 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 ))
                 break
             if not existing:
+                if module and not level and _shadowed_external(index, module):
+                    break  # `pylint/` container dir vs the installed pylint
+                if module and any(len(seg) > 1 and seg.isupper() for seg in module.split(".")):
+                    break  # `components.NEW_DOMAIN`: a template placeholder
                 if _registered_at_runtime(index, targets):
                     break  # an ancestor module fills sys.modules: unknowable
                 if _py_target_has_stub(index, targets):
@@ -168,6 +178,10 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             # Dynamic namespace injection (`globals().update(...)`):
             # names cannot be enumerated statically. Seen: re/_constants.
             dynamic = dynamic or any(t in index.file_dynamic_ns for t in existing)
+            # A module that replaces itself in sys.modules serves names from
+            # the replacement (transformers/diffusers `_LazyModule`, whose
+            # export list is generated from submodules): unknowable.
+            dynamic = dynamic or any(t in index.file_replaces_self for t in existing)
             home = existing[0].rsplit("/", 1)[0] if "/" in existing[0] else ""
             submod = (home + "/" + name + ".py") if home else (name + ".py")
             subpkg = (home + "/" + name + "/__init__.py") if home else (name + "/__init__.py")
@@ -187,6 +201,15 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     return _dedupe(findings)
 
 
+# Output directories of code generators, each seen importing-before-codegen
+# in a real repo (never a blanket dot-dir rule: `.github` is not generated).
+#   styled-system  Panda CSS            (next.js examples/panda-css)
+#   .mesh          GraphQL Mesh         (next.js examples/with-graphql-gateway)
+#   edgeql-js      EdgeDB query builder (next.js examples/with-edgedb)
+#   .source        fumadocs             (roadmap residual)
+_CODEGEN_OUTPUT = re.compile(r"/(styled-system|\.mesh|edgeql-js|\.source)/")
+
+
 def _js_exists_on_disk(index: RepoIndex, base: str, kind: str) -> bool:
     """Existence by Node's own rules, checked on disk: the index holds only
     scanned sources. CommonJS `require` appends extensions even after one
@@ -198,6 +221,11 @@ def _js_exists_on_disk(index: RepoIndex, base: str, kind: str) -> bool:
         for e in exts:
             if (root / (base + e)).is_file():
                 return kind == "require" or e == "" or e in _JS_EXTS
+        # Directory import: `../build` -> build/index.ts. Needed on disk
+        # because directories named like build output are never indexed
+        # (seen: next.js packages/next/src/build/).
+        if (root / base).is_dir():
+            return any((root / base / ("index" + e)).is_file() for e in _JS_EXTS)
         return False
     except OSError:
         return False
@@ -219,6 +247,21 @@ def _pkg_browser_field(index: RepoIndex, claimer: str) -> bool:
         if not cur:
             return False
         cur = posixpath.dirname(cur)
+
+
+def _shadowed_external(index: RepoIndex, module: str) -> bool:
+    """A missing absolute import whose top segment is a repo directory that
+    is not a Python package (no `__init__.py`) names the installed package
+    of the same name: home-assistant keeps its own lint plugins under a
+    top-level `pylint/` folder, so `from pylint.checkers import
+    BaseChecker` read as 161 missing modules. Namespace packages whose
+    targets exist never reach this (they resolve first)."""
+    top = module.split(".")[0]
+    try:
+        d = index.root / top
+        return d.is_dir() and not (d / "__init__.py").is_file()
+    except OSError:
+        return False
 
 
 def _py_target_has_stub(index: RepoIndex, targets: list[str]) -> bool:
@@ -625,6 +668,8 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             if index.is_gitignored(base) or any(
                     index.is_gitignored(base + e) for e in _JS_EXTS):
                 continue  # gitignored build/test output
+            if _CODEGEN_OUTPUT.search("/" + base + "/"):
+                continue  # written by a code generator after install
             if spec.startswith((".", "/")) and _js_exists_on_disk(index, base, kind):
                 continue  # present but unindexed (CJS `.tsx` + `.js`, json)
             if _pkg_browser_field(index, facts.path):
@@ -667,6 +712,11 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             complete = complete and ok
         if not complete:
             continue  # unknowable export surface: stay silent, never guess
+        if not provided and all(t not in index.file_esm for t in targets):
+            # A target that exports nothing at all is a build-time shim
+            # replaced by the bundler (React's ReactFiberConfig.js throws
+            # "This module must be shimmed"), not a module that lost names.
+            continue
         if default is not None and "default" not in provided:
             if not all(t in index.file_esm for t in targets):
                 continue  # CJS/script target: default interop always binds

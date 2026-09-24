@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-import", "path": "pkg/sub/mod.py", "line": 1, "contains": "gone"}]}

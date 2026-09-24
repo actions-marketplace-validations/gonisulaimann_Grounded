@@ -104,7 +104,8 @@ def check_stale_entrypoint(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                     continue  # unparsed target may provide it: unknowable
                 provided = any(func in _effective_symbols(index, t) for t in existing)
                 dynamic = any("__getattr__" in index.file_symbols.get(t, set())
-                              or t in index.file_dynamic_ns for t in existing)
+                              or t in index.file_dynamic_ns
+                              or t in index.file_replaces_self for t in existing)
                 if provided or dynamic:
                     continue
                 findings.append(Finding(

@@ -65,6 +65,11 @@ JS_GLOBALS = {
     "require", "module", "exports", "process", "setImmediate",
     "describe", "it", "test", "expect", "beforeEach", "afterEach",
     "useState", "useEffect", "useRef", "useMemo", "useCallback",
+    # ECMAScript and platform globals (measured misses: React compiler
+    # comments naming `Symbol` and `Math.random`).
+    "Symbol", "Reflect", "Proxy", "Map", "Set", "WeakMap", "WeakSet",
+    "BigInt", "Intl", "globalThis", "queueMicrotask", "structuredClone",
+    "Atomics", "SharedArrayBuffer", "ArrayBuffer", "DataView",
 }
 
 # Language keywords must never be mistaken for symbol references,
@@ -148,6 +153,11 @@ C_STDLIB_FUNCS = {
     "eventfd", "epoll_wait", "epoll_ctl", "epoll_create", "kqueue", "kevent",
     "port_get", "port_getn", "port_associate", "port_create", "container_of",
     "vfork", "clone", "setjmp", "longjmp", "atexit", "getenv", "setenv",
+    # More syscalls/libc named in Go and Python comments (kubernetes,
+    # cpython): measured misses.
+    "openat", "umount", "umount2", "mount", "getpagesize", "wcsdup",
+    "flockfile", "funlockfile", "fcntl", "ioctl", "sysconf", "mprotect",
+    "posix_spawn", "execv", "pread", "pwrite", "renameat", "unlinkat",
 }
 
 C_KEYWORDS = {
@@ -176,6 +186,11 @@ def _is_reserved(base: str, language: str) -> bool:
         return True
     if language == "c" and base.endswith("s") and base[:-1] in C_STDLIB_FUNCS:
         return True  # pluralized call in prose: "the parent forks()"
+    if language in ("go", "python") and base in C_STDLIB_FUNCS and base not in (
+            "open", "read", "write", "close", "time", "stat", "select", "link", "send"):
+        # Syscall/libc names in Go and Python comments (`openat()`,
+        # `getpagesize()`); generic verbs stay checkable in those languages.
+        return True
     return False
 
 
@@ -183,6 +198,19 @@ def _is_reserved(base: str, language: str) -> bool:
 # underscore. C codebases namespace their own functions (`Curl_`, `RM_`,
 # `sqlite3_`), so in C comments these are platform calls, not repo claims.
 _C_PLATFORM_CAMEL = re.compile(r"[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+")
+
+
+_WINDOWS_MODULES = frozenset({"_winapi", "_overlapped", "msvcrt", "winreg", "_winreg",
+                              "win32api", "win32file", "win32con", "pywintypes", "wmi"})
+
+
+def _windows_context(facts: FileFacts) -> bool:
+    cached = facts.__dict__.get("_windows_context")
+    if cached is None:
+        cached = bool(_WINDOWS_MODULES & set(facts.imports.values())) or any(
+            re.search(r"\b(Windows|Win32|WinAPI|IOCP)\b", c.text) for c in facts.comments)
+        facts.__dict__["_windows_context"] = cached
+    return cached
 
 
 def _external_or_family(base: str, facts: FileFacts, index: RepoIndex) -> bool:
@@ -195,6 +223,18 @@ def _external_or_family(base: str, facts: FileFacts, index: RepoIndex) -> bool:
       system-included library header (`ares_process()` with `<ares.h>`).
     """
     if base.startswith("_") and len(base) >= 4 and base in index.underscore_suffixes():
+        return True
+    if facts.language == "javascript" and base[:1].isupper() and "_" not in base \
+            and base not in index.all_symbols and _C_PLATFORM_CAMEL.fullmatch(base):
+        # PascalCase calls in JS comments are ECMAScript abstract operations
+        # (`IsAnonymousFunctionDefinition()`) or constructors: repo functions
+        # are camelCase, and a repo class would be in the index.
+        return True
+    if facts.language == "python" and "_" not in base and base not in index.all_symbols \
+            and _C_PLATFORM_CAMEL.fullmatch(base) and _windows_context(facts):
+        # Win32 APIs in Python comments (`CreateFile()`, cpython asyncio).
+        # Only with Windows evidence: elsewhere a PascalCase call is a
+        # class, and a renamed class must keep firing.
         return True
     if facts.language == "c":
         if "_" not in base and _C_PLATFORM_CAMEL.fullmatch(base):
@@ -227,6 +267,8 @@ def _is_placeholder_path(ref: str) -> bool:
     stem = parts[-1].rsplit(".", 1)[0]
     if stem in _PLACEHOLDER_PATH_STEMS:
         return True
+    if any("xxx" in p for p in parts):
+        return True  # `utils/dummy_xxx_objects.py`: Xxx convention inside a name
     return any(_PLACEHOLDER_PATH_SEGMENT.fullmatch(s) for s in parts[:-1] + [stem])
 
 

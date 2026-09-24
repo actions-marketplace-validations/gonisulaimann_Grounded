@@ -599,6 +599,35 @@ class TestParallelIndexBuild(unittest.TestCase):
             self.assertEqual(idx._texts, {str(f): "X = 1\n"})
 
 
+class TestBrokenPoolFallback(unittest.TestCase):
+    """A worker killed mid-scan (OOM, sandbox) must not lose the scan:
+    both process pools fall back to the serial path, same result."""
+
+    def test_checker_pool_breaks(self):
+        from concurrent.futures.process import BrokenProcessPool
+        from unittest import mock
+        import grounded.scanner as sc
+
+        class Boom:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                raise BrokenProcessPool("worker killed")
+
+            def __exit__(self, *a):
+                return False
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for i in range(3):
+                (root / f"m{i}.py").write_text("# Calls `ghost_fn()` here.\nX = 1\n", encoding="utf-8")
+            serial, _, _ = scan_root(root, Config(), jobs=1)
+            with mock.patch.object(sc, "ProcessPoolExecutor", Boom):
+                broken, _, _ = sc.scan_root(root, Config(), jobs=2)
+            self.assertEqual([(f.path, f.line) for f in broken], [(f.path, f.line) for f in serial])
+            self.assertEqual(len(broken), 3)
+
+
 class TestChangedFastPath(unittest.TestCase):
     """`scan --changed` checks only changed files and files naming a
     changed symbol; the report must equal a full scan filtered by
