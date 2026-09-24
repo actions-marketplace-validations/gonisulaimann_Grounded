@@ -3793,6 +3793,92 @@ class TestSubTreeScanOpacity(unittest.TestCase):
             self.assertTrue([f for f in findings if f.checker == "stale-import"])
 
 
+class TestDirectoryScanScope(unittest.TestCase):
+    """`grounded scan <subdir>` indexes the whole project and scopes only
+    the report, exactly like a file argument.
+
+    Measured: a comment in `src/` naming a helper defined in `scripts/` was
+    a stale-symbol-ref lie under `scan src` and clean under `scan .`, and
+    CI gates (`grounded scan src`) could not see file refs the root scan
+    reported. One file, one verdict, whatever directory was named.
+    """
+
+    def _project(self, td: str) -> Path:
+        root = Path(td)
+        (root / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding="utf-8")
+        (root / "scripts").mkdir()
+        (root / "scripts" / "tools.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+        (root / "src" / "app").mkdir(parents=True)
+        (root / "src" / "app" / "core.py").write_text(
+            "# Nightly job calls `helper()` to rebuild caches.\ndef run():\n    return 2\n",
+            encoding="utf-8")
+        (root / "src" / "app" / "bad.py").write_text(
+            "# Calls `ghost_fn()` for retries.\nX = 1\n", encoding="utf-8")
+        (root / "scripts" / "bad.py").write_text(
+            "# Calls `other_ghost()` for retries.\nY = 1\n", encoding="utf-8")
+        return root
+
+    def _scan_json(self, *argv: str) -> tuple[int, list[dict]]:
+        import contextlib
+        import io
+        from grounded.cli import main
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = main(["scan", *argv, "--no-color", "--format", "json", "--fail-on", "never"])
+        return rc, json.loads(buf.getvalue())
+
+    def test_subdir_scan_sees_definitions_outside_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._project(td)
+            _, got = self._scan_json(str(root / "src"))
+            self.assertNotIn("src/app/core.py", {f["path"] for f in got})
+
+    def test_subdir_scan_reports_only_its_subtree_with_project_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._project(td)
+            _, got = self._scan_json(str(root / "src"))
+            self.assertEqual({f["path"] for f in got}, {"src/app/bad.py"})
+
+    def test_subdir_and_root_scans_agree_per_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._project(td)
+            _, sub = self._scan_json(str(root / "src"))
+            _, whole = self._scan_json(str(root))
+            key = lambda f: (f["path"], f["line"], f["checker"])
+            self.assertEqual(sorted(map(key, sub)),
+                             sorted(key(f) for f in whole if f["path"].startswith("src/")))
+
+    def test_resolve_scan_scope(self):
+        from grounded.scanner import in_scope, resolve_scan_scope
+        with tempfile.TemporaryDirectory() as td:
+            root = self._project(td)
+            self.assertEqual(resolve_scan_scope(root), (root.resolve(), None))
+            self.assertEqual(resolve_scan_scope(root / "src" / "app"),
+                             (root.resolve(), "src/app"))
+            self.assertTrue(in_scope("src/app/x.py", "src/app"))
+            self.assertFalse(in_scope("src/application.py", "src/app"))
+            self.assertTrue(in_scope("anything.py", None))
+
+    def test_never_climbs_to_home(self):
+        from unittest import mock
+        from grounded.scanner import project_root_for
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td).resolve()
+            (home / ".git").mkdir()  # a dotfiles repo at ~
+            lone = home / "scratch" / "notes"
+            lone.mkdir(parents=True)
+            with mock.patch("pathlib.Path.home", return_value=home):
+                self.assertEqual(project_root_for(lone), lone)
+                self.assertEqual(project_root_for(home), home)
+
+    def test_placeholder_paths_are_not_claims(self):
+        from grounded.checkers import _is_placeholder_path
+        for ref in ("src/mypkg/x.py", "src/old/x.py", "my_app/models.py", "lib/mymodule.js"):
+            self.assertTrue(_is_placeholder_path(ref), ref)
+        for ref in ("src/app/loader.py", "myth/core.py", "src/xy.py", "mypy/checker.py"):
+            self.assertFalse(_is_placeholder_path(ref), ref)
+
+
 class TestGhostExportSuppression(unittest.TestCase):
     def _scan(self, root):
         return scan_root(root, Config(enabled={"ghost-export"}))[0]

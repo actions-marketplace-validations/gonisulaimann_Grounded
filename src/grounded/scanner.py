@@ -36,9 +36,19 @@ def project_root_for(start: Path, stop: Path | None = None) -> Path:
     `stop` when given, e.g. an MCP server root), so behavior on
     marker-less trees is unchanged.
     """
-    cur = start.resolve()
+    first = start.resolve()
+    cur = first
     limit = stop.resolve() if stop is not None else None
+    # Never climb *to* the home directory or above it: a dotfiles repo at
+    # `~` would turn every marker-less scan into an index of the whole home
+    # tree. Starting there (scanning `~` itself) is still allowed.
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        home = None
     while True:
+        if home is not None and cur != first and (cur == home or cur in home.parents):
+            break
         try:
             if any((cur / m).exists() for m in _PROJECT_MARKERS):
                 return cur
@@ -50,7 +60,32 @@ def project_root_for(start: Path, stop: Path | None = None) -> Path:
         if limit is not None and (cur == limit or len(parent.parts) < len(limit.parts)):
             break
         cur = parent
-    return start.resolve()
+    return first
+
+
+def resolve_scan_scope(target: Path, stop: Path | None = None) -> tuple[Path, str | None]:
+    """(index root, report prefix) for a scan target.
+
+    The index always covers the target's whole project; the prefix scopes
+    reporting to the target. Indexing only a subdirectory manufactures
+    absence claims about everything outside it (a comment in `src/` naming
+    a helper in `scripts/` read as a lie), so the verdict for a file must
+    not depend on which directory the user happened to scan. The prefix is
+    None when the target is the project root itself.
+    """
+    resolved = target.resolve()
+    base = resolved if resolved.is_dir() else resolved.parent
+    root = project_root_for(base, stop=stop)
+    try:
+        rel = resolved.relative_to(root).as_posix()
+    except ValueError:
+        return base, None
+    return root, (None if rel in (".", "") else rel)
+
+
+def in_scope(path: str, prefix: str | None) -> bool:
+    """Whether a project-relative finding path falls under a scan prefix."""
+    return prefix is None or path == prefix or path.startswith(prefix + "/")
 
 
 def warn_unknown_suppressions(facts_list: list[FileFacts]) -> list[tuple[str, int, list[str]]]:

@@ -191,6 +191,28 @@ PLACEHOLDER_PATH_HINTS = {"example", "examples", "path", "to", "foo", "bar", "ba
     "placeholder", "sample", "demo", "<", ">", "...", "xxx",
     "myapp", "mysite", "app_label", "yourproject", "yourdomain", "sitename"}
 
+# Metasyntactic path parts. `my`-prefixed nouns (`mypkg`, `my_app`) are the
+# docstring convention for "your package", and x/y/z are the classic
+# variable stems: `src/mypkg/x.py` in a comment explains a layout, it does
+# not claim a file (seen: Grounded's own `src/mypkg/x.py` and `src/old/x.py`
+# layout notes, reported as lies once subdirectory scans indexed the whole
+# project). A real file with that name still resolves first.
+_PLACEHOLDER_PATH_SEGMENT = re.compile(
+    r"my[_-]?(?:pkg|package|module|mod|lib|library|app|application|project|"
+    r"proj|file|dir|folder|repo|service|component|plugin|script|code)s?")
+_PLACEHOLDER_PATH_STEMS = frozenset({"x", "y", "z"})
+
+
+def _is_placeholder_path(ref: str) -> bool:
+    parts = [s for s in ref.lower().split("/") if s]
+    if not parts:
+        return False
+    stem = parts[-1].rsplit(".", 1)[0]
+    if stem in _PLACEHOLDER_PATH_STEMS:
+        return True
+    return any(_PLACEHOLDER_PATH_SEGMENT.fullmatch(s) for s in parts[:-1] + [stem])
+
+
 REFERENCE_VERBS = re.compile(
     r"\b(calls?|invokes?|uses?|using|see|refers?\s+to|delegates?\s+to|wraps?|handled?\s+by|defined\s+in|implemented\s+in)\b",
     re.IGNORECASE,
@@ -1281,6 +1303,8 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             ref = m.group(1)
             segs = [s.lower() for s in re.split(r"[/.]", ref)]
             if any(h in segs for h in PLACEHOLDER_PATH_HINTS):
+                continue
+            if _is_placeholder_path(ref) and not index.has_exact_path(ref):
                 continue
             # Elided paths (`src/.../EndpointPageClient.tsx`) are shorthand the
             # author chose instead of a full path: the `...` IS the

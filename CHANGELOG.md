@@ -5,7 +5,24 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- **Directory scans index the whole project.** `grounded scan src` (and
+  `baseline`, `fix`, `impact` on a subdirectory) now build the index from
+  the directory's project root (nearest marker ancestor, never climbing to
+  `~`) and scope only the *report* to the directory, as file arguments
+  already did. Finding paths are project-relative (`src/app/x.py`, not
+  `app/x.py`); regenerate baselines written from a subdirectory scan.
+
 ### Fixed
+- **Subdirectory scans manufactured lies.** A comment in `src/` naming a
+  helper defined in `scripts/` was a `stale-symbol-ref` lie under
+  `scan src` and clean under `scan .`; the same partial snapshot hid
+  project-wide file refs from `scan src` CI gates. One file now gets one
+  verdict whatever directory was named.
+- **Metasyntactic paths read as file claims.** `src/mypkg/x.py`-style
+  layout explanations (`my`-prefixed package nouns, `x`/`y`/`z` stems) are
+  placeholders unless the file really exists (corpus:
+  `adv-metasyntactic-path`, with a real stale path as positive control).
 - **History notes and ticket-anchored blocks reported as lies** (this
   round: httpx, preact — see below).
 - **Recall harness phantom misses on case-insensitive filesystems.**
