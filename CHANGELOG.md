@@ -6,6 +6,12 @@ All notable changes to `grounded` are documented here. Format follows
 ## [Unreleased]
 
 ### Added
+- **`stale-cli-flag`** (experimental, opt-in): documented invocations of
+  the repository's own programs using a long flag no parser in the repo
+  declares. Programs from `[project.scripts]`, `console_scripts`,
+  package.json `bin` and Go `cmd/`; flags from argparse, click, pytest
+  `addoption`, Go `flag`/cobra/pflag and commander/cac; Markdown, reST and
+  Sphinx `.txt` docs. Silent whenever the inventory cannot be complete.
 - **`grounded hook claude-code`**: a Claude Code PostToolUse adapter. It
   reads the edit event on stdin, checks lines changed since `HEAD` plus
   rename fallout in other files, and exits `2` with the findings on
@@ -15,6 +21,14 @@ All notable changes to `grounded` are documented here. Format follows
   writes it to the job summary (`summary: 'true'`, default).
 
 ### Fixed
+- **Source packages named like build output were never scanned.**
+  `coverage/`, `build/`, `dist/` and `out/` were skipped by name, so
+  coverage.py's and pypa/build's own packages were invisible. A directory
+  holding `__init__.py` is now scanned unless `ignore_dirs` names it.
+- **stale-mock-ref ignored submodules** (`patch.object(_ctx, ...)` after
+  `from build import _ctx`).
+- **stale-file-ref read `pyproject.toml/.coveragerc.toml` as a path.** A
+  path whose directory part is an existing file is an alternatives list.
 - **The Claude Code hook never reached the agent.** `init-agent --claude`
   installed `grounded scan . --changed --quiet`, which exits `1` on
   findings; Claude Code shows exit-1 stderr to the human only, and

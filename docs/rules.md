@@ -11,6 +11,7 @@
 | `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module. Graduated 2026-09-22. |
 | `phantom-package` | drift (warning), **experimental, opt-in only** | An absolute import declared in no manifest (`pyproject.toml`, `requirements*.txt`, `package.json`). |
 | `stale-cli-ref` | lie (error), **experimental, opt-in only** | A documented `grounded` invocation with an unknown subcommand or flag (verified against the live parser). |
+| `stale-cli-flag` | lie (error), **experimental, opt-in only** | Docs (Markdown, reST, Sphinx `.txt`) invoke one of this repo's own programs (`[project.scripts]`, `console_scripts`, package.json `bin`, Go `cmd/<name>`) with a long flag that no argparse/click/pytest `addoption`/Go `flag`/cobra/commander definition in the repo declares. |
 | `unclosed-fence` | lie (error) | A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open: the content after it renders as code, and the doc checkers' fence state inverts from there on. Graduated 2026-09-22 — promoted alongside the shared CommonMark fence walk, with the differential fuzz pinning the walk. |
 ## Experimental checkers
 
@@ -46,6 +47,26 @@ Known residue: reader-supplied narrative helpers (`handleError`,
 from real staleness. Measured on axios docs: 580 → 40 findings (×5
 i18n duplication ≈ 8 unique families, all narrative residue, zero true
 positives found).
+
+`stale-cli-flag`: generalizes `stale-cli-ref` to any repository, statically.
+Only invocations at command position of the repo's own programs are judged
+(`conda install gh --channel x` is conda's), only long flags, and only when
+the flag inventory can be complete: a repo using typer, fire, docopt, yargs,
+minimist or meow, or a click command with `ignore_unknown_options` /
+`allow_extra_args`, reports nothing. argparse prefix abbreviations (unique
+or ambiguous), `--no-<flag>` negations, flags spelled as string literals in
+code (`if "--commands" in args`), options defined by an example on the same
+page (`parser.addoption("--runslow")` then `pytest --runslow`), unknown
+subcommands (extensions like `gh aw`), changelogs and release notes, and
+illustrative prose ("as in `pytest --log-output ...`") all stay silent.
+Measured 2026-09-24 on 30 repositories with CLIs (flask, black, pytest,
+django, scrapy, celery, sphinx, pip, tox, flake8, coverage, docker/cli,
+cli/cli, goreleaser, terraform, ...): 2 false positives (a UX-research
+page proposing a flag pip never shipped; flake8's `--max-complexity`,
+registered by the external mccabe plugin), 0 true positives in the
+current trees. Recall, by renaming a documented flag in code and leaving
+the docs: every non-changelog invocation caught in pytest (9), flake8 (2),
+tox (1) and pip-tools (1).
 
 `stale-contract-ref`: only narrow frames report — deprecation sentences
 with a replacement name, `must hold`/`guarded by`-style lock claims on

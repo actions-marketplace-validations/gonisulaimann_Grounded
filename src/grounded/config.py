@@ -46,6 +46,9 @@ class Config:
         self.ignore_files = set(ignore_files) if ignore_files is not None else set(DEFAULT_IGNORE_FILES)
         self.fail_on = fail_on
         self.path_aliases = dict(path_aliases) if path_aliases else {}
+        # Directory names the user asked to ignore (config file), as opposed
+        # to the build-output defaults: only these win over package evidence.
+        self.explicit_ignore_dirs: set[str] = set()
 
     @classmethod
     def load(cls, root: Path, explicit: str | None = None) -> "Config":
@@ -104,8 +107,11 @@ class Config:
                     path_aliases[str(key)] = [val]
                 elif isinstance(val, list):
                     path_aliases[str(key)] = [str(v) for v in val if isinstance(v, (str, int, float))]
-        return cls(enabled=enabled, ignore_dirs=ignore_dirs, ignore_files=ignore_files, fail_on=fail_on,
-                   path_aliases=path_aliases)
+        cfg = cls(enabled=enabled, ignore_dirs=ignore_dirs, ignore_files=ignore_files, fail_on=fail_on,
+                  path_aliases=path_aliases)
+        if "ignore_dirs" in data:
+            cfg.explicit_ignore_dirs = {str(x) for x in data["ignore_dirs"]}
+        return cfg
 
 
 def _read_toml(path: Path, section: str | None = None) -> dict:

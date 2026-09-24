@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-symbol-ref", "path": "build/sdist.py", "line": 1, "contains": "make_sdist"}]}
