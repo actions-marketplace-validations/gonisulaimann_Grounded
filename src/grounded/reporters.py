@@ -1,4 +1,4 @@
-"""Reporters: terminal, JSON, SARIF, self-contained HTML. Stdlib only."""
+"""Reporters: terminal, JSON, SARIF, Markdown, self-contained HTML. Stdlib only."""
 from __future__ import annotations
 
 import html
@@ -101,6 +101,36 @@ def to_sarif(findings: list[Finding], root: str = "") -> str:
         }],
     }
     return json.dumps(sarif, indent=2)
+
+
+def _md_cell(text: str) -> str:
+    """Table-safe inline text: pipes and newlines would break the row, and
+    backticks inside a code span need a wider fence."""
+    text = (text or "").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    return text
+
+
+def to_markdown(findings: list[Finding], n_files: int, n_checker_errors: int = 0) -> str:
+    """GitHub-flavored Markdown summary (PR comments, job summaries)."""
+    counts = {"lie": 0, "drift": 0, "smell": 0}
+    for f in findings:
+        counts[f.severity] = counts.get(f.severity, 0) + 1
+    head = "### grounded"
+    if n_checker_errors:
+        return (f"{head}\n\n**Incomplete scan:** {n_checker_errors} checker error(s). "
+                f"No verdict is available; see the job log.\n")
+    if not findings:
+        return f"{head}\n\nNo findings in {n_files} file(s).\n"
+    summary = ", ".join(f"{counts[k]} {k}{'s' if counts[k] != 1 else ''}"
+                        for k in ("lie", "drift", "smell") if counts[k])
+    out = [head, "", f"{len(findings)} finding(s) in {n_files} file(s): {summary}.", "",
+           "| Severity | Location | Checker | Finding |", "|---|---|---|---|"]
+    for f in findings:
+        out.append(f"| {f.severity} | `{_md_cell(f.path)}:{f.line}` | `{f.checker}` | "
+                   f"{_md_cell(f.title)} |")
+    out.append("")
+    out.append("Suppress an intentional reference with `grounded-disable: <checker>` on its line.")
+    return "\n".join(out) + "\n"
 
 
 def to_html(findings: list[Finding], n_files: int, root: str = "") -> str:

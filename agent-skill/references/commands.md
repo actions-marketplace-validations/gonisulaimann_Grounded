@@ -4,7 +4,7 @@ Condensed CLI surface for agents. Flags not listed here do not exist;
 do not invent invocations.
 
 ```console
-grounded scan [PATH] [--format terminal|json|sarif|html] [--output FILE]
+grounded scan [PATH] [--format terminal|json|sarif|markdown|html] [--output FILE]
               [--fail-on lie|drift|smell|never]
               [--enable ID,...] [--disable ID,...]
               [--baseline FILE] [--show-baselined]

@@ -15,6 +15,7 @@ Generated from `grounded --help`; if this page and `--help` disagree,
 | `explain [CHECKER]` | Describe a checker (or where a removed one went). Never writes. |
 | `init` | Write a starter `grounded.toml`. Refuses to overwrite without `--force`. |
 | `init-agent` | Write Claude/Cursor/Aider configs, or install the agent skill (`--skill` for all projects, `--skill-project` for this repo). Refuses invalid JSON, never merges YAML blindly, never writes outside the repo without `--skill`. |
+| `hook claude-code` | Claude Code PostToolUse adapter: reads the edit event on stdin, checks changed lines plus rename fallout, exits `2` with findings on stderr (fed back to the model). Never writes. |
 | `mcp` | Serve MCP over stdio. Never writes. |
 | `lsp` | Serve LSP 3.17 over stdio. Never writes. |
 
@@ -25,7 +26,7 @@ unambiguous findings. Everything else is read-only by construction.
 
 | Flag | Effect |
 |---|---|
-| `--format terminal\|json\|sarif\|html` | Output shape (default `terminal`). |
+| `--format terminal\|json\|sarif\|markdown\|html` | Output shape (default `terminal`). `markdown` is a GitHub-flavored table for PR comments and job summaries. |
 | `--output FILE`, `-o` | Write the report to a file instead of stdout. |
 | `--fail-on lie\|drift\|smell\|never` | Minimum severity that exits `1` (default from config, else `lie`). |
 | `--enable ID,...` / `--disable ID,...` | Run a subset of checkers. Unknown ids are dropped; an emptied set falls back to all. Opt-in checkers (`stale-doc-ref`, `stale-contract-ref`, `ghost-export`, `phantom-package`, `stale-cli-ref`, `unclosed-fence`) run only when named. |
