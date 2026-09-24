@@ -211,8 +211,7 @@ def _external_or_family(base: str, facts: FileFacts, index: RepoIndex) -> bool:
     * C only: Win32-style CamelCase APIs, and functions whose prefix is a
       system-included library header (`ares_process()` with `<ares.h>`).
     """
-    if base.startswith("_") and len(base) >= 4 and any(
-            len(sym) > len(base) and sym.endswith(base) for sym in index.all_symbols):
+    if base.startswith("_") and len(base) >= 4 and base in index.underscore_suffixes():
         return True
     if facts.language == "c":
         if "_" not in base and _C_PLATFORM_CAMEL.fullmatch(base):
@@ -335,10 +334,15 @@ _DATA_MODEL_DUNDERS = frozenset(n for n in dir(object) + dir(type) + [
 
 def _dunder_typo_of(name: str, index: RepoIndex) -> bool:
     """Whether a dunder is one edit away from a real one (typo class)."""
-    pool = _DATA_MODEL_DUNDERS | {n for n in index.all_symbols if _is_dunder(n)}
-    if name in pool:
+    dunders = index.dunder_symbols() if hasattr(index, "dunder_symbols") else frozenset(
+        n for n in index.all_symbols if _is_dunder(n))
+    if name in _DATA_MODEL_DUNDERS or name in dunders:
         return False
-    return bool(difflib.get_close_matches(name, sorted(pool), n=1, cutoff=0.85))
+    memo = index.__dict__.setdefault("_dunder_typo_memo", {}) if hasattr(index, "__dict__") else {}
+    if name not in memo:
+        pool = sorted(_DATA_MODEL_DUNDERS | dunders)
+        memo[name] = bool(difflib.get_close_matches(name, pool, n=1, cutoff=0.85))
+    return memo[name]
 
 
 def _stdlib_class(root: str) -> bool:
@@ -369,11 +373,19 @@ def _scrub_docstring(doc: str, language: str) -> str:
 
 
 def _comment_lines(facts: FileFacts) -> dict[int, str]:
-    """Map of line number to comment text (multi-line blocks expanded)."""
+    """Map of line number to comment text (multi-line blocks expanded).
+
+    Cached per FileFacts: _nearby_ticket asks once per candidate claim, and
+    rebuilding the map each time was quadratic in a file's comments (12 s
+    of a cpython scan). Callers must not mutate the result."""
+    cached = facts.__dict__.get("_comment_line_map")
+    if cached is not None:
+        return cached
     by_line: dict[int, str] = {}
     for c in facts.comments:
         for ln in range(c.line, c.end_line + 1):
             by_line.setdefault(ln, c.text)
+    facts.__dict__["_comment_line_map"] = by_line
     return by_line
 
 

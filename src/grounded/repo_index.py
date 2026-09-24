@@ -207,6 +207,29 @@ class RepoIndex:
             pass
         self._build()
 
+    def underscore_suffixes(self) -> set[str]:
+        """Every `_tail` of every symbol (`cf_socket_active` -> `_socket_active`,
+        `_active`), built once per process: family-fragment lookups were a
+        linear scan of all symbols per candidate (232M calls on cpython)."""
+        cached = self.__dict__.get("_underscore_suffixes")
+        if cached is None:
+            cached = set()
+            for sym in self.all_symbols:
+                i = sym.find("_", 1)
+                while i != -1:
+                    cached.add(sym[i:])
+                    i = sym.find("_", i + 1)
+            self.__dict__["_underscore_suffixes"] = cached
+        return cached
+
+    def dunder_symbols(self) -> frozenset[str]:
+        cached = self.__dict__.get("_dunder_symbols")
+        if cached is None:
+            cached = frozenset(n for n in self.all_symbols
+                               if len(n) > 4 and n.startswith("__") and n.endswith("__"))
+            self.__dict__["_dunder_symbols"] = cached
+        return cached
+
     def knows_symbols(self, rel: str) -> bool:
         """False when rel failed to parse: absence there is unknowable."""
         return rel not in self.parse_failed
@@ -348,7 +371,13 @@ class RepoIndex:
         if rebuild:
             self._rebuild_unions()
 
+    _LAZY_DERIVED = ("_underscore_suffixes", "_dunder_symbols", "_dunder_typo_memo")
+
     def _rebuild_unions(self) -> None:
+        # Derived lookups follow all_symbols: drop them so LSP edits that
+        # rebuild the unions never read a stale cache.
+        for lazy in self._LAZY_DERIVED:
+            self.__dict__.pop(lazy, None)
         self.all_symbols = set(self.py_symbols) | set(self.js_symbols) | set(self.go_symbols) | set(self.c_symbols)
         self.lower_map = {}
         for s in self.all_symbols:

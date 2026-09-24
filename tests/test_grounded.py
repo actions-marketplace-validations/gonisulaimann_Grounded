@@ -3958,6 +3958,16 @@ class TestPrecisionRound(unittest.TestCase):
         got = _c_imports("/* hdr */\n#include <stdio.h>\n#  include <ares.h>\n#include \"local.h\"\n")
         self.assertEqual(got, {"stdio": "stdio.h", "ares": "ares.h", "local": ""})
 
+    def test_derived_lookups_follow_rebuilds(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            f = root / "a.py"
+            f.write_text("def cf_socket_active():\n    pass\n", encoding="utf-8")
+            idx = RepoIndex(root, [f])
+            self.assertIn("_active", idx.underscore_suffixes())
+            idx._index_one("a.py", ".py", "def renamed():\n    pass\n")
+            self.assertNotIn("_active", idx.underscore_suffixes())
+
     def test_dunder_typo_only(self):
         from grounded.checkers import _dunder_typo_of
 

@@ -344,6 +344,7 @@ def _scan_one(args: tuple[str, str, list[str]]) -> tuple[FileFacts | None, list[
             # reads exactly like a clean file in every summary, so record it
             # and let the caller fail instead of reporting `clean`.
             errors.append(CheckerError(checker_id, rel, f"{type(exc).__name__}: {exc}"))
+    facts.__dict__.pop("_comment_line_map", None)  # checker-local cache, not a fact
     return facts, findings, errors
 
 
