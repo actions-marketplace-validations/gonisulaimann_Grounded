@@ -159,6 +159,12 @@ C_STDLIB_FUNCS = {
     "gettimeofday", "localtime", "gmtime", "signal", "kill", "madvise",
     "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof",
     "atoll", "atof",
+    # Measured misses (jq, curl, redis comments): stdio char I/O, Linux and
+    # BSD/Solaris event APIs, and the kernel-style container_of macro.
+    "fgetc", "fputc", "getc", "putc", "ungetc", "fgets", "fputs", "fflush",
+    "eventfd", "epoll_wait", "epoll_ctl", "epoll_create", "kqueue", "kevent",
+    "port_get", "port_getn", "port_associate", "port_create", "container_of",
+    "vfork", "clone", "setjmp", "longjmp", "atexit", "getenv", "setenv",
 }
 
 C_KEYWORDS = {
@@ -185,11 +191,61 @@ def _is_reserved(base: str, language: str) -> bool:
         return True
     if language == "c" and (base in C_STDLIB_FUNCS or base in C_KEYWORDS):
         return True
+    if language == "c" and base.endswith("s") and base[:-1] in C_STDLIB_FUNCS:
+        return True  # pluralized call in prose: "the parent forks()"
+    return False
+
+
+# Win32-style API names (`DsMakeSPN`, `GetLastError`): CamelCase with no
+# underscore. C codebases namespace their own functions (`Curl_`, `RM_`,
+# `sqlite3_`), so in C comments these are platform calls, not repo claims.
+_C_PLATFORM_CAMEL = re.compile(r"[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+")
+
+
+def _external_or_family(base: str, facts: FileFacts, index: RepoIndex) -> bool:
+    """Names a comment may cite that the snapshot cannot own.
+
+    * `_suffix()` fragments name a family by its shared tail (curl's
+      "its `_active()` method" -> `cf_socket_active`), when some repo
+      symbol ends with the fragment.
+    * C only: Win32-style CamelCase APIs, and functions whose prefix is a
+      system-included library header (`ares_process()` with `<ares.h>`).
+    """
+    if base.startswith("_") and len(base) >= 4 and base in index.underscore_suffixes():
+        return True
+    if facts.language == "c":
+        if "_" not in base and _C_PLATFORM_CAMEL.fullmatch(base):
+            return True
+        head = base.split("_", 1)[0]
+        if "_" in base and facts.imports.get(head) not in (None, ""):
+            return True
     return False
 
 PLACEHOLDER_PATH_HINTS = {"example", "examples", "path", "to", "foo", "bar", "baz",
     "placeholder", "sample", "demo", "<", ">", "...", "xxx",
     "myapp", "mysite", "app_label", "yourproject", "yourdomain", "sitename"}
+
+# Metasyntactic path parts. `my`-prefixed nouns (`mypkg`, `my_app`) are the
+# docstring convention for "your package", and x/y/z are the classic
+# variable stems: `src/mypkg/x.py` in a comment explains a layout, it does
+# not claim a file (seen: Grounded's own `src/mypkg/x.py` and `src/old/x.py`
+# layout notes, reported as lies once subdirectory scans indexed the whole
+# project). A real file with that name still resolves first.
+_PLACEHOLDER_PATH_SEGMENT = re.compile(
+    r"my[_-]?(?:pkg|package|module|mod|lib|library|app|application|project|"
+    r"proj|file|dir|folder|repo|service|component|plugin|script|code)s?")
+_PLACEHOLDER_PATH_STEMS = frozenset({"x", "y", "z"})
+
+
+def _is_placeholder_path(ref: str) -> bool:
+    parts = [s for s in ref.lower().split("/") if s]
+    if not parts:
+        return False
+    stem = parts[-1].rsplit(".", 1)[0]
+    if stem in _PLACEHOLDER_PATH_STEMS:
+        return True
+    return any(_PLACEHOLDER_PATH_SEGMENT.fullmatch(s) for s in parts[:-1] + [stem])
+
 
 REFERENCE_VERBS = re.compile(
     r"\b(calls?|invokes?|uses?|using|see|refers?\s+to|delegates?\s+to|wraps?|handled?\s+by|defined\s+in|implemented\s+in)\b",
@@ -264,6 +320,31 @@ def _is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
 
+# Python data-model names a dunder typo is most likely aiming at, besides
+# the dunders the repo itself defines.
+_DATA_MODEL_DUNDERS = frozenset(n for n in dir(object) + dir(type) + [
+    "__getitem__", "__setitem__", "__delitem__", "__len__", "__iter__",
+    "__next__", "__contains__", "__enter__", "__exit__", "__aenter__",
+    "__aexit__", "__aiter__", "__anext__", "__await__", "__call__",
+    "__get__", "__set__", "__delete__", "__set_name__", "__bool__",
+    "__class_getitem__", "__post_init__", "__fspath__", "__missing__",
+    "__reversed__", "__index__", "__getattr__", "__all__", "__version__",
+] if _is_dunder(n))
+
+
+def _dunder_typo_of(name: str, index: RepoIndex) -> bool:
+    """Whether a dunder is one edit away from a real one (typo class)."""
+    dunders = index.dunder_symbols() if hasattr(index, "dunder_symbols") else frozenset(
+        n for n in index.all_symbols if _is_dunder(n))
+    if name in _DATA_MODEL_DUNDERS or name in dunders:
+        return False
+    memo = index.__dict__.setdefault("_dunder_typo_memo", {}) if hasattr(index, "__dict__") else {}
+    if name not in memo:
+        pool = sorted(_DATA_MODEL_DUNDERS | dunders)
+        memo[name] = bool(difflib.get_close_matches(name, pool, n=1, cutoff=0.85))
+    return memo[name]
+
+
 def _stdlib_class(root: str) -> bool:
     """Capitalized root whose lowercase is a stdlib module (Tarfile against
     tarfile; repo definitions still take precedence via the index check)."""
@@ -292,11 +373,19 @@ def _scrub_docstring(doc: str, language: str) -> str:
 
 
 def _comment_lines(facts: FileFacts) -> dict[int, str]:
-    """Map of line number to comment text (multi-line blocks expanded)."""
+    """Map of line number to comment text (multi-line blocks expanded).
+
+    Cached per FileFacts: _nearby_ticket asks once per candidate claim, and
+    rebuilding the map each time was quadratic in a file's comments (12 s
+    of a cpython scan). Callers must not mutate the result."""
+    cached = facts.__dict__.get("_comment_line_map")
+    if cached is not None:
+        return cached
     by_line: dict[int, str] = {}
     for c in facts.comments:
         for ln in range(c.line, c.end_line + 1):
             by_line.setdefault(ln, c.text)
+    facts.__dict__["_comment_line_map"] = by_line
     return by_line
 
 
@@ -556,12 +645,22 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue  # foo()/bar()/blah(): metasyntactic, never a ref
             if _is_reserved(base, facts.language):
                 continue
+            if _external_or_family(base, facts, index):
+                continue
             # v2: non-call backticked names are fields/attrs/prose, except
             # dunders: dunder names are almost always real protocol
             # methods, so a dunder with no definition anywhere is worth
             # flagging (typo class).
             if not is_call:
                 if not _is_dunder(base) or base in _DUNDER_OK:
+                    continue
+                # Only a *typo* of a known dunder is a claim. Runtime and
+                # framework attributes (`__annotations__`, `__wrapped__`,
+                # `__pydantic_fields__`) and JS directory names (`__tests__`)
+                # have no definition by design: measured 13 of 13 non-typo
+                # dunder findings across pydantic, pytest, black and vite
+                # were false. One-edit typos of a real dunder keep firing.
+                if facts.language != "python" or not _dunder_typo_of(base, index):
                     continue
             # Negated claims assert absence ("no call to X", "don't use
             # X"): flagging them contradicts a true statement. Same
@@ -621,8 +720,17 @@ def check_stale_symbol(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 continue  # foo()/bar()/blah(): metasyntactic, never a ref
             if _is_reserved(base, facts.language):
                 continue
+            if _external_or_family(base, facts, index):
+                continue
             if f"`{full}()`" in text or f"`{base}()`" in text:
                 continue
+            if m.start() > 0 and text[m.start() - 1] == "#":
+                # `Type#method()` instance-method notation (JSDoc, Ruby):
+                # a method on an external type unless the type is ours.
+                # Seen: prettier's "Uses `Array#toSorted()`".
+                owner = re.search(r"([A-Za-z_$][A-Za-z0-9_$]*)$", text[:m.start() - 1])
+                if not owner or owner.group(1) not in index.all_symbols:
+                    continue
             window = text[max(0, m.start() - 60):m.end() + 40]
             has_verb = bool(REFERENCE_VERBS.search(window)) or bool(re.search(r"@deprecated|@see|see\s+`?", window, re.IGNORECASE))
             if not has_verb:
@@ -799,6 +907,12 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 ))
                 break
             if not existing:
+                if _registered_at_runtime(index, targets):
+                    break  # an ancestor module fills sys.modules: unknowable
+                if _py_target_has_stub(index, targets):
+                    break  # compiled extension: the .pyi is the evidence
+                if any(index.is_gitignored(t) for t in targets):
+                    break  # build artifact (setuptools-scm _version.py)
                 findings.append(Finding(
                     path=facts.path, line=lineno, end_line=lineno,
                     checker="stale-import", severity="lie",
@@ -822,6 +936,8 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             subpkg = (home + "/" + name + "/__init__.py") if home else (name + "/__init__.py")
             if provided or dynamic or submod in index.rel_paths or subpkg in index.rel_paths:
                 continue
+            if any(_lazy_string_export(index, t, name) for t in existing):
+                continue
             findings.append(Finding(
                 path=facts.path, line=lineno, end_line=lineno,
                 checker="stale-import", severity="lie",
@@ -832,6 +948,75 @@ def check_stale_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
                 confidence=0.8,
             ))
     return _dedupe(findings)
+
+
+def _js_exists_on_disk(index: RepoIndex, base: str, kind: str) -> bool:
+    """Existence by Node's own rules, checked on disk: the index holds only
+    scanned sources. CommonJS `require` appends extensions even after one
+    (`require('./test.tsx')` loads `test.tsx.js`); JSON and native addons
+    are loadable too."""
+    root = index.root
+    exts = ("",) + _JS_EXTS + (".json", ".node")
+    try:
+        for e in exts:
+            if (root / (base + e)).is_file():
+                return kind == "require" or e == "" or e in _JS_EXTS
+        return False
+    except OSError:
+        return False
+
+
+def _pkg_browser_field(index: RepoIndex, claimer: str) -> bool:
+    """Whether the claimer's nearest package.json declares a `browser`
+    object map (relative specifiers are rewritten by the bundler)."""
+    import json as _json
+    cur = posixpath.dirname(claimer)
+    while True:
+        pkg = index.root / cur / "package.json" if cur else index.root / "package.json"
+        if pkg.is_file():
+            try:
+                data = _json.loads(pkg.read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, ValueError):
+                return False
+            return isinstance(data, dict) and isinstance(data.get("browser"), dict)
+        if not cur:
+            return False
+        cur = posixpath.dirname(cur)
+
+
+def _py_target_has_stub(index: RepoIndex, targets: list[str]) -> bool:
+    for t in targets:
+        stub = t[:-3] + ".pyi"
+        if stub in index.decl_paths:
+            return True
+    return False
+
+
+def _lazy_string_export(index: RepoIndex, target: str, name: str) -> bool:
+    """A name missing from a module's bindings but spelled as a quoted
+    string literal there is almost always a lazy export: celery's
+    `recreate_module` map, transformers' `_import_structure`, lazy_loader
+    stubs. Suppression-only (measured: celery `Signature`)."""
+    texts = getattr(index, "_texts", None) or {}
+    text = texts.get(str(index.root / target))
+    if not text:
+        return False
+    return re.search(r"""['"]""" + re.escape(name) + r"""['"]""", text) is not None
+
+
+def _registered_at_runtime(index: RepoIndex, targets: list[str]) -> bool:
+    """Whether an ancestor module of a missing import target writes
+    `sys.modules`, which makes dotted paths below it importable with no
+    file behind them (requests.packages -> urllib3)."""
+    for t in targets:
+        stem = t[:-len("/__init__.py")] if t.endswith("/__init__.py") else t[:-3]
+        parts = stem.split("/")
+        for i in range(len(parts) - 1, 0, -1):
+            anc = "/".join(parts[:i])
+            if (anc + ".py" in index.file_registers_modules
+                    or anc + "/__init__.py" in index.file_registers_modules):
+                return True
+    return False
 
 
 def _resolve_py_base(claimer: str, level: int) -> list[str]:
@@ -1154,6 +1339,16 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
     for spec, kind, default, named, lineno in facts.js_imports:
         if lineno in comment_lines:
             continue
+        if spec.startswith((".", "/")) and ("?" in spec or "#" in spec):
+            # Bundler resource queries (`./worker?worker`, `./a.svg?url`,
+            # `./x.js#hash`): the file is the part before the query, and the
+            # bindings are whatever the loader synthesizes (a Worker
+            # constructor, a URL string), so only existence is checkable.
+            # Seen: 16 vite playground imports reported missing.
+            spec = re.split(r"[?#]", spec, maxsplit=1)[0]
+            default, named = None, []
+            if not spec or spec in (".", "./", "/"):
+                continue
         ext = posixpath.splitext(spec)[1].lower()
         if ext and ext not in _JS_EXTS:
             continue  # asset imports (css, json, svg): bundler surface
@@ -1189,6 +1384,16 @@ def check_stale_js_import(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             # svelte's excluded scripts/process-messages/templates/).
             # Not a checkable claim — the file is outside the contract.
             if _file_tsconfig_excluded(index, facts.path):
+                continue
+            base = posixpath.normpath(posixpath.join(posixpath.dirname(facts.path), spec))
+            if index.is_gitignored(base) or any(
+                    index.is_gitignored(base + e) for e in _JS_EXTS):
+                continue  # gitignored build/test output
+            if spec.startswith((".", "/")) and _js_exists_on_disk(index, base, kind):
+                continue  # present but unindexed (CJS `.tsx` + `.js`, json)
+            if _pkg_browser_field(index, facts.path):
+                # package.json `browser` object remaps relative specifiers
+                # at bundle time (seen: vite playground/resolve/browser-field).
                 continue
             # Relative misses are lies (relative paths are always local).
             # Alias misses are drift: the target may be generated at build
@@ -1282,6 +1487,8 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             segs = [s.lower() for s in re.split(r"[/.]", ref)]
             if any(h in segs for h in PLACEHOLDER_PATH_HINTS):
                 continue
+            if _is_placeholder_path(ref) and not index.has_exact_path(ref):
+                continue
             # Elided paths (`src/.../EndpointPageClient.tsx`) are shorthand the
             # author chose instead of a full path: the `...` IS the
             # placeholder. The segment split above cannot see it ("..."
@@ -1306,8 +1513,16 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             # within ~120 chars after such a marker is an example, not a claim.
             if _ILLUSTRATIVE.search(text[max(0, m.start() - 120):m.start()]):
                 continue
-            if index.has_exact_path(ref):
+            if index.has_exact_path(ref) or index.exists_near(ref, facts.path):
                 continue
+            # "<project>'s path/to/file" names another project's tree
+            # (seen: vite's "Copy from rolldown's packages/rolldown/src/...",
+            # whose first segment collides with vite's own `packages/`).
+            owner = re.search(r"\b([A-Za-z][\w.-]*)'s\s+`?$", text[max(0, m.start() - 60):m.start()])
+            if owner and owner.group(1).lower() not in {n.lower() for n in index.root_package_names}:
+                continue
+            if index.is_gitignored(ref):
+                continue  # generated after checkout: absence is expected
             same = index.same_named(ref)
             detail = ""
             if same:
@@ -1329,12 +1544,48 @@ def check_stale_file(facts: FileFacts, index: RepoIndex) -> list[Finding]:
         if c.line in dead and c.end_line in dead:
             continue
         _scan(c.text, c.line, c.end_line, "Comment")
-    # docstrings too
+    # docstrings too (minus indented literal blocks: listings of example
+    # paths introduced by a colon, the reST convention for samples)
     for f in facts.functions:
         if f.docstring:
-            _scan(f.docstring, f.docstring_lineno or f.lineno,
+            _scan(_drop_literal_blocks(f.docstring), f.docstring_lineno or f.lineno,
                   f.docstring_lineno or f.lineno, "Docstring")
     return _dedupe(findings)
+
+
+def _drop_literal_blocks(doc: str) -> str:
+    """Remove indented *listings* introduced by a line ending in `:`.
+
+    Docstring listings ("Here are the file names as seen in an egg based
+    distribution:" followed by indented one-path-per-line samples) show
+    sample data, not claims about this tree (seen: pytest's
+    `_iter_rewritable_modules`). Only blocks whose every line is a single
+    bare token are dropped: Google-style `Args:` sections are prose and
+    keep full checking.
+    """
+    lines = doc.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        if not line.strip().endswith(":"):
+            continue
+        intro = len(line) - len(line.lstrip())
+        j = i
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        block: list[str] = []
+        k = j
+        while k < len(lines) and (not lines[k].strip()
+                                  or len(lines[k]) - len(lines[k].lstrip()) > intro):
+            block.append(lines[k])
+            k += 1
+        body = [b.strip() for b in block if b.strip()]
+        if body and all(" " not in b for b in body):
+            i = k  # a pure listing: sample data
+    return "\n".join(out)
 
 
 _NUMBER_CLAIM = re.compile(
@@ -1381,46 +1632,45 @@ def check_number_drift(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             window = "\n".join(lines[lo:hi])
             if key_simple not in window.lower():
                 continue
-            # find numbers on lines mentioning the keyword
+            # The keyword's own value on each code line: the first number
+            # right after the keyword (`timeout=0.01`, `TIMEOUT = 30`), not
+            # any number on the line (celery: "timeout=0 means do not
+            # block" beside `timeout=0, interval=0.01` read as drift).
+            bound: list[tuple[int, str, str]] = []  # (line index, number, code)
+            key_re = re.compile(re.escape(key_simple) + r"[A-Za-z0-9_]*[\s\"']*(?:==|<=|>=|[=:<>])\s*\(?\s*(\d+(?:\.\d+)?)(?![A-Za-z0-9_.])",
+                                re.IGNORECASE)
             for j in range(lo, hi):
-                if (j + 1) in dead:
+                if (j + 1) in dead or c.line <= j + 1 <= c.end_line:
                     continue
                 code_line = lines[j]
-                stripped = code_line.strip()
-                if stripped.startswith(("#", "//", "*", "/*")):
+                if code_line.strip().startswith(("#", "//", "*", "/*")):
                     continue
-                if key_simple not in code_line.lower():
+                for km in key_re.finditer(_strip_strings(code_line)):
+                    bound.append((j, km.group(1), code_line))
+            if not bound:
+                continue
+            values = []
+            for j, raw, code_line in bound:
+                try:
+                    values.append((float(raw), j, raw, code_line))
+                except ValueError:
                     continue
-                # skip the comment's own line(s)
-                if c.line <= j + 1 <= c.end_line:
-                    continue
-                for nm in _NUMBER_IN_CODE.finditer(_strip_strings(code_line)):
-                    try:
-                        actual = float(nm.group(1))
-                    except ValueError:
-                        continue
-                    # ignore line numbers / indices / years / versions
-                    if actual in (claimed,):
-                        break
-                    if actual > 1900 and actual < 2100 and claimed > 1900 and claimed < 2100:
-                        break
-                    if actual in (0, 1) and claimed in (0, 1):
-                        break
-                    # require the code number to be a "config-like" literal (assignment/comparison/call arg)
-                    if not re.search(r"[=:(\[,<>]", code_line):
-                        continue
-                    findings.append(Finding(
-                        path=facts.path, line=c.line, end_line=c.end_line,
-                        checker="number-drift", severity="drift",
-                        title=f"Comment says {key_simple} {m.group(2)}{unit or ''} but code uses {nm.group(1)}",
-                        claim=f"{key_simple} = {m.group(2)}{unit or ''}",
-                        evidence=f"{facts.path}:{j + 1}: {code_line.strip()[:120]}",
-                        fix="Update the comment to the real value, or better: define a named constant and reference it from both.",
-                        confidence=0.6,
-                    ))
+            if any(v == claimed for v, *_ in values):
+                continue  # the claim matches a binding in reach: no drift
+            for actual, j, raw, code_line in values:
+                if 1900 < actual < 2100 and 1900 < claimed < 2100:
                     break
-                else:
-                    continue
+                if actual in (0, 1) and claimed in (0, 1):
+                    break
+                findings.append(Finding(
+                    path=facts.path, line=c.line, end_line=c.end_line,
+                    checker="number-drift", severity="drift",
+                    title=f"Comment says {key_simple} {m.group(2)}{unit or ''} but code uses {raw}",
+                    claim=f"{key_simple} = {m.group(2)}{unit or ''}",
+                    evidence=f"{facts.path}:{j + 1}: {code_line.strip()[:120]}",
+                    fix="Update the comment to the real value, or better: define a named constant and reference it from both.",
+                    confidence=0.6,
+                ))
                 break
     return _dedupe(findings)
 
@@ -2290,6 +2540,17 @@ def check_stale_entrypoint(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             norm = norm[2:] if norm.startswith("./") else norm
             if norm in index.rel_paths:
                 continue
+            # Node resolves `main` like require(): exact file, then
+            # appended extensions, then a directory index. The index holds
+            # only scanned sources, so check the disk (seen: vite's
+            # `"main": "./inline"` -> inline.js, `"main": "./index.css"`).
+            if label == "main" and _js_exists_on_disk(index, norm, "require"):
+                continue
+            if label == "main" and any(
+                    (index.root / norm / ("index" + e)).is_file() for e in (".js", ".json", ".node")):
+                continue
+            if label.startswith("bin") and (index.root / norm).is_file():
+                continue
             local = posixpath.normpath(t)
             local = local[2:] if local.startswith("./") else local
             if local.split("/")[0] in _ENTRY_BUILD_DIRS:
@@ -2876,8 +3137,12 @@ def check_unclosed_fence(facts: FileFacts, index: RepoIndex) -> list[Finding]:
             fence, info = m.group("fence"), m.group("info")
             if not info.strip():
                 continue  # bare inner fence: the illustrated closer of a nested example
-            if b["info"].strip() and b["len"] > len(fence):
-                continue  # declared nesting scaffold: ````markdown around ```python
+            if b["info"].strip() and (b["len"] > len(fence) or fence[0] != b["char"]):
+                # Declared nesting scaffold: ````markdown around ```python,
+                # or a different fence character (a `~~~` line can never
+                # close a backtick block; seen: prettier's changelog showing
+                # `~~~~js` inside ````jsx).
+                continue
             findings.append(Finding(
                 path=facts.path, line=lineno, end_line=lineno,
                 checker="unclosed-fence", severity="lie",

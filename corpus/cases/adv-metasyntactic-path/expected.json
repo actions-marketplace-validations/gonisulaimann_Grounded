@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-file-ref", "path": "src/app/layout.py", "line": 9, "contains": "src/app/loader.py"}]}

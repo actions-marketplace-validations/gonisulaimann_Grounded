@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-file-ref", "path": "examples/guide/server/server.go", "line": 5, "contains": "packages/app/errors.go"}]}

@@ -1,0 +1,289 @@
+{
+  "entries": {
+    "axios::tests/module/esm/tests/helpers/declaration-consumer.ts::stale-import::./declarations/index.js": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 2,
+      "title": "imports from `./declarations/index.js`, which does not exist",
+      "note": "declarations/ is emitted by tsc during the test run (outDir), not gitignored."
+    },
+    "celery::celery/utils/time.py::stale-symbol-ref::get_default_timezone()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 80,
+      "title": "Comment references get_default_timezone() which is not defined here",
+      "note": "get_default_timezone() is defined nowhere in celery."
+    },
+    "celery::examples/celery_http_gateway/tasks.py::stale-import::from celery import task": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 1,
+      "title": "`task` imported from `celery/__init__.py` but never defined there",
+      "note": "`celery.task` decorator removed in Celery 5; examples no longer import."
+    },
+    "celery::examples/gevent/tasks.py::stale-import::from celery import task": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 3,
+      "title": "`task` imported from `celery/__init__.py` but never defined there",
+      "note": "`celery.task` decorator removed in Celery 5; examples no longer import."
+    },
+    "celery::examples/resultgraph/tasks.py::stale-import::from celery import task": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 23,
+      "title": "`task` imported from `celery/__init__.py` but never defined there",
+      "note": "`celery.task` decorator removed in Celery 5; examples no longer import."
+    },
+    "celery::t/unit/bin/proj/daemon_config.py::stale-file-ref::t/unit/bin/test_deamonization.py": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 1,
+      "title": "Comment references missing file `t/unit/bin/test_deamonization.py`",
+      "note": "Typo: the test is t/unit/bin/test_daemonization.py."
+    },
+    "celery::t/unit/tasks/test_result.py::stale-mock-ref::\"celery.result.copy\"": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 606,
+      "title": "Mock patches `celery.result.copy`: `copy` not found in `celery/result.py`",
+      "note": "celery/result.py has no `copy` binding; patch() would raise AttributeError."
+    },
+    "cobra::completions.go::stale-symbol-ref::ParsedFlags()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 461,
+      "title": "Comment references ParsedFlags() which is not defined here",
+      "note": "ParsedFlags() is a typo of ParseFlags() (named correctly on the next line)."
+    },
+    "curl::lib/request.h::stale-symbol-ref::`Curl_req_flush()`": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 203,
+      "title": "Comment references `Curl_req_flush` which is not defined here",
+      "note": "No Curl_req_flush(); the name survives only in debug strings."
+    },
+    "curl::tests/ech_combos.py::stale-file-ref::tests/ech_test.sh": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 27,
+      "title": "Comment references missing file `tests/ech_test.sh`",
+      "note": "tests/ech_test.sh no longer exists (tests/ech_tests.sh)."
+    },
+    "django::tests/messages_tests/test_fallback.py::stale-symbol-ref::CookieTests.test_cookie_max_length()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 131,
+      "title": "Comment references CookieTests.test_cookie_max_length() which is not defined here",
+      "note": "No CookieTests.test_cookie_max_length exists in messages_tests."
+    },
+    "django::tests/staticfiles_tests/project/documents/cached/module.js::stale-import::testConst": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 3,
+      "title": "default import `testConst` from `./module_test.js`, which has no default export",
+      "note": "Static-file fixture never executed as a module (hashing input)."
+    },
+    "fastapi::docs_src/pydantic_v1_in_v2/tutorial004_an_py310.py::stale-import::from fastapi.temp_pydantic_v1_params import Body": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 4,
+      "title": "`from fastapi.temp_pydantic_v1_params` imports from a module that does not exist",
+      "note": "fastapi.temp_pydantic_v1_params no longer exists; docs example import fails."
+    },
+    "flask::tests/test_apps/subdomaintestmodule/__init__.py::stale-import::from flask import Module": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 1,
+      "title": "`Module` imported from `src/flask/__init__.py` but never defined there",
+      "note": "flask.Module was removed in Flask 1.0; the fixture app still imports it."
+    },
+    "grpc-go::credentials/xds/xds.go::stale-symbol-ref::NewContextWithHandshakeInfo()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 86,
+      "title": "Comment references NewContextWithHandshakeInfo() which is not defined here",
+      "note": "NewContextWithHandshakeInfo() is not implemented anywhere."
+    },
+    "grpc-go::internal/xds/clients/lrsclient/load_store_test.go::stale-symbol-ref::callStarted()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 153,
+      "title": "Comment references callStarted() which is not defined here",
+      "note": "Method is CallStarted (exported); comment uses the old name."
+    },
+    "grpc-go::orca/orca.go::stale-symbol-ref::toLoadReport()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 43,
+      "title": "Comment references toLoadReport() which is not defined here",
+      "note": "Function is internal.ToLoadReport; toLoadReport() does not exist."
+    },
+    "jq::src/util.c::stale-symbol-ref::tzgetname()": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 610,
+      "title": "Comment references tzgetname() which is not defined here",
+      "note": "tzcode library internals named in a comment."
+    },
+    "jq::src/util.c::stale-symbol-ref::tzload()": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 1025,
+      "title": "Comment references tzload() which is not defined here",
+      "note": "tzcode library internals named in a comment."
+    },
+    "prettier::eslint.config.js::stale-file-ref::src/language-js/parse/json.js": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 510,
+      "title": "Comment references missing file `src/language-js/parse/json.js`",
+      "note": "src/language-js/parse/json.js was removed; the lint config still lists it."
+    },
+    "prettier::website/static/worker.mjs::stale-file-ref::src/plugins/builtin-plugins-proxy.js": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 79,
+      "title": "Comment references missing file `src/plugins/builtin-plugins-proxy.js`",
+      "note": "src/plugins/builtin-plugins-proxy.js does not exist."
+    },
+    "pydantic::docs/plugins/algolia.py::stale-file-ref::docs/javascripts/search-worker.js": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 33,
+      "title": "Comment references missing file `docs/javascripts/search-worker.js`",
+      "note": "docs/javascripts/ does not exist in the tree."
+    },
+    "pydantic::pydantic/main.py::stale-symbol-ref::dataclass_transform()": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 1203,
+      "title": "Comment references dataclass_transform() which is not defined here",
+      "note": "typing.dataclass_transform, external."
+    },
+    "pytest::testing/test_faulthandler.py::stale-symbol-ref::`_get_stderr_fileno()`": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 220,
+      "title": "Comment references `_get_stderr_fileno` which is not defined here",
+      "note": "Function is get_stderr_fileno() (no underscore)."
+    },
+    "redis::deps/jemalloc/src/ehooks.c::stale-symbol-ref::extent_head_no_merge()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 164,
+      "title": "Comment references extent_head_no_merge() which is not defined here",
+      "note": "extent_head_no_merge() is not defined (vendored jemalloc comment rot)."
+    },
+    "redis::modules/vector-sets/hnsw.c::stale-symbol-ref::hnsw_update()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 1867,
+      "title": "Comment references hnsw_update() which is not defined here",
+      "note": "No hnsw_update(); only hnsw_update_worst_neighbor* exist."
+    },
+    "redis::src/crccombine.c::stale-symbol-ref::crc_combine()": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 9,
+      "title": "Comment references crc_combine() which is not defined here",
+      "note": "Provenance note naming the upstream (Mark Adler) crc_combine()."
+    },
+    "redis::src/module.c::stale-symbol-ref::RedisModule_AuthClientWithUser()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 10731,
+      "title": "Comment references RedisModule_AuthClientWithUser() which is not defined here",
+      "note": "No AuthClientWithUser in the module API."
+    },
+    "redis::src/module.c::stale-symbol-ref::`RedisModule_DigestAddElement()`": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 8069,
+      "title": "Comment references `RedisModule_DigestAddElement` which is not defined here",
+      "note": "No DigestAddElement in the module API."
+    },
+    "redis::src/rio.h::stale-symbol-ref::rioClearError()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 151,
+      "title": "Comment references rioClearError() which is not defined here",
+      "note": "Function is rioClearErrors() (plural)."
+    },
+    "redis::src/sparkline.c::stale-symbol-ref::render_sequence()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 80,
+      "title": "Comment references render_sequence() which is not defined here",
+      "note": "render_sequence() is defined nowhere."
+    },
+    "redis::src/zmalloc.c::stale-symbol-ref::zmalloc_register_reserved_thread()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 131,
+      "title": "Comment references zmalloc_register_reserved_thread() which is not defined here",
+      "note": "zmalloc_register_reserved_thread() is defined nowhere."
+    },
+    "scrapy::scrapy/core/downloader/contextfactory.py::stale-symbol-ref::set_alpn_protos()": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 236,
+      "title": "Comment references set_alpn_protos() which is not defined here",
+      "note": "pyOpenSSL Context.set_alpn_protos, external."
+    },
+    "scrapy::scrapy/crawler.py::stale-symbol-ref::_shutdown_graceful_reactorless()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 1147,
+      "title": "Comment references _shutdown_graceful_reactorless() which is not defined here",
+      "note": "_shutdown_graceful_reactorless() is defined nowhere in scrapy."
+    },
+    "scrapy::tests/test_exporters.py::stale-symbol-ref::detach()": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 289,
+      "title": "Comment references detach() which is not defined here",
+      "note": "io.TextIOWrapper.detach, external."
+    },
+    "sqlmodel::sqlmodel/_compat.py::stale-symbol-ref::_partial_init()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 299,
+      "title": "Comment references _partial_init() which is not defined here",
+      "note": "Context manager is partial_init(); comment says _partial_init()."
+    },
+    "typer::typer/core.py::stale-symbol-ref::_extract_default()": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 802,
+      "title": "Comment references _extract_default() which is not defined here",
+      "note": "Helper is _extract_default_help_str; comment names _extract_default."
+    },
+    "vite::packages/vite/src/node/constants.ts::stale-file-ref::packages/vite/src/node/plugin/assets.ts": {
+      "verdict": "TP",
+      "severity": "lie",
+      "line": 144,
+      "title": "Comment references missing file `packages/vite/src/node/plugin/assets.ts`",
+      "note": "File is packages/vite/src/node/plugins/asset.ts."
+    },
+    "vite::playground/hmr/missing-file/main.js::stale-import::./a.js": {
+      "verdict": "FP",
+      "severity": "lie",
+      "line": 1,
+      "title": "imports from `./a.js`, which does not exist",
+      "note": "HMR e2e fixture that imports a missing file on purpose."
+    }
+  },
+  "known_fp": [
+    "axios::tests/module/esm/tests/helpers/declaration-consumer.ts::stale-import::./declarations/index.js",
+    "django::tests/staticfiles_tests/project/documents/cached/module.js::stale-import::testConst",
+    "jq::src/util.c::stale-symbol-ref::tzgetname()",
+    "jq::src/util.c::stale-symbol-ref::tzload()",
+    "pydantic::pydantic/main.py::stale-symbol-ref::dataclass_transform()",
+    "redis::src/crccombine.c::stale-symbol-ref::crc_combine()",
+    "scrapy::scrapy/core/downloader/contextfactory.py::stale-symbol-ref::set_alpn_protos()",
+    "scrapy::tests/test_exporters.py::stale-symbol-ref::detach()",
+    "vite::playground/hmr/missing-file/main.js::stale-import::./a.js"
+  ],
+  "classified": "2026-09-24"
+}

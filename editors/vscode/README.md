@@ -1,8 +1,8 @@
 # Grounded for Cursor & VS Code
 
-The sub-millisecond reference integrity firewall that stops AI coding agents and hallucinations directly in your editor.
+The reference integrity firewall that stops AI coding agents and hallucinations directly in your editor.
 
-Catch hallucinated function calls, phantom imports, and stale file claims in **0.6 milliseconds** directly inside your editor. When Claude Code, Cursor Composer, Windsurf, or GitHub Copilot edits your code, Grounded flags broken references as red squigglies *before* you run tests or commit.
+Catch hallucinated function calls, phantom imports, and stale file claims with a **0.6 ms per-file re-check** directly inside your editor. When Claude Code, Cursor Composer, Windsurf, or GitHub Copilot edits your code, Grounded flags broken references as red squigglies *before* you run tests or commit.
 
 * **Sub-millisecond diagnostics:** AST parsing in 0.6ms. Zero CPU lag or editor sluggishness.
 * **AI agent hallucination shield:** Catches when an LLM claims to call a function, import a module, or reference a file that does not exist in your repository.

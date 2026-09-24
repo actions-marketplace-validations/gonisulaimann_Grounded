@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-import", "path": "tests/test_compat.py", "line": 2, "contains": "pkg.helpers.strings"}]}
