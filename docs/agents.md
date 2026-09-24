@@ -22,13 +22,20 @@ blindly, and never rewrites an existing Aider config.
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Edit|Write",
-        "hooks": [{ "type": "command", "command": "grounded scan . --changed --quiet" }]
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "grounded hook claude-code" }]
       }
     ]
   }
 }
 ```
+
+`grounded hook claude-code` reads the edit event from stdin, checks the
+changed lines (plus rename fallout in other files), and exits `2` with the
+findings on stderr, which is the exit code Claude Code feeds back to the
+model. Earlier versions installed `grounded scan . --changed --quiet`,
+whose exit `1` only reached the human; re-run `grounded init-agent
+--claude` to upgrade it in place.
 
 ## Cursor
 

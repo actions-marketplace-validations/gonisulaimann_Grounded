@@ -411,7 +411,7 @@ class TestInitAgent(unittest.TestCase):
                 settings = json.loads((target / ".claude" / "settings.json").read_text())
                 cmds = [h.get("command")
                         for e in settings["hooks"]["PostToolUse"] for h in e.get("hooks", [])]
-                self.assertIn("grounded scan . --changed --quiet", cmds)
+                self.assertIn("grounded hook claude-code", cmds)
                 mdc = (target / ".cursor" / "rules" / "grounded.mdc").read_text()
                 self.assertIn("alwaysApply: false", mdc)
                 self.assertIn("description:", mdc)
@@ -440,7 +440,7 @@ class TestInitAgent(unittest.TestCase):
                 cmds = [h.get("command")
                         for e in settings["hooks"]["PostToolUse"] for h in e.get("hooks", [])]
                 self.assertIn("other", cmds)
-                self.assertEqual(cmds.count("grounded scan . --changed --quiet"), 1)
+                self.assertEqual(cmds.count("grounded hook claude-code"), 1)
             finally:
                 os.chdir(cwd)
 
@@ -721,6 +721,97 @@ class TestRecallHarness(unittest.TestCase):
             self.assertEqual(r["detail"],
                              "merged into the host's own file", report["results"])
 
+
+class TestClaudeCodeHook(unittest.TestCase):
+    """The hook must exit 2 (stderr reaches the model) on lies in the
+    agent's edit, 0 when clean, and 1 (human-only) on its own failures."""
+
+    def _git(self, root: Path, *args: str) -> None:
+        import subprocess
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True,
+                       env={**__import__("os").environ, "GIT_AUTHOR_NAME": "t",
+                            "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                            "GIT_COMMITTER_EMAIL": "t@t"})
+
+    def _event(self, root: Path, rel: str) -> str:
+        return json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Edit",
+                           "cwd": str(root), "tool_input": {"file_path": rel}})
+
+    def test_rename_fallout_in_other_file_blocks(self):
+        from grounded.hooks import claude_code
+        if shutil.which("git") is None:
+            self.skipTest("git not installed")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding="utf-8")
+            (root / "app").mkdir()
+            (root / "app" / "__init__.py").write_text("", encoding="utf-8")
+            (root / "app" / "core.py").write_text("def fetch_user():\n    return 1\n", encoding="utf-8")
+            (root / "app" / "views.py").write_text("from app.core import fetch_user\n", encoding="utf-8")
+            self._git(root, "init", "-q")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-qm", "init")
+            (root / "app" / "core.py").write_text("def load_user():\n    return 1\n", encoding="utf-8")
+            code, err = claude_code(self._event(root, "app/core.py"))
+            self.assertEqual(code, 2, err)
+            self.assertIn("views.py", err)
+            self.assertIn("fetch_user", err)
+
+    def test_untouched_rot_does_not_nag(self):
+        from grounded.hooks import claude_code
+        if shutil.which("git") is None:
+            self.skipTest("git not installed")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("# Calls `ghost_fn()` for retries.\nX = 1\n", encoding="utf-8")
+            self._git(root, "init", "-q")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-qm", "init")
+            (root / "a.py").write_text("# Calls `ghost_fn()` for retries.\nX = 2\n", encoding="utf-8")
+            self.assertEqual(claude_code(self._event(root, "a.py")), (0, ""))
+
+    def test_no_git_checks_the_edited_file(self):
+        from grounded.hooks import claude_code
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("# Calls `ghost_fn()` for retries.\nX = 1\n", encoding="utf-8")
+            (root / "b.py").write_text("# Calls `other_ghost()` for retries.\nY = 1\n", encoding="utf-8")
+            code, err = claude_code(self._event(root, str(root / "a.py")))
+            self.assertEqual(code, 2)
+            self.assertIn("ghost_fn", err)
+            self.assertNotIn("other_ghost", err)
+
+    def test_clean_edit_and_bad_payloads(self):
+        from grounded.hooks import claude_code
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "ok.py").write_text("X = 1\n", encoding="utf-8")
+            self.assertEqual(claude_code(self._event(root, "ok.py")), (0, ""))
+            self.assertEqual(claude_code(self._event(root, "gone.py")), (0, ""))
+        self.assertEqual(claude_code("not json")[0], 1)
+        self.assertEqual(claude_code("[]")[0], 1)
+        self.assertEqual(claude_code(json.dumps({"tool_input": {}})), (0, ""))
+
+    def test_init_agent_upgrades_legacy_hook(self):
+        import os
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td)
+            (target / ".claude").mkdir()
+            (target / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"PostToolUse": [
+                {"matcher": "Edit|Write", "hooks": [
+                    {"type": "command", "command": "grounded scan . --changed --quiet"}]}]}}),
+                encoding="utf-8")
+            cwd = Path.cwd()
+            os.chdir(target)
+            try:
+                self.assertEqual(main(["init-agent", "--claude"]), 0)
+            finally:
+                os.chdir(cwd)
+            post = json.loads((target / ".claude" / "settings.json").read_text())["hooks"]["PostToolUse"]
+            self.assertEqual(len(post), 1)
+            self.assertEqual(post[0]["hooks"][0]["command"], "grounded hook claude-code")
+            self.assertEqual(post[0]["matcher"], "Edit|Write|MultiEdit")
 
 if __name__ == "__main__":
     unittest.main()

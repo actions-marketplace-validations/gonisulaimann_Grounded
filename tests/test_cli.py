@@ -40,6 +40,18 @@ class TestReporters(unittest.TestCase):
         noted = format_terminal([], 2, root=".", n_unparsed=1)
         self.assertIn("1 file(s) unparsed", noted)
 
+    def test_markdown_table_is_row_safe(self):
+        from grounded.models import Finding
+        from grounded.reporters import to_markdown
+        f = [Finding(path="a.py", line=4, end_line=4, checker="stale-symbol-ref",
+                     severity="lie", title="a | b\nc")]
+        out = to_markdown(f, 3)
+        row = [l for l in out.splitlines() if l.startswith("| lie")][0]
+        self.assertIn("a \\| b c", row)
+        self.assertIn("1 finding(s) in 3 file(s): 1 lie.", out)
+        self.assertIn("No findings in 2 file(s).", to_markdown([], 2))
+        self.assertIn("Incomplete scan", to_markdown(f, 3, n_checker_errors=1))
+
     def test_sarif_valid_shape(self):
         from grounded.models import Finding
         f = [Finding(path="a.py", line=3, end_line=3, checker="stale-file-ref",
