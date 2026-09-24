@@ -21,6 +21,60 @@ All notable changes to `grounded` are documented here. Format follows
   `--quiet` printed just counts. It now installs `grounded hook
   claude-code` (matcher `Edit|Write|MultiEdit`) and upgrades the legacy
   command in place.
+
+### Changed
+- **Directory scans index the whole project.** `grounded scan src` (and
+  `baseline`, `fix`, `impact` on a subdirectory) now build the index from
+  the directory's project root (nearest marker ancestor, never climbing to
+  `~`) and scope only the *report* to the directory, as file arguments
+  already did. Finding paths are project-relative (`src/app/x.py`, not
+  `app/x.py`); regenerate baselines written from a subdirectory scan.
+
+### Added
+- **Real-repo precision gate** (`bench/precision.py`, CI
+  `precision.yml`): 25 repos pinned by SHA; every lie/drift must be
+  labeled TP/FP in `bench/precision/ledger.json`. Precision on that set
+  went from 0.17 (30 of 175) to 0.77 (30 of 39) in this round with no
+  true positive lost.
+
+### Fixed
+- **Precision round (25 real repos, 136 false positives removed).** Test
+  fixture data (`tests/format/`, `tests/data/`, `fixtures/`, `testdata/`,
+  `broken_*`) no longer reports; bundler resource queries, Node CJS
+  extension appending, package.json `main`/`browser` resolution and
+  symlinked sources resolve like Node does; destructured
+  `export const {...}` and comments inside `export {...}` lists are
+  parsed; gitignored build artifacts (nested `.gitignore` included),
+  `.pyi`-only compiled modules and lazy string-keyed exports are
+  evidence of existence; non-typo dunders, `Type#method()`, pluralized C
+  calls, Win32 and included-library C APIs and `_suffix()` fragments are
+  not repo claims; docstring path listings are samples; paths relative
+  to the claiming file's directory and `<project>'s path` references
+  resolve; number-drift compares the keyword's own value (including
+  `==` comparisons); `require()` quoted inside strings is not an import;
+  fences of a different character inside a declared fence are nesting.
+- **Python 3.10 refused real projects.** Without `tomllib`, the subset
+  reader parsed the whole `pyproject.toml` and exited 2 on other tools'
+  syntax (`[[tool.mypy.overrides]]`) or any multi-line array, which is
+  nearly every Python repo. It now reads only the `[tool.grounded*]`
+  tables and supports multi-line arrays.
+- **C includes were invisible.** The include pattern lacked
+  `re.MULTILINE`, so only an include on a file's first line was seen.
+- **Subdirectory scans manufactured lies.** A comment in `src/` naming a
+  helper defined in `scripts/` was a `stale-symbol-ref` lie under
+  `scan src` and clean under `scan .`; the same partial snapshot hid
+  project-wide file refs from `scan src` CI gates. One file now gets one
+  verdict whatever directory was named.
+- **Metasyntactic paths read as file claims.** `src/mypkg/x.py`-style
+  layout explanations (`my`-prefixed package nouns, `x`/`y`/`z` stems) are
+  placeholders unless the file really exists (corpus:
+  `adv-metasyntactic-path`, with a real stale path as positive control).
+- **Runtime module aliases read as missing modules.** An ancestor module
+  that writes `sys.modules` (requests' `packages.py` aliasing
+  `requests.packages.urllib3.*`) now makes dotted imports below it
+  unknowable instead of a `stale-import` lie. requests: 1 lie -> 0
+  (corpus: `adv-sys-modules-alias`, with a missing sibling module as
+  positive control).
 - **History notes and ticket-anchored blocks reported as lies** (this
   round: httpx, preact — see below).
 - **Recall harness phantom misses on case-insensitive filesystems.**

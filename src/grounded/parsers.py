@@ -348,6 +348,24 @@ _JS_REQUIRE = re.compile(
 _JS_REQUIRE_PROP = re.compile(r"\.\s*([A-Za-z_$][A-Za-z0-9_$]*)")
 
 
+def _inside_quotes(line: str, pos: int) -> bool:
+    """Whether pos sits inside a '...' or "..." literal on this line."""
+    quote: str | None = None
+    i = 0
+    while i < pos:
+        ch = line[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+        i += 1
+    return quote is not None
+
+
 def _js_import_entries(text: str) -> list[tuple[str, str, str | None, list[tuple[str, str]], int]]:
     """Structured JS/TS imports: (specifier, kind, default or None,
     [(original, alias)] named, lineno).
@@ -406,6 +424,11 @@ def _js_import_entries(text: str) -> list[tuple[str, str, str | None, list[tuple
             out.append((m2.group(1), "sideeffect", None, [], idx))
             continue
         m3 = _JS_REQUIRE.search(line)
+        if m3 and _inside_quotes(line, m3.start()):
+            # `src: 'const x = require("./lib/x")'`: code quoted in a string
+            # (bundler patch tables, codegen templates), not a require.
+            # Seen: vite's rolldown.config.ts replacement map.
+            m3 = None
         if m3:
             default, named, spec, tail = m3.group(1), m3.group(2), m3.group(3), m3.group(4)
             rnamed: list[tuple[str, str]] = []
@@ -692,7 +715,10 @@ _C_FUNC_EXCLUDE = {
 _C_TYPE = re.compile(
     r"^\s*(?:typedef\s+)?(?:struct|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)")
 _C_DEFINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)")
-_C_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
+# Multiline: _c_imports scans the whole text. Without re.M the `^` anchor
+# matched only an include on the file's first line, so C files reported
+# (almost) no includes at all.
+_C_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
 # Function-pointer members (`int (*cb)(...)`, RedisModule API struct).
 _C_FPTR = re.compile(r"\(\*([A-Za-z_][A-Za-z0-9_]*)\)\s*\(")
 # Type keywords that the function pattern can mistake for a name

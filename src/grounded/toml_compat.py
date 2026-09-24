@@ -2,18 +2,77 @@
 
 Supports exactly the subset grounded's own config needs: [table] and
 [table.sub] headers, `#` comments, double/single-quoted strings, arrays
-of strings, one-level inline tables with string or string-array values,
-booleans, and integers. Anything else raises ValueError, which callers
+of strings (single- or multi-line), one-level inline tables with string
+or string-array values, booleans, and integers. Anything else raises ValueError, which callers
 treat the same as an unreadable file (never a silent half-config).
 """
 from __future__ import annotations
 
 
+def section(text: str, prefix: str) -> str:
+    """Only the `[prefix]` and `[prefix.*]` tables of a TOML document.
+
+    A pyproject.toml carries every tool's config, much of it outside this
+    subset (`[[tool.mypy.overrides]]`, multi-line strings). Grounded reads
+    only `[tool.grounded]`, so on Python 3.10 it parses only that: other
+    tools' syntax must never make grounded refuse a project (every scan of
+    a typical Python repo exited 2 on 3.10). Multi-line strings are
+    tracked so a `[` line inside one is never read as a header.
+    """
+    out: list[str] = []
+    keep = False
+    in_string: str | None = None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if in_string is None and stripped.startswith("[") and not stripped.startswith("[["):
+            name = stripped[1:stripped.find("]")] if "]" in stripped else ""
+            name = ".".join(p.strip().strip("\"'") for p in name.split("."))
+            keep = name == prefix or name.startswith(prefix + ".")
+        elif in_string is None and stripped.startswith("[["):
+            keep = False
+        if keep:
+            out.append(raw)
+        for q in ('"""', "'''"):
+            if raw.count(q) % 2 == 1 and (in_string is None or in_string == q):
+                in_string = None if in_string == q else q
+    return "\n".join(out)
+
+
+def _logical_lines(text: str):
+    """Physical lines joined while an array or inline table is open, so a
+    multi-line `keys = [\n "a",\n "b",\n]` reads as one assignment."""
+    buf: list[str] = []
+    depth = 0
+    for raw in text.splitlines():
+        line = _strip_comment(raw)
+        if not buf and not line.strip():
+            continue
+        buf.append(line.strip())
+        quote: str | None = None
+        for ch in line:
+            if quote is not None:
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in ("\"", "'"):
+                quote = ch
+            elif ch in "[{":
+                depth += 1
+            elif ch in "]}":
+                depth -= 1
+        if depth <= 0 or buf[0].startswith("["):
+            joined = " ".join(b for b in buf if b)
+            buf, depth = [], 0
+            yield joined, raw
+    if buf:
+        raise ValueError(f"unterminated value: {buf[0]!r}")
+
+
 def loads(text: str) -> dict:
     root: dict = {}
     current = root
-    for raw in text.splitlines():
-        line = _strip_comment(raw).strip()
+    for line, raw in _logical_lines(text):
+        line = line.strip()
         if not line:
             continue
         if line.startswith("["):

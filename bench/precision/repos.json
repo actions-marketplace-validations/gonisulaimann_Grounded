@@ -1,0 +1,130 @@
+{
+  "pinned": "2026-09-24",
+  "repos": [
+    {
+      "name": "flask",
+      "url": "https://github.com/pallets/flask",
+      "sha": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35"
+    },
+    {
+      "name": "click",
+      "url": "https://github.com/pallets/click",
+      "sha": "06b2a678741131fd577ce170e23e5ca0aeba0309"
+    },
+    {
+      "name": "requests",
+      "url": "https://github.com/psf/requests",
+      "sha": "611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60"
+    },
+    {
+      "name": "httpx",
+      "url": "https://github.com/encode/httpx",
+      "sha": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+    },
+    {
+      "name": "typer",
+      "url": "https://github.com/fastapi/typer",
+      "sha": "a80f6e5ecd74f32b983cca336a2f3cba98d9853a"
+    },
+    {
+      "name": "fastapi",
+      "url": "https://github.com/fastapi/fastapi",
+      "sha": "50113da16fec53b66b80d75e80a89296de4fa5a5"
+    },
+    {
+      "name": "sqlmodel",
+      "url": "https://github.com/fastapi/sqlmodel",
+      "sha": "1c46f0decb64762b4beb085e3181428921166349"
+    },
+    {
+      "name": "rich",
+      "url": "https://github.com/Textualize/rich",
+      "sha": "9d8f9a372cc5916fd4781fec207ced7ddac2f08f"
+    },
+    {
+      "name": "pydantic",
+      "url": "https://github.com/pydantic/pydantic",
+      "sha": "0384c970e37a59b344e75161eb106ea9996378ba"
+    },
+    {
+      "name": "black",
+      "url": "https://github.com/psf/black",
+      "sha": "2b96e280653fd79f593c942191d8614ca6ce39e6"
+    },
+    {
+      "name": "pytest",
+      "url": "https://github.com/pytest-dev/pytest",
+      "sha": "f9554ee56d264da285f3951ebfdf6f1d59ba4077"
+    },
+    {
+      "name": "scrapy",
+      "url": "https://github.com/scrapy/scrapy",
+      "sha": "91d87364637c1b18fd5bb21d1ed3bb356cf9b6fc"
+    },
+    {
+      "name": "celery",
+      "url": "https://github.com/celery/celery",
+      "sha": "eb3dfa3844288ee35c94a08267cc5e075d42b278"
+    },
+    {
+      "name": "django",
+      "url": "https://github.com/django/django",
+      "sha": "951d13c77bc120be385c46fc701a1ad93694edd1"
+    },
+    {
+      "name": "express",
+      "url": "https://github.com/expressjs/express",
+      "sha": "9a34acf03cb818ff3f8bc40e44176e277a25cbb9"
+    },
+    {
+      "name": "axios",
+      "url": "https://github.com/axios/axios",
+      "sha": "5fc40e1c7478d342ec64c4e865ed4cd1a334207c"
+    },
+    {
+      "name": "svelte",
+      "url": "https://github.com/sveltejs/svelte",
+      "sha": "38098a931142dfef6ca7330d33264d1908b698fa"
+    },
+    {
+      "name": "vite",
+      "url": "https://github.com/vitejs/vite",
+      "sha": "f155b62ceabbaaf71abbf59933968787e3961c56"
+    },
+    {
+      "name": "prettier",
+      "url": "https://github.com/prettier/prettier",
+      "sha": "3402431ba4288b92ad69788f17cbea43def8bcda"
+    },
+    {
+      "name": "cobra",
+      "url": "https://github.com/spf13/cobra",
+      "sha": "adbc8813901bba65827259daa8e22ff94ec1f30e"
+    },
+    {
+      "name": "gin",
+      "url": "https://github.com/gin-gonic/gin",
+      "sha": "3b08cd7235bd5ad2f055aa9e38135f111f6c5926"
+    },
+    {
+      "name": "grpc-go",
+      "url": "https://github.com/grpc/grpc-go",
+      "sha": "1863b598b62e623f8d58305da7b068d8fee32d7b"
+    },
+    {
+      "name": "redis",
+      "url": "https://github.com/redis/redis",
+      "sha": "7a72677e622da5270f4488ef5872c0d8ab8aca91"
+    },
+    {
+      "name": "jq",
+      "url": "https://github.com/jqlang/jq",
+      "sha": "df24981307658868759faaea76b817cc62dd6be0"
+    },
+    {
+      "name": "curl",
+      "url": "https://github.com/curl/curl",
+      "sha": "7f4cfe13b67c5b876d109fba04a2f18c05ef6922"
+    }
+  ]
+}

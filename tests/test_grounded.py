@@ -3687,9 +3687,12 @@ class TestTomlCompat(unittest.TestCase):
 
     def test_rejects_non_subset(self):
         from grounded import toml_compat
-        for bad in ["a = 2026-09-21\n", "[a\n", "a = 'x\n", "a = [\n\"x\",\n]\n"]:
+        for bad in ["a = 2026-09-21\n", "[a\n", "a = 'x\n", "a = [\n\"x\",\n"]:
             with self.assertRaises(ValueError, msg=bad):
                 toml_compat.loads(bad)
+        # Multi-line arrays joined the subset (valid TOML, and the shape of
+        # nearly every real pyproject.toml); an unterminated one stays an error.
+        self.assertEqual(toml_compat.loads("a = [\n\"x\",\n]\n"), {"a": ["x"]})
 
     def test_config_loads_without_tomllib(self):
         import grounded.config as config_mod
@@ -3705,6 +3708,52 @@ class TestTomlCompat(unittest.TestCase):
                 config_mod.tomllib = saved
             self.assertEqual(cfg.fail_on, "drift")
             self.assertEqual(cfg.path_aliases, {"~/": ["src/"]})
+
+
+class TestTomlCompatRealPyproject(unittest.TestCase):
+    """Python 3.10 (no tomllib) must read `[tool.grounded]` out of a real
+    pyproject.toml whatever other tools put there. Measured: CI's 3.10
+    dogfood exited 2 on this repo's own multi-line `keywords = [...]`."""
+
+    PYPROJECT = (
+        '[project]\nname = "x"\nkeywords = [\n  "a",  # note\n  "b",\n]\n'
+        'description = """Multi-line\n[not.a.header]\n"""\n'
+        '[[tool.mypy.overrides]]\nmodule = "x.*"\nignore_errors = true\n'
+        '[tool.black]\nline-length = 88\ntarget-version = ["py310",\n "py311"]\n'
+        '[tool.grounded]\nfail_on = "drift"\ndisable = [\n  "fragile-anchor",\n]\n'
+        '[tool.grounded.path_aliases]\n"@/" = ["src/"]\n'
+        '[tool.ruff]\nselect = ["E"]\n'
+    )
+
+    def test_compat_reads_grounded_section_only(self):
+        from unittest import mock
+        import grounded.config as cfg
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text(self.PYPROJECT, encoding="utf-8")
+            with mock.patch.object(cfg, "tomllib", None):
+                c = cfg.Config.load(root)
+            self.assertEqual(c.fail_on, "drift")
+            self.assertNotIn("fragile-anchor", c.enabled)
+            self.assertEqual(c.path_aliases, {"@/": ["src/"]})
+
+    def test_multiline_arrays_and_tables(self):
+        from grounded.toml_compat import loads
+        self.assertEqual(loads('a = [\n "x", # c\n "y",\n]\n[t]\nb = { k = ["1",\n "2"] }\n'),
+                         {"a": ["x", "y"], "t": {"b": {"k": ["1", "2"]}}})
+        with self.assertRaises(ValueError):
+            loads('a = [\n "x",\n')
+
+    def test_grounded_section_errors_still_fail(self):
+        from unittest import mock
+        import grounded.config as cfg
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text(
+                '[tool.black]\nx = 1979-05-27\n[tool.grounded]\nfail_on = @@\n', encoding="utf-8")
+            with mock.patch.object(cfg, "tomllib", None):
+                with self.assertRaises(cfg.ConfigError):
+                    cfg.Config.load(root)
 
 
 class TestImpact(unittest.TestCase):
@@ -3895,6 +3944,191 @@ class TestSubTreeScanOpacity(unittest.TestCase):
             (root / "app.ts").write_text('import { x } from "./gone";\n', encoding="utf-8")
             findings, _, _ = scan_root(root, Config())
             self.assertTrue([f for f in findings if f.checker == "stale-import"])
+
+
+class TestDirectoryScanScope(unittest.TestCase):
+    """`grounded scan <subdir>` indexes the whole project and scopes only
+    the report, exactly like a file argument.
+
+    Measured: a comment in `src/` naming a helper defined in `scripts/` was
+    a stale-symbol-ref lie under `scan src` and clean under `scan .`, and
+    CI gates (`grounded scan src`) could not see file refs the root scan
+    reported. One file, one verdict, whatever directory was named.
+    """
+
+    def _project(self, td: str) -> Path:
+        root = Path(td)
+        (root / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding="utf-8")
+        (root / "scripts").mkdir()
+        (root / "scripts" / "tools.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+        (root / "src" / "app").mkdir(parents=True)
+        (root / "src" / "app" / "core.py").write_text(
+            "# Nightly job calls `helper()` to rebuild caches.\ndef run():\n    return 2\n",
+            encoding="utf-8")
+        (root / "src" / "app" / "bad.py").write_text(
+            "# Calls `ghost_fn()` for retries.\nX = 1\n", encoding="utf-8")
+        (root / "scripts" / "bad.py").write_text(
+            "# Calls `other_ghost()` for retries.\nY = 1\n", encoding="utf-8")
+        return root
+
+    def _scan_json(self, *argv: str) -> tuple[int, list[dict]]:
+        import contextlib
+        import io
+        from grounded.cli import main
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = main(["scan", *argv, "--no-color", "--format", "json", "--fail-on", "never"])
+        return rc, json.loads(buf.getvalue())
+
+    def test_subdir_scan_sees_definitions_outside_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._project(td)
+            _, got = self._scan_json(str(root / "src"))
+            self.assertNotIn("src/app/core.py", {f["path"] for f in got})
+
+    def test_subdir_scan_reports_only_its_subtree_with_project_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._project(td)
+            _, got = self._scan_json(str(root / "src"))
+            self.assertEqual({f["path"] for f in got}, {"src/app/bad.py"})
+
+    def test_subdir_and_root_scans_agree_per_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._project(td)
+            _, sub = self._scan_json(str(root / "src"))
+            _, whole = self._scan_json(str(root))
+            key = lambda f: (f["path"], f["line"], f["checker"])
+            self.assertEqual(sorted(map(key, sub)),
+                             sorted(key(f) for f in whole if f["path"].startswith("src/")))
+
+    def test_resolve_scan_scope(self):
+        from grounded.scanner import in_scope, resolve_scan_scope
+        with tempfile.TemporaryDirectory() as td:
+            root = self._project(td)
+            self.assertEqual(resolve_scan_scope(root), (root.resolve(), None))
+            self.assertEqual(resolve_scan_scope(root / "src" / "app"),
+                             (root.resolve(), "src/app"))
+            self.assertTrue(in_scope("src/app/x.py", "src/app"))
+            self.assertFalse(in_scope("src/application.py", "src/app"))
+            self.assertTrue(in_scope("anything.py", None))
+
+    def test_never_climbs_to_home(self):
+        from unittest import mock
+        from grounded.scanner import project_root_for
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td).resolve()
+            (home / ".git").mkdir()  # a dotfiles repo at ~
+            lone = home / "scratch" / "notes"
+            lone.mkdir(parents=True)
+            with mock.patch("pathlib.Path.home", return_value=home):
+                self.assertEqual(project_root_for(lone), lone)
+                self.assertEqual(project_root_for(home), home)
+
+    def test_placeholder_paths_are_not_claims(self):
+        from grounded.checkers import _is_placeholder_path
+        for ref in ("src/mypkg/x.py", "src/old/x.py", "my_app/models.py", "lib/mymodule.js"):
+            self.assertTrue(_is_placeholder_path(ref), ref)
+        for ref in ("src/app/loader.py", "myth/core.py", "src/xy.py", "mypy/checker.py"):
+            self.assertFalse(_is_placeholder_path(ref), ref)
+
+
+class TestRuntimeModuleRegistration(unittest.TestCase):
+    """`sys.modules[...] = mod` makes dotted imports resolvable with no
+    file behind them (requests.packages). Silence needs that evidence in an
+    ancestor module; without it a missing module is still a lie."""
+
+    def _scan(self, alias_src: str) -> list:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+            (root / "pkg" / "packages.py").write_text(alias_src, encoding="utf-8")
+            (root / "use.py").write_text(
+                "from pkg.packages.urllib3.poolmanager import PoolManager\n", encoding="utf-8")
+            findings, _, _ = scan_root(root, Config())
+            return [f for f in findings if f.checker == "stale-import"]
+
+    def test_registered_alias_is_silent(self):
+        for src in ('import sys\nsys.modules["pkg.packages.urllib3"] = object()\n',
+                    "import sys\nsys.modules.update(extra)\n",
+                    'import sys\nsys.modules.setdefault("x", m)\n'):
+            self.assertEqual(self._scan(src), [], src)
+
+    def test_without_registration_still_fires(self):
+        self.assertEqual(len(self._scan("import sys\nif sys.modules['x'] == 1:\n    pass\n")), 1)
+
+
+class TestPrecisionRound(unittest.TestCase):
+    """Helpers behind the 2026-09-24 real-repo precision round
+    (bench/precision/): each pins one false-positive family and the
+    boundary that keeps real rot firing."""
+
+    def test_fixture_paths(self):
+        from grounded.scanner import is_fixture_path
+        for rel in ("tests/format/js/a.js", "tests/data/cases/x.py", "pkg/fixtures/a.py",
+                    "src/__tests__/fixtures/x.js", "testdata/README.md",
+                    "tests/admin/broken_app/models.py", "tests/template_tests/broken_tag.py",
+                    "tests/mypy/outputs/x.py"):
+            self.assertTrue(is_fixture_path(rel), rel)
+        for rel in ("tests/test_app.py", "src/data/loader.py", "tests/test_apps/mod/__init__.py",
+                    "src/broken.py", "format/x.js"):
+            self.assertFalse(is_fixture_path(rel), rel)
+
+    def test_nested_gitignore(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".gitignore").write_text("/build\n*.log\ngen/\n", encoding="utf-8")
+            (root / "website").mkdir()
+            (root / "website" / ".gitignore").write_text("static/lib\n!keep.log\n", encoding="utf-8")
+            idx = RepoIndex(root, [])
+            self.assertTrue(idx.is_gitignored("build/x.js"))
+            self.assertTrue(idx.is_gitignored("a/b/debug.log"))
+            self.assertTrue(idx.is_gitignored("pkg/gen/client.py"))
+            self.assertTrue(idx.is_gitignored("website/static/lib/next/m.mjs"))
+            self.assertFalse(idx.is_gitignored("website/keep.log"))
+            self.assertFalse(idx.is_gitignored("src/build.py"))
+            self.assertFalse(idx.is_gitignored("static/lib/x.js"))
+
+    def test_require_inside_string_is_not_an_import(self):
+        from grounded.parsers import _js_import_entries
+        got = _js_import_entries(
+            "const a = require('./a')\n"
+            "const t = { src: 'const r = require(\"./lib/r\")' }\n")
+        self.assertEqual([e[0] for e in got], ["./a"])
+
+    def test_docstring_listing_dropped_prose_kept(self):
+        from grounded.checkers import _drop_literal_blocks
+        doc = ("Names in a distribution.\n\n    Listed as:\n\n        src/a/b.py\n"
+               "        src/a/c.py\n\n    Moved to src/pkg/x.py.\n"
+               "    Args:\n        path: see src/real.py\n")
+        out = _drop_literal_blocks(doc)
+        self.assertNotIn("src/a/b.py", out)
+        self.assertIn("src/pkg/x.py", out)
+        self.assertIn("see src/real.py", out)
+
+    def test_c_include_regex_is_multiline(self):
+        from grounded.parsers import _c_imports
+        got = _c_imports("/* hdr */\n#include <stdio.h>\n#  include <ares.h>\n#include \"local.h\"\n")
+        self.assertEqual(got, {"stdio": "stdio.h", "ares": "ares.h", "local": ""})
+
+    def test_derived_lookups_follow_rebuilds(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            f = root / "a.py"
+            f.write_text("def cf_socket_active():\n    pass\n", encoding="utf-8")
+            idx = RepoIndex(root, [f])
+            self.assertIn("_active", idx.underscore_suffixes())
+            idx._index_one("a.py", ".py", "def renamed():\n    pass\n")
+            self.assertNotIn("_active", idx.underscore_suffixes())
+
+    def test_dunder_typo_only(self):
+        from grounded.checkers import _dunder_typo_of
+
+        class _Idx:
+            all_symbols: set = set()
+        self.assertTrue(_dunder_typo_of("__get_item__", _Idx()))
+        for name in ("__annotations__", "__wrapped__", "__pydantic_fields__", "__tests__"):
+            self.assertFalse(_dunder_typo_of(name, _Idx()), name)
 
 
 class TestGhostExportSuppression(unittest.TestCase):

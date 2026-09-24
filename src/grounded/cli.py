@@ -20,7 +20,15 @@ from .delta import (
 )
 from .models import SEVERITY_RANK, CheckerError
 from .reporters import format_terminal, to_html, to_json, to_markdown, to_sarif
-from .scanner import apply_suppressions, collect_files, project_root_for, scan_root, warn_unknown_suppressions
+from .scanner import (
+    apply_suppressions,
+    collect_files,
+    in_scope,
+    project_root_for,
+    resolve_scan_scope,
+    scan_root,
+    warn_unknown_suppressions,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -190,7 +198,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
     # hook receives) each scope reporting; the FIRST one anchors the
     # project root and the rest must live under it.
     only_set: set[str] | None = None
-    if root.is_file():
+    prefix: str | None = None
+    if root.is_dir():
+        # A directory argument scopes reporting the same way: the index is
+        # the whole project, so `scan src` and `scan .` agree on every file.
+        root, prefix = resolve_scan_scope(root)
+    else:
         root = project_root_for(root.parent)
         only_set = {_report_key(p.resolve(), root) for p in paths}
         for p in paths[1:]:
@@ -220,12 +233,16 @@ def cmd_scan(args: argparse.Namespace) -> int:
     n_files = len(facts)
     n_unparsed = len(index.parse_failed)
     _report_checker_errors(checker_errors)
-    for wpath, wline, wids in warn_unknown_suppressions(facts):
+    for wpath, wline, wids in warn_unknown_suppressions(
+            [f for f in facts if in_scope(f.path, prefix)]):
         print(f"grounded: warning: unknown checker id(s) in suppression at "
               f"{wpath}:{wline}: {', '.join(wids)} (known: {', '.join(sorted(CHECKERS))})",
               file=sys.stderr)
     if only_set is not None:
         findings = [f for f in findings if f.path in only_set]
+    if prefix is not None:
+        findings = [f for f in findings if in_scope(f.path, prefix)]
+        n_files = sum(1 for f in facts if in_scope(f.path, prefix))
 
     suppressed_note = ""
     facts_by_path = {f.path: f for f in facts}
@@ -304,8 +321,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
-    if root.is_file():
-        root = root.parent
+    root, prefix = resolve_scan_scope(root)
     config = _load_config(root, explicit=args.config)
     try:
         _resolve_enable_disable(config, args.enable, args.disable)
@@ -314,6 +330,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         return 2
     checker_errors: list[CheckerError] = []
     findings, facts, index = scan_root(root, config, checker_errors=checker_errors)
+    findings = [f for f in findings if in_scope(f.path, prefix)]
     if checker_errors:
         # A baseline is a persisted scan result: writing one from an
         # incomplete scan bakes permanent blind spots into every later gate.
@@ -340,21 +357,13 @@ def cmd_fix(args: argparse.Namespace) -> int:
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
-    only: str | None = None
-    if root.is_file():
-        target = root
-        root = project_root_for(target.parent)
-        try:
-            only = target.relative_to(root).as_posix()
-        except ValueError:
-            only = target.name
+    root, only = resolve_scan_scope(root)
     config = _load_config(root, explicit=args.config)
     findings, facts, index = scan_root(root, config)
     facts_by_path = {f.path: f for f in facts}
     findings, _ = apply_suppressions(findings, facts_by_path)
-    if only is not None:
-        # Never rewrite files the user did not name.
-        findings = [f for f in findings if f.path == only]
+    # Never rewrite files outside the path the user named.
+    findings = [f for f in findings if in_scope(f.path, only)]
     fixes = file_fix_candidates(findings, root, config=config)
     sym_fixes = symbol_fix_candidates(findings, root, index)
     if not fixes and not sym_fixes:
@@ -557,8 +566,7 @@ def cmd_impact(args: argparse.Namespace) -> int:
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
-    if root.is_file():
-        root = root.parent
+    root, _prefix = resolve_scan_scope(root)
     config = _load_config(root, explicit=args.config)
     _, facts, index = scan_root(root, config, include_claim_surfaces=True)
     result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(args.symbol)

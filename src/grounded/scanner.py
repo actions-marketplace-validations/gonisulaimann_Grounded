@@ -36,9 +36,19 @@ def project_root_for(start: Path, stop: Path | None = None) -> Path:
     `stop` when given, e.g. an MCP server root), so behavior on
     marker-less trees is unchanged.
     """
-    cur = start.resolve()
+    first = start.resolve()
+    cur = first
     limit = stop.resolve() if stop is not None else None
+    # Never climb *to* the home directory or above it: a dotfiles repo at
+    # `~` would turn every marker-less scan into an index of the whole home
+    # tree. Starting there (scanning `~` itself) is still allowed.
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        home = None
     while True:
+        if home is not None and cur != first and (cur == home or cur in home.parents):
+            break
         try:
             if any((cur / m).exists() for m in _PROJECT_MARKERS):
                 return cur
@@ -50,7 +60,32 @@ def project_root_for(start: Path, stop: Path | None = None) -> Path:
         if limit is not None and (cur == limit or len(parent.parts) < len(limit.parts)):
             break
         cur = parent
-    return start.resolve()
+    return first
+
+
+def resolve_scan_scope(target: Path, stop: Path | None = None) -> tuple[Path, str | None]:
+    """(index root, report prefix) for a scan target.
+
+    The index always covers the target's whole project; the prefix scopes
+    reporting to the target. Indexing only a subdirectory manufactures
+    absence claims about everything outside it (a comment in `src/` naming
+    a helper in `scripts/` read as a lie), so the verdict for a file must
+    not depend on which directory the user happened to scan. The prefix is
+    None when the target is the project root itself.
+    """
+    resolved = target.resolve()
+    base = resolved if resolved.is_dir() else resolved.parent
+    root = project_root_for(base, stop=stop)
+    try:
+        rel = resolved.relative_to(root).as_posix()
+    except ValueError:
+        return base, None
+    return root, (None if rel in (".", "") else rel)
+
+
+def in_scope(path: str, prefix: str | None) -> bool:
+    """Whether a project-relative finding path falls under a scan prefix."""
+    return prefix is None or path == prefix or path.startswith(prefix + "/")
 
 
 def warn_unknown_suppressions(facts_list: list[FileFacts]) -> list[tuple[str, int, list[str]]]:
@@ -218,6 +253,12 @@ def collect_files(root: Path, config: Config, include_claim_surfaces: bool = Fal
                     # never gate, so collecting more changes nothing gated.
                     suffixes = suffixes | {".md", ".markdown", ".mdc", ".toml"}
                     want_cfg = True
+                if e.suffix.lower() == ".pyi":
+                    # Stubs are presence evidence only (compiled extension
+                    # modules ship a .pyi and no .py: pydantic-core's
+                    # `_pydantic_core`), never parsed as source.
+                    decls.add(e.relative_to(root).as_posix())
+                    continue
                 if e.suffix.lower() in suffixes or (want_cfg and (
                         e.suffix.lower() == ".toml" or e.name == "package.json")):
                     # skip minified bundles
@@ -232,6 +273,40 @@ def collect_files(root: Path, config: Config, include_claim_surfaces: bool = Fal
                         continue
                     out.append(e)
     return sorted(out), decls
+
+
+# Test-fixture data: files that exist to be *input* (formatter cases,
+# snapshot outputs, intentionally broken sample projects). Their imports
+# and comments are data, not claims about the repo: measured 60+ "lies"
+# across prettier tests/format/, black tests/data/cases/, pydantic
+# tests/mypy/outputs/, vite __tests__/fixtures/, all by design. They stay
+# indexed (other files may reference them); only their own findings are
+# withheld. Deliberately narrow: `tests/` alone is code, not data.
+_FIXTURE_SEGMENTS = frozenset({"fixtures", "fixture", "__fixtures__", "testdata",
+                               "test_data", "test-data", "__snapshots__"})
+_TEST_ROOTS = frozenset({"tests", "test", "testing", "__tests__", "spec", "specs"})
+_TEST_DATA_SEGMENTS = frozenset({"data", "cases", "format", "samples", "inputs",
+                                 "outputs", "expected"})
+
+
+def is_fixture_path(rel: str) -> bool:
+    all_parts = rel.split("/")
+    parts = all_parts[:-1]
+    if any(p in _FIXTURE_SEGMENTS for p in parts):
+        return True
+    for i, p in enumerate(parts):
+        if p not in _TEST_ROOTS:
+            continue
+        below = parts[i + 1:]
+        if any(q in _TEST_DATA_SEGMENTS for q in below):
+            return True
+        # `broken_app/`, `broken_tag.py`: fixtures that are broken on
+        # purpose so a test can assert the failure (seen: django's
+        # `broken_app` and `broken_tag` test fixtures).
+        stem = all_parts[-1].rsplit(".", 1)[0]
+        if any(q.startswith("broken") for q in below + [stem]):
+            return True
+    return False
 
 
 _INDEX: RepoIndex | None = None
@@ -252,6 +327,8 @@ def _scan_one(args: tuple[str, str, list[str]]) -> tuple[FileFacts | None, list[
     facts = parse_file(Path(rel), rel, text)
     if facts is None:
         return None, [], []
+    if is_fixture_path(rel):
+        return facts, [], []
     findings: list[Finding] = []
     errors: list[CheckerError] = []
     for checker_id in enabled:
@@ -267,6 +344,7 @@ def _scan_one(args: tuple[str, str, list[str]]) -> tuple[FileFacts | None, list[
             # reads exactly like a clean file in every summary, so record it
             # and let the caller fail instead of reporting `clean`.
             errors.append(CheckerError(checker_id, rel, f"{type(exc).__name__}: {exc}"))
+    facts.__dict__.pop("_comment_line_map", None)  # checker-local cache, not a fact
     return facts, findings, errors
 
 
@@ -408,7 +486,12 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
                                         lines=text.splitlines()))
             fresh[rel] = (mt, sz, hit[2], hit[3])
         else:
-            payloads.append((rel, text, enabled))
+            # A symlinked source file resolves its relative imports from
+            # the link target's directory (Node and Python both follow
+            # the link), so its claims cannot be judged at the link's
+            # path: index it, check it where it really lives (seen: vite
+            # playground/preserve-symlinks/module-a/linked.js).
+            payloads.append((rel, text, [] if Path(key).is_symlink() else enabled))
     if jobs == 1:
         _INDEX = index
         results = [_scan_one(p) for p in payloads]

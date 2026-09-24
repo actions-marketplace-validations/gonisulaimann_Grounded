@@ -60,7 +60,7 @@ class Config:
             for name in ("grounded.toml", ".grounded.toml", "pyproject.toml"):
                 cand = root / name
                 if cand.exists():
-                    raw = _read_toml(cand)
+                    raw = _read_toml(cand, section="tool.grounded" if name == "pyproject.toml" else None)
                     if name == "pyproject.toml":
                         raw = (raw.get("tool") or {}).get("grounded", {})
                     data = raw
@@ -108,7 +108,7 @@ class Config:
                    path_aliases=path_aliases)
 
 
-def _read_toml(path: Path) -> dict:
+def _read_toml(path: Path, section: str | None = None) -> dict:
     if tomllib is not None:
         try:
             with open(path, "rb") as fh:
@@ -121,9 +121,12 @@ def _read_toml(path: Path) -> dict:
     # Python 3.10 has no tomllib: fall back to the strict subset reader
     # (grounded/toml_compat.py). Outside the subset reads as unreadable,
     # exactly like a corrupt file on newer Pythons.
-    from .toml_compat import loads as compat_loads
+    from .toml_compat import loads as compat_loads, section as compat_section
     try:
-        val = compat_loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        if section is not None:
+            text = compat_section(text, section)
+        val = compat_loads(text)
         return val if isinstance(val, dict) else {}
     except OSError as exc:
         raise ConfigError(f"config file unreadable: {path} ({exc})") from exc

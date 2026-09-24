@@ -1,7 +1,7 @@
 {
   "name": "grounded",
   "displayName": "Grounded",
-  "description": "Sub-millisecond reference integrity firewall for Cursor, Windsurf, and VS Code. Stops AI coding agent hallucinations in 0.6ms.",
+  "description": "Reference integrity firewall for Cursor, Windsurf, and VS Code. Re-checks the edited file in about 0.6 ms and flags references that resolve nowhere.",
   "version": "0.16.0",
   "icon": "icon.png",
   "publisher": "gonisulaimann",
