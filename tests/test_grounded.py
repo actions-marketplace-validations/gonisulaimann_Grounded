@@ -4027,6 +4027,123 @@ class TestPrecisionRound(unittest.TestCase):
             self.assertFalse(_dunder_typo_of(name, _Idx()), name)
 
 
+class TestParallelIndexBuild(unittest.TestCase):
+    """The parallel index build must produce exactly the serial index.
+
+    Per-file attributes are merged from worker chunks by name
+    (RepoIndex._PER_FILE_DICTS/_PER_FILE_SETS/_NAME_SETS). A new per-file
+    attribute missing from those lists would be silently empty in every
+    parallel scan; this test compares every attribute of both builds."""
+
+    def _tree(self, root: Path) -> list[Path]:
+        (root / "pkg").mkdir()
+        (root / "web").mkdir()
+        files = []
+        for i in range(40):
+            f = root / "pkg" / f"m{i}.py"
+            f.write_text(
+                f"import sys\nfrom pkg.m{(i + 1) % 40} import f{(i + 1) % 40}\n"
+                f"from . import *\n"
+                f"def f{i}():\n    return {i}\nclass C{i}:\n    pass\n"
+                + ("sys.modules['x'] = sys\n" if i % 7 == 0 else "")
+                + ("globals().update({})\n" if i % 11 == 0 else "")
+                + ("def broken(:\n" if i == 13 else ""),
+                encoding="utf-8")
+            files.append(f)
+            j = root / "web" / f"w{i}.js"
+            j.write_text(
+                f"export const {{ a{i}, b{i}: c{i} }} = obj;\nexport function w{i}() {{}}\n"
+                f"export * from './w{(i + 1) % 40}.js';\nexport default w{i};\n"
+                + ("export * from 'external-pkg';\n" if i % 9 == 0 else ""),
+                encoding="utf-8")
+            files.append(j)
+        return files
+
+    def test_parallel_equals_serial(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            files = self._tree(root)
+            serial = RepoIndex(root, files, jobs=1)
+            with mock.patch.object(RepoIndex, "_PARALLEL_MIN_FILES", 1):
+                parallel = RepoIndex(root, files, jobs=2)
+            skip = {"_jobs", "_texts", "_deps_cache", "_gitignore_cache", "_disk_texts"}
+            names = (set(vars(serial)) | set(vars(parallel))) - skip
+            for name in sorted(names):
+                self.assertEqual(getattr(serial, name, None), getattr(parallel, name, None), name)
+            self.assertTrue(serial.file_registers_modules)
+            self.assertTrue(serial.parse_failed)
+
+    def test_worker_copy_reads_text_from_disk(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            f = root / "a.py"
+            f.write_text("X = 1\n", encoding="utf-8")
+            idx = RepoIndex(root, [f], {str(f): "X = 1\n"})
+            clone = idx.worker_copy()
+            self.assertEqual(clone._texts, {})
+            self.assertEqual(clone.text_of("a.py"), "X = 1\n")
+            self.assertIsNone(clone.text_of("missing.py"))
+            self.assertEqual(idx._texts, {str(f): "X = 1\n"})
+
+
+class TestChangedFastPath(unittest.TestCase):
+    """`scan --changed` checks only changed files and files naming a
+    changed symbol; the report must equal a full scan filtered by
+    filter_changed (speed changes, output never does)."""
+
+    def _git(self, root: Path, *args: str) -> None:
+        import os
+        import subprocess
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True,
+                       env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+
+    def test_fast_path_equals_full_scan_filtered(self):
+        import contextlib
+        import io
+        from grounded.cli import main
+        from grounded.delta import changed_lines, changed_symbols, filter_changed
+        if shutil.which("git") is None:
+            self.skipTest("git not installed")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding="utf-8")
+            (root / "app").mkdir()
+            (root / "app" / "__init__.py").write_text("", encoding="utf-8")
+            (root / "app" / "core.py").write_text("def fetch_user():\n    return 1\n", encoding="utf-8")
+            (root / "app" / "views.py").write_text(
+                "from app.core import fetch_user\n# Calls `fetch_user()` for the page.\n", encoding="utf-8")
+            (root / "app" / "other.py").write_text("# Calls `old_ghost()` here.\nX = 1\n", encoding="utf-8")
+            for i in range(20):
+                (root / "app" / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n", encoding="utf-8")
+            self._git(root, "init", "-q")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-qm", "init")
+            (root / "app" / "core.py").write_text("def load_user():\n    return 1\n", encoding="utf-8")
+            (root / "app" / "new.py").write_text("# Calls `brand_new_ghost()`.\nY = 1\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                main(["scan", str(root), "--changed", "--format", "json", "--fail-on", "never"])
+            fast = sorted((f["path"], f["line"], f["checker"]) for f in json.loads(buf.getvalue()))
+            full, _, _ = scan_root(root, Config())
+            hunks, untracked = changed_lines(root, "HEAD")
+            want = filter_changed(full, hunks, untracked, changed_symbols(root, "HEAD"))
+            self.assertEqual(fast, sorted((f.path, f.line, f.checker) for f in want))
+            self.assertIn(("app/views.py", 1, "stale-import"), fast)
+            self.assertIn(("app/new.py", 1, "stale-symbol-ref"), fast)
+            self.assertNotIn("app/other.py", {p for p, _, _ in fast})
+
+    def test_filter_is_superset_by_construction(self):
+        from grounded.delta import changed_file_filter
+        pred = changed_file_filter({"a.py": {1}}, {"u.py"}, {"fetch_user", "$el"})
+        self.assertTrue(pred("a.py", ""))
+        self.assertTrue(pred("u.py", ""))
+        self.assertTrue(pred("b.py", "from x import fetch_user\n"))
+        self.assertFalse(pred("c.py", "fetch_user_v2 = 1\n"))
+        self.assertFalse(pred("d.py", "nothing here\n"))
+
+
 class TestGhostExportSuppression(unittest.TestCase):
     def _scan(self, root):
         return scan_root(root, Config(enabled={"ghost-export"}))[0]

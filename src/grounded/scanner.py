@@ -426,6 +426,7 @@ def _suffix_of(rel: str) -> str:
 def scan_root(root: Path, config: Config, jobs: int | None = None,
               cache_path: Path | None = None, include_claim_surfaces: bool = False,
               checker_errors: list[CheckerError] | None = None,
+              check_only=None,
               ) -> tuple[list[Finding], list[FileFacts], RepoIndex]:
     """Scan a tree. Pass `checker_errors` to collect checkers that raised.
 
@@ -437,6 +438,7 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
     from . import __version__
     files, decls = collect_files(root, config, include_claim_surfaces=include_claim_surfaces)
     resolved = root.resolve()
+    auto_jobs = jobs is None
     if jobs is None:
         jobs = default_jobs(len(files))
     jobs = max(1, min(jobs, len(files) or 1))
@@ -465,7 +467,8 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
         resolved, collect_tsconfigs(resolved, config), config.path_aliases)
     index = RepoIndex(resolved, [f for f in files if str(f) in texts], texts,
                       alias_zones,
-                      decl_paths=decls, tsconfig_excluded=tsconfig_excluded)
+                      decl_paths=decls, tsconfig_excluded=tsconfig_excluded,
+                      jobs=jobs)
     facts_list: list[FileFacts] = []
     findings: list[Finding] = []
     # fresh[rel] holds JSON-ready finding dicts for the cache write-back.
@@ -474,6 +477,12 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
     for key, text in texts.items():
         rel = rels[key]
         mt, sz = stats[key]
+        if check_only is not None and not check_only(rel, text):
+            # Indexed, not checked: the caller will report nothing from
+            # this file (`--changed`: no changed lines, no changed symbol).
+            facts_list.append(FileFacts(path=rel, language="skipped",
+                                        lines=text.splitlines()))
+            continue
         hit = cached.get(rel)
         if hit is not None and hit[0] == mt and hit[1] == sz:
             for d in hit[2]:
@@ -492,12 +501,20 @@ def scan_root(root: Path, config: Config, jobs: int | None = None,
             # path: index it, check it where it really lives (seen: vite
             # playground/preserve-symlinks/module-a/linked.js).
             payloads.append((rel, text, [] if Path(key).is_symlink() else enabled))
+    if auto_jobs:
+        # The checker pool is sized by the files it will check, not the
+        # tree: a `--changed` run over 3 files must not spawn 8 workers.
+        jobs = max(1, min(jobs, default_jobs(len(payloads))))
     if jobs == 1:
         _INDEX = index
         results = [_scan_one(p) for p in payloads]
     else:
         chunksize = max(1, len(payloads) // (jobs * 8))
-        with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker, initargs=(index,)) as pool:
+        # Workers get the index without its text buffers: each file's text
+        # already travels in its own payload, and the few checkers that
+        # need another file's raw text read it on demand (text_of).
+        with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker,
+                                 initargs=(index.worker_copy(),)) as pool:
             results = list(pool.map(_scan_one, payloads, chunksize=chunksize))
     for facts, file_findings, file_errors in results:
         if facts is None:

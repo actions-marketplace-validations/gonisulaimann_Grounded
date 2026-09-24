@@ -997,8 +997,7 @@ def _lazy_string_export(index: RepoIndex, target: str, name: str) -> bool:
     string literal there is almost always a lazy export: celery's
     `recreate_module` map, transformers' `_import_structure`, lazy_loader
     stubs. Suppression-only (measured: celery `Signature`)."""
-    texts = getattr(index, "_texts", None) or {}
-    text = texts.get(str(index.root / target))
+    text = index.text_of(target)
     if not text:
         return False
     return re.search(r"""['"]""" + re.escape(name) + r"""['"]""", text) is not None
@@ -2308,9 +2307,8 @@ def _ghost_used_in_sibling(name: str, rel: str, index: RepoIndex) -> bool:
     Suppression-only: a comment mentioning the name cannot resurrect real
     dead code, it can only hide a finding.
     """
-    texts = getattr(index, "_texts", None)
     root = getattr(index, "root", None)
-    if not texts or root is None:
+    if root is None or not hasattr(index, "text_of"):
         return False
     want_dir = posixpath.dirname(rel)
     pat = re.compile(r"\b" + re.escape(name) + r"\s*\(")
@@ -2321,7 +2319,7 @@ def _ghost_used_in_sibling(name: str, rel: str, index: RepoIndex) -> bool:
             continue
         if frel == rel or posixpath.dirname(frel) != want_dir:
             continue
-        if pat.search(texts.get(str(f), "")):
+        if pat.search(index.text_of(frel) or ""):
             return True
     return False
 
@@ -2333,12 +2331,10 @@ def _ghost_build_tagged_variants(name: str, index: RepoIndex) -> bool:
     definers = index.symbol_files.get(name, set())
     if len(definers) < 2:
         return False
-    texts = getattr(index, "_texts", None)
-    root = getattr(index, "root", None)
-    if not texts or root is None:
+    if getattr(index, "root", None) is None or not hasattr(index, "text_of"):
         return False
     for drel in definers:
-        text = texts.get(str(root / drel))
+        text = index.text_of(drel)
         if text is None or not re.search(r"^\s*//go:build\b", text, re.MULTILINE):
             return False
     return True

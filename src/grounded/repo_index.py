@@ -119,7 +119,9 @@ class RepoIndex:
     def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None,
                  alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] | None = None,
                  decl_paths: set[str] | None = None,
-                 tsconfig_excluded: set[str] | None = None):
+                 tsconfig_excluded: set[str] | None = None,
+                 jobs: int = 1):
+        self._jobs = max(1, jobs)
         self.root = root
         self.files = files  # absolute paths
         self.py_symbols: set[str] = set()
@@ -207,6 +209,24 @@ class RepoIndex:
             pass
         self._build()
 
+    def text_of(self, rel: str) -> str | None:
+        """File text for rel: the pre-read buffer when present (CLI serial
+        scans, LSP's unsaved edits), else read from disk once and cached.
+        Worker processes receive the index without the buffers (for
+        cpython they were 79 MB of the 91 MB pickled into every worker);
+        the few suppression paths that need raw text read it here."""
+        texts = getattr(self, "_texts", None) or {}
+        hit = texts.get(str(self.root / rel))
+        if hit is not None:
+            return hit
+        cache = self.__dict__.setdefault("_disk_texts", {})
+        if rel not in cache:
+            try:
+                cache[rel] = (self.root / rel).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                cache[rel] = None
+        return cache[rel]
+
     def underscore_suffixes(self) -> set[str]:
         """Every `_tail` of every symbol (`cf_socket_active` -> `_socket_active`,
         `_active`), built once per process: family-fragment lookups were a
@@ -230,11 +250,62 @@ class RepoIndex:
             self.__dict__["_dunder_symbols"] = cached
         return cached
 
+    def worker_copy(self) -> "RepoIndex":
+        """Shallow copy for worker processes, without the text buffers."""
+        import copy
+        clone = copy.copy(self)
+        clone._texts = {}
+        for lazy in ("_disk_texts",) + self._LAZY_DERIVED:
+            clone.__dict__.pop(lazy, None)
+        return clone
+
     def knows_symbols(self, rel: str) -> bool:
         """False when rel failed to parse: absence there is unknowable."""
         return rel not in self.parse_failed
 
+    # Everything `_index_one` writes. A per-file indexer reads only its own
+    # text, so chunks of files can be indexed in worker processes and the
+    # partial states merged here (keys are disjoint rel paths; name sets
+    # union). A new per-file attribute MUST be listed here or parallel
+    # builds silently drop it (pinned by TestParallelIndexBuild).
+    _PER_FILE_DICTS = ("file_symbols", "file_imports", "file_attr_uses",
+                       "file_exports", "file_stars", "file_export_stars")
+    _PER_FILE_SETS = ("file_esm", "file_dynamic_ns", "file_registers_modules",
+                      "file_export_unknown", "parse_failed")
+    _NAME_SETS = ("py_symbols", "js_symbols", "go_symbols", "c_symbols")
+
+    @classmethod
+    def _blank(cls) -> "RepoIndex":
+        part = cls.__new__(cls)
+        for name in cls._PER_FILE_DICTS:
+            setattr(part, name, {})
+        for name in cls._PER_FILE_SETS + cls._NAME_SETS:
+            setattr(part, name, set())
+        part.symbol_files = {}
+        return part
+
+    @classmethod
+    def index_chunk(cls, items: list[tuple[str, str, str]]) -> dict:
+        """Partial index state for [(rel, suffix, text)] (worker entry point)."""
+        part = cls._blank()
+        for rel, suffix, text in items:
+            part._index_one(rel, suffix, text, rebuild=False)
+        names = cls._PER_FILE_DICTS + cls._PER_FILE_SETS + cls._NAME_SETS + ("symbol_files",)
+        return {name: getattr(part, name) for name in names}
+
+    def _merge_partial(self, state: dict) -> None:
+        for name in self._PER_FILE_DICTS:
+            getattr(self, name).update(state[name])
+        for name in self._PER_FILE_SETS + self._NAME_SETS:
+            getattr(self, name).update(state[name])
+        for sym, rels in state["symbol_files"].items():
+            self.symbol_files.setdefault(sym, set()).update(rels)
+
+    # Below this many files, process spawn costs more than it saves.
+    _PARALLEL_MIN_FILES = 512
+
     def _build(self) -> None:
+        pending: list[tuple[str, str, str]] = []
         for f in self.files:
             try:
                 rel = f.relative_to(self.root).as_posix()
@@ -260,7 +331,26 @@ class RepoIndex:
                     text = f.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
-            self._index_one(rel, suffix, text, rebuild=False)
+            pending.append((rel, suffix, text))
+        states: list[dict] | None = None
+        if self._jobs > 1 and len(pending) >= self._PARALLEL_MIN_FILES:
+            from concurrent.futures import ProcessPoolExecutor
+            from concurrent.futures.process import BrokenProcessPool
+            n = self._jobs * 4
+            chunks = [pending[i::n] for i in range(n)]
+            try:
+                with ProcessPoolExecutor(max_workers=self._jobs) as pool:
+                    states = list(pool.map(RepoIndex.index_chunk, chunks))
+            except (OSError, BrokenProcessPool):
+                # No usable worker processes (sandboxed runners, spawn
+                # failures): the serial build gives the identical index.
+                states = None
+        if states is not None:
+            for state in states:
+                self._merge_partial(state)
+        else:
+            for rel, suffix, text in pending:
+                self._index_one(rel, suffix, text, rebuild=False)
         self._rebuild_unions()
         self._compute_py_prefixes()
 

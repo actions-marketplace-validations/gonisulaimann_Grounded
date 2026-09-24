@@ -214,6 +214,24 @@ def _claim_symbols(finding: Finding) -> set[str]:
     return {t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", finding.claim or "") if len(t) >= 3}
 
 
+def changed_file_filter(hunks: dict[str, set[int]], untracked: set[str],
+                        symbols: set[str] | frozenset = frozenset()):
+    """Predicate (rel, text) -> bool: can this file hold a finding that
+    filter_changed would keep? Changed and untracked files, plus any file
+    whose text names a diff-touched symbol (rename fallout). A strict
+    superset of what filter_changed keeps, so checking only these files
+    changes speed, never output."""
+    sym_re = (re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(
+        re.escape(s) for s in sorted(symbols, key=len, reverse=True)) + r")(?![A-Za-z0-9_])")
+        if symbols else None)
+
+    def check(rel: str, text: str) -> bool:
+        if rel in hunks or rel in untracked:
+            return True
+        return bool(sym_re is not None and sym_re.search(text))
+    return check
+
+
 def filter_changed(findings: list[Finding], hunks: dict[str, set[int]], untracked: set[str],
                    symbols: set[str] | frozenset = frozenset()) -> list[Finding]:
     """Keep findings on added/modified lines, in fully-untracked files, or

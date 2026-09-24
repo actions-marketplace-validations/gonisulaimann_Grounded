@@ -17,7 +17,10 @@ from .models import Comment, FileFacts, FuncInfo
 
 # ---------------------------------------------------------------- Python
 
-def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> FuncInfo:
+def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef) -> FuncInfo:
+    """Signature and docstring only: no subtree walk. Return/raise facts fed
+    the v1 docstring-contract checkers (removed in v2); walking every
+    function body for them was the single largest scan cost."""
     args: list[str] = []
     a = node.args
     for arg in list(a.posonlyargs) + list(a.args):
@@ -37,33 +40,6 @@ def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> 
         and isinstance(node.body[0].value.value, str)
     ):
         doc_lineno = node.body[0].lineno
-    has_value_return = False
-    has_return = False
-    raises: list[str] = []
-    for child in ast.walk(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            if child is not node:
-                continue
-        if isinstance(child, ast.Return):
-            has_return = True
-            if child.value is not None and not (
-                isinstance(child.value, ast.Constant) and child.value.value is None
-            ):
-                has_value_return = True
-        if isinstance(child, ast.Yield | ast.YieldFrom) if hasattr(ast, "YieldFrom") else isinstance(child, ast.Yield):
-            has_value_return = True
-        if isinstance(child, ast.Raise):
-            exc = child.exc
-            name = _exc_name(exc)
-            if name:
-                raises.append(name)
-    # dedupe preserving order
-    seen: set[str] = set()
-    uniq: list[str] = []
-    for r in raises:
-        if r not in seen:
-            seen.add(r)
-            uniq.append(r)
     end = getattr(node, "end_lineno", None) or node.lineno
     return FuncInfo(
         name=node.name,
@@ -72,24 +48,7 @@ def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> 
         args=args,
         docstring=doc,
         docstring_lineno=doc_lineno,
-        has_value_return=has_value_return,
-        has_bare_return_only=(has_return and not has_value_return),
-        raises=uniq,
     )
-
-
-def _exc_name(exc: ast.expr | None) -> str | None:
-    if exc is None:
-        return "Exception(reraise)"
-    if isinstance(exc, ast.Name):
-        return exc.id
-    if isinstance(exc, ast.Attribute):
-        return exc.attr
-    if isinstance(exc, ast.Call):
-        return _exc_name(exc.func)
-    if isinstance(exc, ast.Subscript):
-        return _exc_name(exc.value)
-    return None
 
 
 def _py_comments_tolerant(text: str) -> list[Comment]:
@@ -162,20 +121,25 @@ def parse_python(path: Path, rel: str, text: str) -> FileFacts:
         # comments are still checkable. Diagnostics degrade, never vanish.
         facts.comments = _py_comments_tolerant(text)
         return facts
-    facts.imports = _py_imports(tree)
-    facts.from_imports = _py_from_imports(tree)
-    facts.guarded_lines = _guarded_line_set(tree)
-    # is_method detection: need parent tracking
+    # One walk: parent links, function defs, and import statements. Every
+    # helper below used to rebuild the parent map with its own full walk.
     parents: dict[int, ast.AST] = {}
+    funcs: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    imports: list[ast.Import | ast.ImportFrom] = []
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parents[id(child)] = node
-    for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            info = _py_func_info(node, text)
-            parent = parents.get(id(node))
-            info.is_method = isinstance(parent, ast.ClassDef)
-            facts.functions.append(info)
+            funcs.append(node)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            imports.append(node)
+    facts.imports = _py_imports(tree, imports)
+    facts.from_imports = _py_from_imports(tree, parents, imports)
+    facts.guarded_lines = _guarded_line_set(tree, parents, imports)
+    for node in funcs:
+        info = _py_func_info(node)
+        info.is_method = isinstance(parents.get(id(node)), ast.ClassDef)
+        facts.functions.append(info)
     facts.comments = _py_comments(text)
     return facts
 
@@ -203,22 +167,35 @@ def _is_guarded(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
     return False
 
 
-def _guarded_line_set(tree: ast.AST) -> set[int]:
-    """Linenos of Import/ImportFrom statements under a guarded context."""
+def _parent_map(tree: ast.AST) -> dict[int, ast.AST]:
     parents: dict[int, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parents[id(child)] = node
-    return {node.lineno for node in ast.walk(tree)
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and _is_guarded(node, parents)}
+    return parents
 
 
-def _py_imports(tree: ast.AST) -> dict[str, str]:
+def _import_nodes(tree: ast.AST) -> list[ast.Import | ast.ImportFrom]:
+    return [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+
+
+def _guarded_line_set(tree: ast.AST, parents: dict[int, ast.AST] | None = None,
+                      imports: list[ast.Import | ast.ImportFrom] | None = None) -> set[int]:
+    """Linenos of Import/ImportFrom statements under a guarded context."""
+    if parents is None:
+        parents = _parent_map(tree)
+    if imports is None:
+        imports = _import_nodes(tree)
+    return {node.lineno for node in imports if _is_guarded(node, parents)}
+
+
+def _py_imports(tree: ast.AST,
+                imports: list[ast.Import | ast.ImportFrom] | None = None) -> dict[str, str]:
     """alias -> top-level module ('' for relative imports). Conservative:
     any binding form counts, at any depth (precision-first: an imported name
     resolves outside snapshot analysis)."""
     out: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in (imports if imports is not None else _import_nodes(tree)):
         if isinstance(node, ast.Import):
             for a in node.names:
                 top = (a.name or "").split(".")[0]
@@ -235,7 +212,9 @@ def _py_imports(tree: ast.AST) -> dict[str, str]:
     return out
 
 
-def _py_from_imports(tree: ast.AST) -> list[tuple[str | None, int, list[tuple[str, str | None]], bool, int]]:
+def _py_from_imports(tree: ast.AST, parents: dict[int, ast.AST] | None = None,
+                     imports: list[ast.Import | ast.ImportFrom] | None = None,
+                     ) -> list[tuple[str | None, int, list[tuple[str, str | None]], bool, int]]:
     """Structured from-imports: (module, level, [(name, asname)], guarded, lineno).
 
     Guarded means nested in try/except, a TYPE_CHECKING conditional, or a
@@ -243,12 +222,9 @@ def _py_from_imports(tree: ast.AST) -> list[tuple[str | None, int, list[tuple[st
     legitimately fail are never flagged.
     """
     out: list[tuple[str | None, int, list[tuple[str, str | None]], bool, int]] = []
-
-    parents: dict[int, ast.AST] = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[id(child)] = node
-    for node in ast.walk(tree):
+    if parents is None:
+        parents = _parent_map(tree)
+    for node in (imports if imports is not None else _import_nodes(tree)):
         if isinstance(node, ast.ImportFrom):
             names = [(a.name, a.asname) for a in node.names]
             out.append((node.module, node.level or 0, names, _is_guarded(node, parents), node.lineno))
