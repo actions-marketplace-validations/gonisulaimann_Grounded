@@ -102,8 +102,30 @@ median reported). Repos are shallow clones at 2026-09-21 main.
 
 Small-tree times are dominated by interpreter startup (~58 ms, see
 above), not by checking. Memory scales with total source held for the
-single-pass index build. Parallelism engages automatically at 512+
-files; repeat scans reuse per-file results with `scan --cache`.
+single-pass index build. Parallelism engages when the text to check
+exceeds ~6 MB; repeat scans reuse unchanged files' index entries
+automatically (`.git/grounded/`).
+
+## `--changed` on real history (measured 2026-09-24)
+
+Harness: `python3 bench/changed.py <clone> --commits 30`. Each non-merge
+commit is replayed as uncommitted work on its parent (after one warm-up
+`--changed` run, as a previous hook run would leave it) and timed in a
+fresh process, interpreter start included. Same machine as above,
+Python 3.11.
+
+| Repo | Before p50 / p95 | After p50 / p95 | Findings reported (before -> after) |
+|---|---|---|---|
+| cpython (3,605 files) | 10.3 s / 13.0 s | 1.9 s / 3.4 s | 357 in 12 commits -> 0 |
+| django (2,986 files) | 8.2 s / 14.9 s | 1.2 s / 3.3 s | 47 in 30 commits -> 0 |
+
+None of the findings reported before were introduced by their commit:
+the old rule surfaced any finding whose claim shared an identifier with
+the diff. Correctness is checked against two full scans per commit
+(worktree minus base, plus findings on changed lines): exact on 29
+cpython and 30 django commits and 10 constructed refactors (renames,
+deleted modules, mock targets, in-file references), 32 introduced
+findings, 0 missed, 0 extra.
 
 ## Corpora results (2026-09-21 run, all classified)
 

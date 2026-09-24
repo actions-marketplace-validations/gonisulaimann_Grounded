@@ -30,8 +30,9 @@ unambiguous findings. Everything else is read-only by construction.
 | `--fail-on lie\|drift\|smell\|never` | Minimum severity that exits `1` (default from config, else `lie`). |
 | `--enable ID,...` / `--disable ID,...` | Run a subset of checkers. Unknown ids are dropped; an emptied set falls back to all. Opt-in checkers (`stale-doc-ref`, `stale-contract-ref`, `ghost-export`, `phantom-package`, `stale-cli-ref`, `unclosed-fence`) run only when named. |
 | `--baseline FILE` | Report only findings not recorded in FILE. `--show-baselined` also lists suppressed findings on stderr. |
-| `--changed [BASE]` | Report findings on lines changed vs BASE (default `HEAD`), plus findings anywhere that name a diff-touched symbol (rename fallout on untouched lines). Full tree is still scanned; reporting is filtered. Errors outside git (exit `2`). |
-| `--cache [FILE]` | Reuse per-file results keyed by mtime and size (default `.grounded-cache.json`). Corrupt or mismatched caches fall back silently. |
+| `--changed [BASE]` | Report findings on lines changed vs BASE (default `HEAD`) and in new files, plus findings anywhere that the change introduced (in a full scan of the worktree, not in one of the base). Only files that can reach a changed name are checked. Edits to files checkers read from disk (manifests, `.gitignore`, `tsconfig`) fall back to the broad rule (findings naming any identifier on a changed line), announced on stderr. Errors outside git (exit `2`). |
+| `--no-index-cache` | Rebuild the repo index from scratch instead of reusing unchanged files' entries from `.git/grounded/` (also `GROUNDED_NO_INDEX_CACHE=1`). |
+| `--cache [FILE]` | Replay per-file results when the whole tree (every indexed file, manifests, config) is unchanged since they were written (default `.grounded-cache.json`). Corrupt or mismatched caches fall back silently. |
 | `--jobs N` | Parallel workers. Auto by file count (serial below 512 files); output identical either way. |
 | `--config FILE` | Explicit config file instead of discovery. |
 | `--no-color` | Disable ANSI colors. |

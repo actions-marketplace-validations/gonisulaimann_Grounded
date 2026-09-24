@@ -173,18 +173,112 @@ def changed_lines(root: Path, base: str) -> tuple[dict[str, set[int]], set[str]]
     the change under review. Raises GitError outside a repo or when the
     base cannot be resolved.
     """
-    _git(root, "rev-parse", "--show-toplevel")
-    ref = _resolve_base(root, base)
-    hunks = _parse_unified0(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", ref, "HEAD", "--"))
-    for extra in (_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--cached", "--"),
-                  _git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--")):
-        for path, lines in _parse_unified0(extra).items():
-            hunks.setdefault(path, set()).update(lines)
+    _, hunks, untracked, _, _ = collect_changes(root, base)
+    return hunks, untracked
+
+
+def collect_changes(root: Path, base: str):
+    """(ref, hunks, untracked, diff symbols, status) with one git call per
+    fact: changed_lines, changed_symbols and changed_status each ran the
+    same diffs again (13 git processes per `--changed`, 4 here; each
+    worktree diff stats every tracked file)."""
+    ref = _resolve_base(root, base)  # raises GitError outside a repository
+    # One diff of the worktree against the base covers committed, staged
+    # and unstaged changes alike, numbered by worktree lines (what findings
+    # carry). Three separate diffs (base..HEAD, --cached, worktree) mixed
+    # HEAD, index and worktree numbering and cost two more processes, each
+    # stat()ing every tracked file.
+    diff = _git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--relative", ref, "--")
+    hunks = _parse_unified0(diff)
+    symbols = _diff_symbols(diff)
     try:
-        untracked = {p for p in _git(root, "ls-files", "--others", "--exclude-standard").splitlines() if p}
+        untracked = {p for p in _git(root, "ls-files", "-z", "--others",
+                                     "--exclude-standard").split("\0") if p}
     except GitError:
         untracked = set()
-    return hunks, untracked
+    status = _name_status(root, ref)
+    for rel in untracked:
+        status[rel] = "A"
+    return ref, hunks, untracked, symbols, status
+
+
+def _name_status(root: Path, ref: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    fields = _git(root, "diff", "--name-status", "--no-renames", "--relative", "-z",
+                  ref, "--").split("\0")
+    for i in range(0, len(fields) - 1, 2):
+        code, rel = fields[i][:1], fields[i + 1]
+        if rel:
+            out[rel] = {"A": "A", "D": "D"}.get(code, "M")
+    return out
+
+
+def changed_status(root: Path, base: str) -> tuple[str, dict[str, str]]:
+    """(resolved base, {rel: "A"|"M"|"D"}) for every path under the scan
+    root that differs between the base and the worktree (committed,
+    staged and unstaged alike), untracked files as "A". Paths are
+    scan-root-relative (`--relative`), like changed_lines. No rename
+    detection: a rename is a delete plus an add."""
+    ref = _resolve_base(root, base)
+    out = _name_status(root, ref)
+    for rel in _git(root, "ls-files", "-z", "--others", "--exclude-standard").split("\0"):
+        if rel:
+            out[rel] = "A"
+    return ref, out
+
+
+def grep_files(root: Path, tokens: set[str]) -> tuple[set[str], set[str]]:
+    """(files naming any of `tokens` as a whole word, every file git
+    knows) under root, scan-root-relative. `git grep -F -w` searches all
+    tokens at once in C across threads; a Python alternation over the same
+    tree took 4.7 s for ~100 names on cpython. Tracked and untracked
+    (non-ignored) files only: callers search the rest themselves."""
+    try:
+        proc = subprocess.run(["git", "grep", "-l", "-z", "-I", "-F", "-w", "--untracked",
+                               "-f", "-", "--", "."],
+                              cwd=root, input="\n".join(sorted(tokens)) + "\n",
+                              capture_output=True, text=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise GitError(f"git grep failed: {exc}") from exc
+    if proc.returncode not in (0, 1):  # 1: no match
+        raise GitError((proc.stderr or "git grep failed").strip()[:160])
+    hits = {p for p in proc.stdout.split("\0") if p}
+    known = {p for p in _git(root, "ls-files", "-z", "--cached", "--others",
+                             "--exclude-standard").split("\0") if p}
+    return hits, known
+
+
+def base_texts(root: Path, ref: str, rels: list[str]) -> dict[str, str]:
+    """Text of each rel at ref (scan-root-relative paths), one
+    `git cat-file --batch` process for all of them. Paths absent at ref
+    are simply missing from the result."""
+    if not rels:
+        return {}
+    wanted = [r for r in rels if "\n" not in r]
+    request = "".join(f"{ref}:./{r}\n" for r in wanted).encode("utf-8")
+    try:
+        proc = subprocess.run(["git", "cat-file", "--batch"], cwd=root, input=request,
+                              capture_output=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise GitError(f"git cat-file failed: {exc}") from exc
+    if proc.returncode != 0:
+        raise GitError(proc.stderr.decode("utf-8", "replace").strip()[:160] or "git cat-file failed")
+    data = proc.stdout
+    out: dict[str, str] = {}
+    pos = 0
+    for rel in wanted:
+        nl = data.find(b"\n", pos)
+        if nl < 0:
+            break
+        header = data[pos:nl].split()
+        pos = nl + 1
+        if len(header) == 3 and header[1] == b"blob":
+            size = int(header[2])
+            out[rel] = data[pos:pos + size].decode("utf-8", errors="ignore")
+            pos += size + 1  # content is followed by one newline
+        elif len(header) == 3:
+            pos += int(header[2]) + 1  # a tree or other object: skip it
+    return out
 
 
 def _diff_symbols(diff: str) -> set[str]:
@@ -203,11 +297,7 @@ def _diff_symbols(diff: str) -> set[str]:
 def changed_symbols(root: Path, base: str) -> set[str]:
     """Symbols touched by branch changes plus uncommitted worktree edits
     (staged and unstaged alike)."""
-    ref = _resolve_base(root, base)
-    out = _diff_symbols(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", ref, "HEAD", "--"))
-    out |= _diff_symbols(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--cached", "--"))
-    out |= _diff_symbols(_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--"))
-    return out
+    return collect_changes(root, base)[3]
 
 
 def _claim_symbols(finding: Finding) -> set[str]:
@@ -221,14 +311,25 @@ def changed_file_filter(hunks: dict[str, set[int]], untracked: set[str],
     whose text names a diff-touched symbol (rename fallout). A strict
     superset of what filter_changed keeps, so checking only these files
     changes speed, never output."""
-    sym_re = (re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(
-        re.escape(s) for s in sorted(symbols, key=len, reverse=True)) + r")(?![A-Za-z0-9_])")
+    # \b under re.ASCII is exactly the [A-Za-z0-9_] boundary (every symbol
+    # starts and ends with a word character), and lets the engine skip the
+    # per-position lookbehind.
+    sym_re = (re.compile(r"\b(?:" + "|".join(
+        re.escape(s) for s in sorted(symbols, key=len, reverse=True)) + r")\b", re.ASCII)
         if symbols else None)
+    # A few symbols: a substring test rejects most files at C speed before
+    # the regex runs (measured 14x on cpython for one rare identifier).
+    # Many symbols: the single alternation is cheaper than k scans.
+    literals = tuple(symbols) if 0 < len(symbols) <= 4 else ()
 
     def check(rel: str, text: str) -> bool:
         if rel in hunks or rel in untracked:
             return True
-        return bool(sym_re is not None and sym_re.search(text))
+        if sym_re is None:
+            return False
+        if literals and not any(s in text for s in literals):
+            return False
+        return bool(sym_re.search(text))
     return check
 
 

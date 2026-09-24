@@ -396,6 +396,23 @@ class TestCache(unittest.TestCase):
             (root / "a.py").write_text("# Calls `ghost_fn()`.\nX = 1\n", encoding="utf-8")
             self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 1)
 
+    def test_edit_to_another_file_invalidates(self):
+        # a.py's own stat never changes, but its finding depends on b.py:
+        # replaying a.py's cached `clean` after b.py renamed the imported
+        # function was a false green.
+        from grounded.cli import main
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write(root, {"pyproject.toml": '[project]\nname = "p"\n',
+                               "app/__init__.py": "",
+                               "app/b.py": "def helper():\n    return 1\n",
+                               "app/a.py": "from app.b import helper\n"})
+            cache = root / ".grounded-cache.json"
+            self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 0)
+            (root / "app" / "b.py").write_text("def renamed():\n    return 1\n", encoding="utf-8")
+            self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 1)
+            self.assertEqual(main(["scan", str(root), "--no-color", "--cache", str(cache)]), 1)
+
     def test_corrupt_cache_falls_back(self):
         from grounded.cli import main
         with tempfile.TemporaryDirectory() as td:
@@ -586,6 +603,30 @@ class TestParallelIndexBuild(unittest.TestCase):
             self.assertTrue(serial.file_registers_modules)
             self.assertTrue(serial.parse_failed)
 
+    def test_entries_capture_everything_index_one_writes(self):
+        # Every build (serial, parallel, cached) now merges per-file entries,
+        # so comparing builds with each other cannot catch an attribute that
+        # index_entry fails to capture or _apply_entry fails to replay. The
+        # reference here writes straight into one index via _index_one.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            files = self._tree(root)
+            built = RepoIndex(root, files)
+            direct = RepoIndex(root, [])
+            for f in files:
+                direct._index_one(f.relative_to(root).as_posix(), f.suffix.lower(),
+                                  f.read_text(encoding="utf-8"), rebuild=False)
+            direct._rebuild_unions()
+            names = (RepoIndex._PER_FILE_DICTS + RepoIndex._PER_FILE_SETS
+                     + RepoIndex._NAME_SETS + ("symbol_files", "all_symbols", "lower_map"))
+            for name in names:
+                self.assertEqual(getattr(built, name), getattr(direct, name), name)
+            written = {n for n, v in vars(direct).items() if v} - {"root", "files", "parent_tops",
+                                                                   "root_package_names", "top_names",
+                                                                   "_jobs", "_index_cache", "_stats"}
+            self.assertLessEqual(written, set(names), "attribute written by _index_one "
+                                 "but not carried by index entries")
+
     def test_worker_copy_reads_text_from_disk(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td).resolve()
@@ -597,6 +638,211 @@ class TestParallelIndexBuild(unittest.TestCase):
             self.assertEqual(clone.text_of("a.py"), "X = 1\n")
             self.assertIsNone(clone.text_of("missing.py"))
             self.assertEqual(idx._texts, {str(f): "X = 1\n"})
+
+
+class TestIndexCache(unittest.TestCase):
+    """The persisted per-file index contributions (index_cache.py) must
+    rebuild exactly the index a fresh build gives, and must never be
+    trusted when the file may have changed under the same stat."""
+
+    _SKIP = {"_jobs", "_texts", "_deps_cache", "_gitignore_cache", "_disk_texts",
+             "_index_cache", "_stats"}
+
+    def _stats(self, files):
+        return {str(f): (f.stat().st_mtime_ns, f.stat().st_size) for f in files}
+
+    def _age(self, files, seconds=60):
+        import os
+        import time
+        past = time.time() - seconds
+        for f in files:
+            os.utime(f, (past, past))
+
+    def _assert_same(self, a, b):
+        names = (set(vars(a)) | set(vars(b))) - self._SKIP
+        for name in sorted(names):
+            self.assertEqual(getattr(a, name, None), getattr(b, name, None), name)
+
+    def test_cached_rebuild_equals_fresh_build(self):
+        from unittest import mock
+        from grounded.index_cache import IndexCache, default_cache_path
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(IndexCache, "SAVE_MIN_MISSES", 0):
+            root = Path(td).resolve()
+            (root / ".git").mkdir()
+            files = TestParallelIndexBuild()._tree(root)
+            self._age(files)
+            path = default_cache_path(root)
+            RepoIndex(root, files, stats=self._stats(files), index_cache=IndexCache(path))
+            self.assertTrue(path.exists())
+            # Edit, delete, add, and move a name between languages: `w3`
+            # stops being defined in JS and starts being defined in Python.
+            (root / "pkg" / "m1.py").write_text("def renamed():\n    pass\n", encoding="utf-8")
+            (root / "pkg" / "m2.py").unlink()
+            (root / "web" / "w3.js").write_text("export const other = 1;\n", encoding="utf-8")
+            (root / "pkg" / "m3.py").write_text("def w3():\n    pass\n", encoding="utf-8")
+            new = root / "pkg" / "fresh.py"
+            new.write_text("from pkg.m1 import renamed\n", encoding="utf-8")
+            files = [f for f in files if f.exists()] + [new]
+            self._age([root / "pkg" / "m1.py", root / "web" / "w3.js",
+                       root / "pkg" / "m3.py", new], seconds=30)
+            cache = IndexCache(path)
+            cached = RepoIndex(root, files, stats=self._stats(files), index_cache=cache)
+            fresh = RepoIndex(root, files)
+            self._assert_same(cached, fresh)
+            self.assertEqual(cache.misses, 4)  # m1, w3, m3, fresh.py
+            self.assertEqual(cache.hits, len(files) - 4)
+            self.assertIn("w3", cached.py_symbols)
+            self.assertNotIn("w3", cached.js_symbols)
+            self.assertNotIn("pkg/m2.py", cached.file_symbols)
+            # Third build, nothing changed: all hits, cache not rewritten.
+            before = path.stat().st_mtime_ns
+            cache = IndexCache(path)
+            again = RepoIndex(root, files, stats=self._stats(files), index_cache=cache)
+            self.assertEqual((cache.hits, cache.misses), (len(files), 0))
+            self.assertEqual(path.stat().st_mtime_ns, before)
+            self._assert_same(again, fresh)
+
+    def test_few_misses_do_not_rewrite_the_cache(self):
+        # The edited files re-index in milliseconds; rewriting the whole
+        # cache for them costs more than it saves. They stay misses (still
+        # correct), and a larger change persists them.
+        from grounded.index_cache import IndexCache, default_cache_path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / ".git").mkdir()
+            files = TestParallelIndexBuild()._tree(root)
+            self._age(files)
+            path = default_cache_path(root)
+            RepoIndex(root, files, stats=self._stats(files), index_cache=IndexCache(path))
+            written = path.stat().st_mtime_ns
+            edited = root / "pkg" / "m1.py"
+            edited.write_text("def renamed():\n    pass\n", encoding="utf-8")
+            self._age([edited], seconds=30)
+            for _ in range(2):
+                cache = IndexCache(path)
+                idx = RepoIndex(root, files, stats=self._stats(files), index_cache=cache)
+                self.assertEqual(cache.misses, 1)
+                self.assertIn("renamed", idx.all_symbols)
+            self.assertEqual(path.stat().st_mtime_ns, written)
+
+    def test_racily_clean_entry_is_reindexed(self):
+        # Same stat, different content: possible on coarse-mtime filesystems
+        # when the edit lands in the same tick the cache was written.
+        from grounded.index_cache import IndexCache, default_cache_path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / ".git").mkdir()
+            f = root / "a.py"
+            f.write_text("def old():\n    pass\n", encoding="utf-8")
+            stat = {str(f): (f.stat().st_mtime_ns, f.stat().st_size)}
+            path = default_cache_path(root)
+            RepoIndex(root, [f], stats=stat, index_cache=IndexCache(path))
+            f.write_text("def new():\n    pass\n", encoding="utf-8")  # same size
+            cache = IndexCache(path)
+            idx = RepoIndex(root, [f], stats=stat, index_cache=cache)  # stale stat on purpose
+            self.assertEqual(cache.hits, 0)
+            self.assertIn("new", idx.all_symbols)
+            self.assertNotIn("old", idx.all_symbols)
+
+    def test_unusable_cache_is_ignored(self):
+        import marshal
+        from grounded.index_cache import IndexCache, default_cache_path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / ".git").mkdir()
+            f = root / "a.py"
+            f.write_text("def a():\n    pass\n", encoding="utf-8")
+            self._age([f])
+            path = default_cache_path(root)
+            path.parent.mkdir(parents=True)
+            stat = self._stats([f])
+            entry = {"file_symbols": {"forged"}, "py_symbols": {"forged"}}
+            for blob in (b"", b"\x00garbage", marshal.dumps([1, 2]),
+                         marshal.dumps({"key": ("other",), "written_ns": 1 << 62,
+                                        "files": {"a.py": (*stat[str(f)], entry)}})):
+                path.write_bytes(blob)
+                cache = IndexCache(path)
+                idx = RepoIndex(root, [f], stats=stat, index_cache=cache)
+                self.assertEqual(cache.hits, 0)
+                self.assertIn("a", idx.all_symbols)
+                self.assertNotIn("forged", idx.all_symbols)
+
+    def test_cache_location(self):
+        from grounded.index_cache import default_cache_path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            self.assertIsNone(default_cache_path(root))
+            (root / "real-gitdir").mkdir()
+            (root / "wt").mkdir()
+            (root / "wt" / ".git").write_text("gitdir: ../real-gitdir\n", encoding="utf-8")
+            path = default_cache_path(root / "wt" / "sub")
+            self.assertEqual(path.parent, root / "real-gitdir" / "grounded")
+            self.assertNotEqual(default_cache_path(root / "wt"), default_cache_path(root / "wt", "claims"))
+
+    def test_scan_output_identical_with_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / ".git").mkdir()
+            (root / "lib.py").write_text("def helper():\n    pass\n", encoding="utf-8")
+            (root / "use.py").write_text("from lib import helper, gone\n\n"
+                                          "# Calls old_helper() first.\nhelper()\n", encoding="utf-8")
+            self._age(list(root.glob("*.py")))
+            plain = [f.to_dict() for f in scan_root(root, Config())[0]]
+            self.assertTrue(plain)
+            first = [f.to_dict() for f in scan_root(root, Config(), index_cache=True)[0]]
+            second = [f.to_dict() for f in scan_root(root, Config(), index_cache=True)[0]]
+            self.assertEqual(plain, first)
+            self.assertEqual(plain, second)
+            self.assertTrue(list((root / ".git" / "grounded").glob("index-*.marshal")))
+
+
+class TestBaseVariant(unittest.TestCase):
+    """RepoIndex.base_variant patches a copy of the current index back to
+    the diff base. It must equal a fresh build of the base tree in every
+    attribute, and must leave the current index untouched."""
+
+    _SKIP = {"_jobs", "_texts", "_deps_cache", "_gitignore_cache", "_disk_texts",
+             "_index_cache", "_stats", "_given_entries", "files"}
+
+    def test_patched_base_equals_fresh_base_build(self):
+        import copy
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            files = TestParallelIndexBuild()._tree(root)
+            # At the base, m1 also defines f7, which unchanged m7 defines too:
+            # restoring it must not write into the current index's shared set.
+            m1 = root / "pkg" / "m1.py"
+            m1.write_text(m1.read_text(encoding="utf-8") + "def f7():\n    pass\n", encoding="utf-8")
+            base_texts = {f.relative_to(root).as_posix(): f.read_text(encoding="utf-8")
+                          for f in files}
+            base_fresh = RepoIndex(root, list(files))
+            # The change: edit, delete, add, and move `w3` from JS to Python
+            # while keeping `f5` defined in a second file.
+            (root / "pkg" / "m1.py").write_text("def renamed():\n    pass\n", encoding="utf-8")
+            (root / "pkg" / "m2.py").unlink()
+            (root / "web" / "w3.js").write_text("export const other = 1;\n", encoding="utf-8")
+            (root / "pkg" / "m3.py").write_text("def w3():\n    pass\ndef f5():\n    pass\n",
+                                                encoding="utf-8")
+            (root / "pkg" / "sub").mkdir()
+            new = root / "pkg" / "sub" / "fresh.py"
+            new.write_text("def F1():\n    pass\n", encoding="utf-8")
+            now_files = sorted([f for f in files if f.exists()] + [new])
+            current = RepoIndex(root, now_files)
+            snapshot = copy.deepcopy({k: v for k, v in vars(current).items() if k != "_texts"})
+            status = {"pkg/m1.py": "M", "pkg/m2.py": "D", "web/w3.js": "M",
+                      "pkg/m3.py": "M", "pkg/sub/fresh.py": "A"}
+            variant = current.base_variant(status, {r: base_texts[r] for r in status if r in base_texts})
+            names = (set(vars(variant)) | set(vars(base_fresh))) - self._SKIP
+            for name in sorted(names):
+                self.assertEqual(getattr(variant, name, None), getattr(base_fresh, name, None), name)
+            self.assertEqual([str(f) for f in variant.files], [str(f) for f in sorted(files)])
+            for name, value in snapshot.items():
+                self.assertEqual(vars(current)[name], value, f"current index changed: {name}")
+            self.assertIn("w3", variant.js_symbols)
+            self.assertNotIn("w3", variant.py_symbols)
+            self.assertIn("f1", variant.lower_map)
+            self.assertEqual(variant.lower_map["f1"], {"f1"})
 
 
 class TestBrokenPoolFallback(unittest.TestCase):
@@ -629,9 +875,9 @@ class TestBrokenPoolFallback(unittest.TestCase):
 
 
 class TestChangedFastPath(unittest.TestCase):
-    """`scan --changed` checks only changed files and files naming a
-    changed symbol; the report must equal a full scan filtered by
-    filter_changed (speed changes, output never does)."""
+    """The broad fallback of `scan --changed` (see changed.py) checks only
+    changed files and files naming a changed symbol; its report must equal
+    a full scan filtered by filter_changed."""
 
     def _git(self, root: Path, *args: str) -> None:
         import os
@@ -650,6 +896,7 @@ class TestChangedFastPath(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td).resolve()
             (root / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding="utf-8")
+            (root / "setup.cfg").write_text("[metadata]\nname = p\n", encoding="utf-8")
             (root / "app").mkdir()
             (root / "app" / "__init__.py").write_text("", encoding="utf-8")
             (root / "app" / "core.py").write_text("def fetch_user():\n    return 1\n", encoding="utf-8")
@@ -663,6 +910,8 @@ class TestChangedFastPath(unittest.TestCase):
             self._git(root, "commit", "-qm", "init")
             (root / "app" / "core.py").write_text("def load_user():\n    return 1\n", encoding="utf-8")
             (root / "app" / "new.py").write_text("# Calls `brand_new_ghost()`.\nY = 1\n", encoding="utf-8")
+            # Editing a file checkers read from disk forces the broad mode.
+            (root / "setup.cfg").write_text("[metadata]\nname = p2\n", encoding="utf-8")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
                 main(["scan", str(root), "--changed", "--format", "json", "--fail-on", "never"])
@@ -684,6 +933,167 @@ class TestChangedFastPath(unittest.TestCase):
         self.assertFalse(pred("c.py", "fetch_user_v2 = 1\n"))
         self.assertFalse(pred("d.py", "nothing here\n"))
 
+
+
+class TestChangedIntroduced(unittest.TestCase):
+    """`scan --changed` reports what the change introduced: findings on
+    changed lines or in new files, plus findings anywhere that a full scan
+    of the worktree has and a full scan of the base does not. Each case
+    computes that truth with two full scans and compares."""
+
+    def _git(self, root: Path, *args: str) -> None:
+        import os
+        import subprocess
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True,
+                       env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+
+    def _write(self, root: Path, files: dict) -> None:
+        for rel, text in files.items():
+            p = root / rel
+            if text is None:
+                p.unlink()
+                continue
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+
+    def _run(self, base: dict, edits: dict, scan_sub: str = ""):
+        import contextlib
+        import io
+        from collections import Counter
+        from grounded.cli import main
+        from grounded.delta import changed_lines, fingerprint
+        if shutil.which("git") is None:
+            self.skipTest("git not installed")
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as snap:
+            root = Path(td).resolve()
+            self._write(root, base)
+            self._git(root, "init", "-q")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-qm", "base")
+            shutil.copytree(root, Path(snap) / "t", ignore=shutil.ignore_patterns(".git"))
+            scan_at = root / scan_sub if scan_sub else root
+            before = scan_root(Path(snap) / "t" / scan_sub if scan_sub else Path(snap) / "t", Config())[0]
+            self._write(root, edits)
+            after = scan_root(scan_at, Config())[0]
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                main(["scan", str(scan_at), "--changed", "--format", "json", "--fail-on", "never",
+                      "--no-index-cache"])
+            got = sorted((f["path"], f["line"], f["checker"]) for f in json.loads(out.getvalue()))
+            hunks, untracked = changed_lines(scan_at, "HEAD")
+            budget = Counter(fingerprint(f) for f in before)
+            want = set()
+            for f in sorted(after, key=lambda x: (x.path, x.line, x.checker)):
+                fp = fingerprint(f)
+                online = f.path in untracked or any(
+                    ln in hunks.get(f.path, ()) for ln in range(f.line, f.end_line + 1))
+                if budget[fp] > 0 and not online:
+                    budget[fp] -= 1
+                    continue
+                want.add((f.path, f.line, f.checker))
+            return got, sorted(want), err.getvalue()
+
+    _PKG = {
+        "pyproject.toml": '[project]\nname = "p"\n',
+        "app/__init__.py": "",
+        "app/core.py": "def fetch_user():\n    return 1\n\n\ndef helper():\n    return 2\n",
+        "app/views.py": ("from app.core import fetch_user\n\n\ndef show():\n"
+                         "    # Renders through `legacy_ghost()`.\n    return fetch_user()\n"),
+        "app/other.py": "# Calls `old_ghost()` for self and None.\nX = None\n",
+        "tests/__init__.py": "",
+        "tests/test_core.py": ("from unittest import mock\n\n\ndef test_it():\n"
+                               "    with mock.patch('app.core.helper'):\n        pass\n"),
+    }
+
+    def test_rename_reports_fallout_not_old_noise(self):
+        # `other.py` holds an old finding whose claim shares words with the
+        # diff (`self`, `None`); the old rule reported it on every edit.
+        got, want, _ = self._run(self._PKG, {
+            "app/core.py": ("def load_user():\n    return None\n\n\n"
+                            "def helper(self=None):\n    return 2\n"),
+        })
+        self.assertEqual(got, want)
+        self.assertIn(("app/views.py", 1, "stale-import"), got)
+        # views.py is checked (it imports the renamed name), but its older
+        # finding was there before the change.
+        self.assertNotIn(("app/views.py", 5, "stale-symbol-ref"), got)
+        self.assertNotIn("app/other.py", {p for p, _, _ in got})
+
+    def test_mock_target_fallout(self):
+        got, want, _ = self._run(self._PKG, {
+            "app/core.py": "def fetch_user():\n    return 1\n\n\ndef helper_v2():\n    return 2\n",
+        })
+        self.assertEqual(got, want)
+        self.assertIn(("tests/test_core.py", 5, "stale-mock-ref"), got)
+
+    def test_in_file_fallout_off_the_changed_lines(self):
+        base = dict(self._PKG)
+        base["app/core.py"] = ("# Delegates to `helper()` below.\n"
+                               "def fetch_user():\n    return helper()\n\n\n"
+                               "def helper():\n    return 2\n")
+        got, want, _ = self._run(base, {
+            "app/core.py": ("# Delegates to `helper()` below.\n"
+                            "def fetch_user():\n    return 2\n"),
+        })
+        self.assertEqual(got, want)
+        self.assertIn(("app/core.py", 1, "stale-symbol-ref"), got)
+
+    def test_deleted_module(self):
+        got, want, err = self._run(self._PKG, {"app/core.py": None})
+        self.assertEqual(got, want)
+        self.assertIn(("app/views.py", 1, "stale-import"), got)
+        self.assertNotIn("broad mode", err)
+
+    def test_new_file_and_changed_line(self):
+        got, want, _ = self._run(self._PKG, {
+            "app/new.py": "# Calls `brand_new_ghost()`.\nY = 1\n",
+            "app/views.py": ("from app.core import fetch_user\n\n\ndef show():\n"
+                             "    # Renders through `legacy_ghost()`.\n"
+                             "    # Uses `render_ghost()`.\n    return fetch_user()\n"),
+        })
+        self.assertEqual(got, want)
+        self.assertEqual({p for p, _, _ in got}, {"app/new.py", "app/views.py"})
+
+    def test_scan_root_below_the_git_top_level(self):
+        # A monorepo package: git prints top-level paths, findings are
+        # package-relative; `--relative` must line them up.
+        base = {f"pkg/{k}": v for k, v in self._PKG.items()}
+        got, want, _ = self._run(base, {
+            "pkg/app/core.py": "def load_user():\n    return 1\n\n\ndef helper():\n    return 2\n",
+        }, scan_sub="pkg")
+        self.assertEqual(got, want)
+        self.assertIn(("app/views.py", 1, "stale-import"), got)
+
+    def test_many_changed_names_use_git_grep(self):
+        # More than 8 names whose repo-wide presence changes: candidates
+        # come from one `git grep` (delta.grep_files), not a Python regex.
+        from unittest import mock
+        import grounded.delta as delta
+        base = dict(self._PKG)
+        base["app/many.py"] = "".join(f"def fn_{i}():\n    return {i}\n\n\n" for i in range(12))
+        base["app/uses.py"] = "from app.many import fn_7\n"
+        calls = []
+        real = delta.grep_files
+
+        def spy(root, tokens):
+            calls.append(len(tokens))
+            return real(root, tokens)
+        with mock.patch.object(delta, "grep_files", spy):
+            got, want, _ = self._run(base, {
+                "app/many.py": "".join(f"def fn2_{i}():\n    return {i}\n\n\n" for i in range(12)),
+            })
+        self.assertEqual(got, want)
+        self.assertIn(("app/uses.py", 1, "stale-import"), got)
+        self.assertTrue(calls and calls[0] > 8)
+
+    def test_manifest_edit_falls_back_to_broad_mode(self):
+        got, _, err = self._run(self._PKG, {
+            "pyproject.toml": '[project]\nname = "p"\nversion = "2"\n',
+            "app/core.py": "def load_user():\n    return 1\n\n\ndef helper():\n    return 2\n",
+        })
+        self.assertIn("broad mode because pyproject.toml", err)
+        self.assertIn(("app/views.py", 1, "stale-import"), got)
 
 if __name__ == "__main__":
     unittest.main()

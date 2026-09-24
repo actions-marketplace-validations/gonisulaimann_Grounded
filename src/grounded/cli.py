@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -11,10 +12,6 @@ from .config import Config, ConfigError
 from .delta import (
     DEFAULT_BASELINE_NAME,
     GitError,
-    changed_lines,
-    changed_file_filter,
-    changed_symbols,
-    filter_changed,
     load_baseline,
     split_baselined,
     write_baseline,
@@ -64,7 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--jobs", type=int, default=None, metavar="N",
                    help="parallel workers (default: auto by file count)")
     s.add_argument("--cache", nargs="?", const=".grounded-cache.json", default=None, metavar="FILE",
-                   help="reuse per-file results keyed by mtime+size (default file: .grounded-cache.json)")
+                   help="replay per-file results while the whole tree is unchanged "
+                        "(default file: .grounded-cache.json)")
+    s.add_argument("--no-index-cache", action="store_true",
+                   help="rebuild the repo index from scratch instead of reusing unchanged files' "
+                        "entries from the git dir (also: GROUNDED_NO_INDEX_CACHE=1)")
 
     sub.add_parser("init", help="write a starter grounded.toml in the current directory").add_argument(
         "--force", action="store_true", help="overwrite existing grounded.toml")
@@ -222,17 +223,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if cache_path is not None and not cache_path.is_absolute():
         cache_path = root / cache_path
     checker_errors: list[CheckerError] = []
-    check_only = None
+    plan = None
     if args.changed is not None:
+        from .changed import ChangedPlan
         try:
-            hunks, untracked = changed_lines(root, args.changed)
-            symbols = changed_symbols(root, args.changed)
+            plan = ChangedPlan.from_git(root, args.changed)
         except GitError as exc:
             print(f"grounded: --changed unavailable: {exc}", file=sys.stderr)
             return 2
-        check_only = changed_file_filter(hunks, untracked, symbols)
     findings, facts, index = scan_root(root, config, jobs=args.jobs, cache_path=cache_path,
-                                       checker_errors=checker_errors, check_only=check_only)
+                                       checker_errors=checker_errors, changed=plan,
+                                       index_cache=_index_cache_on(args))
     n_files = len(facts)
     n_unparsed = len(index.parse_failed)
     _report_checker_errors(checker_errors)
@@ -252,10 +253,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
     findings, n_suppressed = apply_suppressions(findings, facts_by_path)
     if n_suppressed:
         suppressed_note = f" ({n_suppressed} suppressed by grounded-disable)"
-    if args.changed is not None:
-        before = len(findings)
-        findings = filter_changed(findings, hunks, untracked, symbols)
-        suppressed_note = f" ({before - len(findings)} outside changed lines hidden)"
+    if plan is not None and plan.mode == "precise":
+        suppressed_note += (f" (--changed: {plan.checked} file(s) checked against the base; "
+                            f"findings older than the change are not shown)")
+    elif plan is not None:
+        suppressed_note += (f" (--changed: broad mode because {plan.reason}; "
+                            f"shows findings naming any identifier the diff touches)")
     if args.baseline:
         try:
             fps = load_baseline(Path(args.baseline))
@@ -292,6 +295,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
                                   n_checker_errors=len(checker_errors))
     if suppressed_note and fmt in ("terminal",):
         out += f"\ngrounded:{suppressed_note}."
+    elif plan is not None and plan.mode != "precise":
+        # Machine formats keep stdout parseable, but a consumer (an agent
+        # hook) must still learn that this report is the broad superset.
+        print(f"grounded: --changed broad mode because {plan.reason}.", file=sys.stderr)
     if args.output:
         Path(args.output).write_text(out, encoding="utf-8")
     else:
@@ -324,7 +331,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         print(f"grounded: {exc}", file=sys.stderr)
         return 2
     checker_errors: list[CheckerError] = []
-    findings, facts, index = scan_root(root, config, checker_errors=checker_errors)
+    findings, facts, index = scan_root(root, config, checker_errors=checker_errors,
+                                       index_cache=_index_cache_on(args))
     findings = [f for f in findings if in_scope(f.path, prefix)]
     if checker_errors:
         # A baseline is a persisted scan result: writing one from an
@@ -345,6 +353,12 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _index_cache_on(args: argparse.Namespace) -> bool:
+    if getattr(args, "no_index_cache", False):
+        return False
+    return os.environ.get("GROUNDED_NO_INDEX_CACHE", "") in ("", "0")
+
+
 def cmd_fix(args: argparse.Namespace) -> int:
     from .fix import apply_fixes, apply_symbol_fixes, file_fix_candidates, symbol_fix_candidates
     given = Path(args.path)
@@ -354,7 +368,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
         return 2
     root, only = resolve_scan_scope(root)
     config = _load_config(root, explicit=args.config)
-    findings, facts, index = scan_root(root, config)
+    findings, facts, index = scan_root(root, config, index_cache=_index_cache_on(args))
     facts_by_path = {f.path: f for f in facts}
     findings, _ = apply_suppressions(findings, facts_by_path)
     # Never rewrite files outside the path the user named.
@@ -552,7 +566,8 @@ def cmd_impact(args: argparse.Namespace) -> int:
         return 2
     root, _prefix = resolve_scan_scope(root)
     config = _load_config(root, explicit=args.config)
-    _, facts, index = scan_root(root, config, include_claim_surfaces=True)
+    _, facts, index = scan_root(root, config, include_claim_surfaces=True,
+                                index_cache=_index_cache_on(args))
     result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(args.symbol)
     if args.format == "json":
         import json as _json
