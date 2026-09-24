@@ -3,8 +3,13 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .index_cache import IndexCache
 
 _JS_FUNC_PATTERNS = [
     re.compile(r"^\s*function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\("),
@@ -115,13 +120,50 @@ def _fallback_top_level(text: str) -> set[str]:
     return names
 
 
+_IDENT = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+_PY_FROM_LINE = re.compile(r"^[ \t]*from[ \t]+([.\w]+)[ \t]+import\b([^\n#]*)", re.MULTILINE)
+_PY_IMPORT_LINE = re.compile(r"^[ \t]*import[ \t]+([^\n#]+)", re.MULTILINE)
+_JS_SPEC = re.compile(r"""(?:\bfrom|\bimport|\brequire)[ \t]*\(?[ \t]*['"]([^'"\n]+)['"]""")
+
+
+def import_tokens(text: str) -> set[str]:
+    """Module-path tokens a file imports, read from text: JS/TS specifiers
+    (`from './mod'`, `require('../lib/mod')`, `import('./m.js')`), and for
+    Python files that do not parse, `from a.mod import` / `import a.mod`
+    lines (`from . import mod` contributes `mod`). A superset is fine:
+    these only widen `--changed` candidates."""
+    out: set[str] = set()
+    for m in _PY_FROM_LINE.finditer(text):
+        mod = m.group(1)
+        out.update(_IDENT.findall(mod))
+        if not mod.strip("."):
+            out.update(_IDENT.findall(m.group(2)))
+    for m in _PY_IMPORT_LINE.finditer(text):
+        out.update(_IDENT.findall(m.group(1)))
+    for m in _JS_SPEC.finditer(text):
+        out.update(_IDENT.findall(m.group(1)))
+    return out
+
+
 class RepoIndex:
     def __init__(self, root: Path, files: list[Path], texts: dict[str, str] | None = None,
                  alias_zones: list[tuple[str, list[tuple[str, list[str]]]]] | None = None,
                  decl_paths: set[str] | None = None,
                  tsconfig_excluded: set[str] | None = None,
-                 jobs: int = 1):
+                 jobs: int = 1,
+                 stats: dict[str, tuple[int, int]] | None = None,
+                 index_cache: "IndexCache | None" = None,
+                 entries: dict[str, dict] | None = None):
         self._jobs = max(1, jobs)
+        # Persistent per-file contributions (see index_cache.py), reused for
+        # files whose (mtime_ns, size) in `stats` (abs path -> stat) match.
+        self._index_cache = index_cache
+        self._stats = stats or {}
+        # Prebuilt contributions (rel -> entry) used as-is: `--changed`
+        # assembles the base index from the current one this way.
+        self._given_entries = entries or {}
+        # rel -> entry of this build, kept for base_variant().
+        self._entries: dict[str, dict] = {}
         self.root = root
         self.files = files  # absolute paths
         self.py_symbols: set[str] = set()
@@ -159,6 +201,10 @@ class RepoIndex:
         # surface is whatever the replacement object serves.
         self.file_replaces_self: set[str] = set()
         self.file_export_stars: dict[str, list[str]] = {}
+        # Tokens of the module paths each file imports (`http`, `server` for
+        # `from http.server import x`; `lib`, `mod` for `'../lib/mod.js'`).
+        # `--changed` uses them to find who can reach a changed module.
+        self.file_import_modules: dict[str, set[str]] = {}
         # Files with a bare `export *` (external re-export): export set unknown.
         self.file_export_unknown: set[str] = set()
         # Optional pre-read contents (abs path string -> text) so callers
@@ -259,9 +305,134 @@ class RepoIndex:
         import copy
         clone = copy.copy(self)
         clone._texts = {}
+        clone._index_cache = None
+        clone._stats = {}
+        clone._entries = {}
         for lazy in ("_disk_texts",) + self._LAZY_DERIVED:
             clone.__dict__.pop(lazy, None)
         return clone
+
+    def base_variant(self, status: dict[str, str], texts: dict[str, str]) -> "RepoIndex":
+        """This index as it was at the diff base. `status` maps changed rel
+        paths to "A"/"M"/"D"; `texts` holds their base text. Files the
+        change added are absent, modified and deleted files carry their
+        base text, and every other file keeps this build's contribution.
+        Callers must not ask for a variant when a changed path is outside
+        the index (manifests, .gitignore, data files): checkers read those
+        from disk, where the base is not.
+
+        Built by patching a copy of this index (copy-on-write for every
+        shared container it touches), not by merging all entries again:
+        on cpython the full rebuild cost 0.35 s per `--changed` scan. The
+        result equals a fresh build of the base (TestBaseVariant)."""
+        import copy
+        base = copy.copy(self)
+        for name in self._PER_FILE_DICTS:
+            setattr(base, name, dict(getattr(self, name)))
+        for name in self._PER_FILE_SETS + self._NAME_SETS:
+            setattr(base, name, set(getattr(self, name)))
+        base.symbol_files = dict(self.symbol_files)
+        base.all_symbols = set(self.all_symbols)
+        base.lower_map = dict(self.lower_map)
+        base.rel_paths = set(self.rel_paths)
+        base.decl_paths = set(self.decl_paths)
+        base._entries = dict(self._entries)
+        base._index_cache = None
+        base._stats = {}
+        base._given_entries = {}
+        for lazy in ("_disk_texts", "_cli_inventory") + self._LAZY_DERIVED:
+            base.__dict__.pop(lazy, None)
+        base._texts = {}
+        by_rel = {self._rel(f): f for f in self.files}
+        touched: set[str] = set()
+        for rel, code in sorted(status.items()):
+            old = self._entries.get(rel)
+            if old is not None:
+                touched |= old.get("file_symbols", set())
+                base._unapply_entry(rel, old)
+                base._entries.pop(rel, None)
+                base.rel_paths.discard(rel)
+                base.rel_paths.discard("./" + rel)
+                by_rel.pop(rel, None)
+            if code != "A" and rel in texts:
+                f = self.root / rel
+                entry = RepoIndex.index_entry(rel, f.suffix.lower(), texts[rel])
+                touched |= entry.get("file_symbols", set())
+                base._apply_entry(rel, entry, copy_on_write=True)
+                base._entries[rel] = entry
+                base.rel_paths.add(rel)
+                base.rel_paths.add("./" + rel)
+                base._texts[str(f)] = texts[rel]
+                by_rel[rel] = f
+        order = sorted(by_rel)
+        base.files = [by_rel[r] for r in order]
+        rank = {r: i for i, r in enumerate(order)}
+        # Per-file dicts in file order, as a fresh build fills them.
+        for name in self._PER_FILE_DICTS:
+            d = getattr(base, name)
+            setattr(base, name, {r: d[r] for r in sorted(d, key=lambda r: rank.get(r, -1))})
+        base._entries = {r: base._entries[r] for r in order if r in base._entries}
+        base.basenames = {r.rsplit("/", 1)[-1] for r in order}
+        base.dirs = {r[:i] for r in order for i in range(len(r)) if r[i] == "/"}
+        base._refresh_names(touched)
+        base._compute_py_prefixes()
+        return base
+
+    def _unapply_entry(self, rel: str, entry: dict) -> None:
+        """Remove rel's contribution (the inverse of _apply_entry), copying
+        any symbol_files set before changing it. Language-set membership
+        is left to _refresh_names: a name may still have other definers."""
+        for name in self._PER_FILE_DICTS:
+            getattr(self, name).pop(rel, None)
+        for name in self._PER_FILE_SETS:
+            getattr(self, name).discard(rel)
+        for sym in entry.get("file_symbols", ()):
+            holders = self.symbol_files.get(sym)
+            if holders is not None and rel in holders:
+                holders = set(holders)
+                holders.discard(rel)
+                if holders:
+                    self.symbol_files[sym] = holders
+                else:
+                    del self.symbol_files[sym]
+
+    _LANG_SUFFIXES = (("py_symbols", {".py"}),
+                      ("js_symbols", {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}),
+                      ("go_symbols", {".go"}),
+                      ("c_symbols", {".c", ".h"}))
+
+    def _refresh_names(self, names: set[str]) -> None:
+        """Recompute language sets, all_symbols and lower_map for `names`
+        from their definers: a name is in a language's set exactly when a
+        file of that language defines it (what _record does per file)."""
+        for n in names:
+            holders = self.symbol_files.get(n, ())
+            suffixes = {"." + h.rsplit(".", 1)[-1].lower() for h in holders if "." in h}
+            present = False
+            for attr, sfx in self._LANG_SUFFIXES:
+                if suffixes & sfx:
+                    getattr(self, attr).add(n)
+                    present = True
+                else:
+                    getattr(self, attr).discard(n)
+            key = n.lower()
+            group = set(self.lower_map.get(key, ()))
+            if present:
+                self.all_symbols.add(n)
+                group.add(n)
+            else:
+                self.all_symbols.discard(n)
+                group.discard(n)
+            if group:
+                self.lower_map[key] = group
+            else:
+                self.lower_map.pop(key, None)
+
+    def _rel(self, f: Path) -> str:
+        try:
+            return f.relative_to(self.root).as_posix()
+        except ValueError:
+            return f.name
 
     def knows_symbols(self, rel: str) -> bool:
         """False when rel failed to parse: absence there is unknowable."""
@@ -273,7 +444,8 @@ class RepoIndex:
     # union). A new per-file attribute MUST be listed here or parallel
     # builds silently drop it (pinned by TestParallelIndexBuild).
     _PER_FILE_DICTS = ("file_symbols", "file_imports", "file_attr_uses",
-                       "file_exports", "file_stars", "file_export_stars")
+                       "file_exports", "file_stars", "file_export_stars",
+                       "file_import_modules")
     _PER_FILE_SETS = ("file_esm", "file_dynamic_ns", "file_registers_modules", "file_replaces_self",
                       "file_export_unknown", "parse_failed")
     _NAME_SETS = ("py_symbols", "js_symbols", "go_symbols", "c_symbols")
@@ -289,54 +461,100 @@ class RepoIndex:
         return part
 
     @classmethod
-    def index_chunk(cls, items: list[tuple[str, str, str]]) -> dict:
-        """Partial index state for [(rel, suffix, text)] (worker entry point)."""
+    def index_entry(cls, rel: str, suffix: str, text: str) -> dict:
+        """One file's whole contribution to the index, as plain data
+        (marshal-safe: persisted by IndexCache). Keys present only when
+        the fresh build would hold them: attribute -> this file's value
+        for per-file dicts, True for per-file sets, names for name sets.
+        symbol_files is not stored: _record writes it as the exact
+        inverse of file_symbols, so _apply_entry derives it."""
         part = cls._blank()
-        for rel, suffix, text in items:
-            part._index_one(rel, suffix, text, rebuild=False)
-        names = cls._PER_FILE_DICTS + cls._PER_FILE_SETS + cls._NAME_SETS + ("symbol_files",)
-        return {name: getattr(part, name) for name in names}
+        part._index_one(rel, suffix, text, rebuild=False)
+        entry: dict = {}
+        for name in cls._PER_FILE_DICTS:
+            per_file = getattr(part, name)
+            if rel in per_file:
+                entry[name] = per_file[rel]
+        for name in cls._PER_FILE_SETS:
+            if rel in getattr(part, name):
+                entry[name] = True
+        for name in cls._NAME_SETS:
+            names = getattr(part, name)
+            if names:
+                entry[name] = names
+        return entry
 
-    def _merge_partial(self, state: dict) -> None:
-        for name in self._PER_FILE_DICTS:
-            getattr(self, name).update(state[name])
-        for name in self._PER_FILE_SETS + self._NAME_SETS:
-            getattr(self, name).update(state[name])
-        for sym, rels in state["symbol_files"].items():
-            self.symbol_files.setdefault(sym, set()).update(rels)
+    @classmethod
+    def index_chunk(cls, items: list[tuple[str, str, str]]) -> list[tuple[str, dict]]:
+        """[(rel, entry)] for [(rel, suffix, text)] (worker entry point)."""
+        return [(rel, cls.index_entry(rel, suffix, text)) for rel, suffix, text in items]
+
+    def _apply_entry(self, rel: str, entry: dict, copy_on_write: bool = False) -> None:
+        for name, value in entry.items():
+            if name in self._PER_FILE_DICTS:
+                getattr(self, name)[rel] = value
+            elif name in self._PER_FILE_SETS:
+                getattr(self, name).add(rel)
+            elif not copy_on_write:
+                # Language sets. A patched variant recomputes them per name
+                # instead (_refresh_names).
+                getattr(self, name).update(value)
+        for sym in entry.get("file_symbols", ()):
+            if copy_on_write:
+                self.symbol_files[sym] = set(self.symbol_files.get(sym, ())) | {rel}
+            else:
+                self.symbol_files.setdefault(sym, set()).add(rel)
 
     # Below this many files, process spawn costs more than it saves.
     _PARALLEL_MIN_FILES = 512
 
     def _build(self) -> None:
+        cache = self._index_cache
+        stats = self._stats
+        entries: dict[str, dict] = {}
+        order: list[str] = []
+        abs_of: dict[str, str] = {}
         pending: list[tuple[str, str, str]] = []
+        # String operations, not pathlib: relative_to/parent/parts/suffix
+        # cost ~0.3 s per 3k files, and a cached `--changed` scan does
+        # little else here.
+        prefix = str(self.root).rstrip(os.sep) + os.sep
         for f in self.files:
-            try:
-                rel = f.relative_to(self.root).as_posix()
-            except ValueError:
-                rel = f.name
+            fs = str(f)
+            rel = fs[len(prefix):].replace(os.sep, "/") if fs.startswith(prefix) else f.name
+            name = rel.rsplit("/", 1)[-1]
             self.rel_paths.add(rel)
             self.rel_paths.add("./" + rel)
-            if f.name.endswith((".d.ts", ".d.mts", ".d.cts")):
+            if name.endswith((".d.ts", ".d.mts", ".d.cts")):
                 self.decl_paths.add(rel)
-            self.basenames.add(f.name)
-            parent = str(Path(rel).parent)
-            if parent and parent != ".":
-                parts = Path(rel).parts[:-1]
-                acc = ""
-                for p in parts:
-                    acc = p if not acc else acc + "/" + p
-                    self.dirs.add(acc)
-            suffix = f.suffix.lower()
-            if str(f) in self._texts:
-                text = self._texts[str(f)]
+            self.basenames.add(name)
+            for i, ch in enumerate(rel):
+                if ch == "/":
+                    self.dirs.add(rel[:i])
+            dot = name.rfind(".")
+            suffix = name[dot:].lower() if 0 < dot < len(name) - 1 else ""
+            given = self._given_entries.get(rel)
+            if given is not None:
+                entries[rel] = given
+                order.append(rel)
+                continue
+            if cache is not None:
+                hit = cache.lookup(rel, stats.get(fs))
+                if hit is not None:
+                    entries[rel] = hit
+                    order.append(rel)
+                    continue
+            if fs in self._texts:
+                text = self._texts[fs]
             else:
                 try:
                     text = f.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
+            order.append(rel)
+            abs_of[rel] = fs
             pending.append((rel, suffix, text))
-        states: list[dict] | None = None
+        fresh: list[tuple[str, dict]] | None = None
         if self._jobs > 1 and len(pending) >= self._PARALLEL_MIN_FILES:
             from concurrent.futures import ProcessPoolExecutor
             from concurrent.futures.process import BrokenProcessPool
@@ -344,17 +562,26 @@ class RepoIndex:
             chunks = [pending[i::n] for i in range(n)]
             try:
                 with ProcessPoolExecutor(max_workers=self._jobs) as pool:
-                    states = list(pool.map(RepoIndex.index_chunk, chunks))
+                    fresh = [pair for part in pool.map(RepoIndex.index_chunk, chunks)
+                             for pair in part]
             except (OSError, BrokenProcessPool):
                 # No usable worker processes (sandboxed runners, spawn
                 # failures): the serial build gives the identical index.
-                states = None
-        if states is not None:
-            for state in states:
-                self._merge_partial(state)
-        else:
-            for rel, suffix, text in pending:
-                self._index_one(rel, suffix, text, rebuild=False)
+                fresh = None
+        if fresh is None:
+            fresh = RepoIndex.index_chunk(pending)
+        for rel, entry in fresh:
+            entries[rel] = entry
+            if cache is not None:
+                cache.store(rel, stats.get(abs_of[rel]), entry)
+        # Applied in file order whatever their source, so the cached, the
+        # serial and the parallel build fill every attribute identically.
+        for rel in order:
+            self._apply_entry(rel, entries[rel])
+        self._entries = {rel: entries[rel] for rel in order}
+        self._given_entries = {}
+        if cache is not None:
+            cache.save()
         self._rebuild_unions()
         self._compute_py_prefixes()
 
@@ -588,6 +815,7 @@ class RepoIndex:
         self.file_stars.pop(rel, None)
         self.file_exports.pop(rel, None)
         self.file_export_stars.pop(rel, None)
+        self.file_import_modules.pop(rel, None)
         self.file_export_unknown.discard(rel)
         for name in old:
             holders = self.symbol_files.get(name)
@@ -611,6 +839,7 @@ class RepoIndex:
             self.parse_failed.add(rel)
             for name in _fallback_top_level(text):
                 self._record(self.py_symbols, name, rel)
+            self.file_import_modules[rel] = import_tokens(text)
             return
 
         def _targets(t) -> list[str]:
@@ -653,7 +882,16 @@ class RepoIndex:
                             self.file_imports[rel].add(a.name)
 
         _TypeAlias = getattr(ast, "TypeAlias", None)  # 3.12+; absent on 3.10/3.11
+        modules = self.file_import_modules.setdefault(rel, set())
         for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    modules.update(_IDENT.findall(a.name or ""))
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    modules.update(_IDENT.findall(node.module))
+                else:  # `from . import mod`: the names are the modules
+                    modules.update(a.name for a in node.names if a.name != "*")
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 self._record(self.py_symbols, node.name, rel)
             elif _TypeAlias is not None and isinstance(node, _TypeAlias):
@@ -705,6 +943,7 @@ class RepoIndex:
             self._record(self.c_symbols, name, rel)
 
     def _index_js(self, text: str, rel: str) -> None:
+        self.file_import_modules[rel] = import_tokens(text)
         for line in text.splitlines():
             for pat in _JS_FUNC_PATTERNS:
                 m = pat.match(line)

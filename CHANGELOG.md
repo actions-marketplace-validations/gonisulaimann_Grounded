@@ -5,6 +5,73 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- **`--changed` reports what the change introduced, not every finding that
+  shares a word with it.** The old rule kept any finding, anywhere, whose
+  claim named an identifier from a changed line, so an edit to a line
+  containing `self` or `None` surfaced old findings from across the repo.
+  Measured on 12 consecutive cpython commits: 357 findings reported, every
+  one of them present before the commit (0 introduced). Off the changed
+  lines, a finding is now reported when a full scan of the worktree has it
+  and a full scan of the base does not. It costs far less than two scans:
+  the base index reuses every unchanged file's entry, only files that can
+  reach a changed name are checked (they import its module or spell
+  `module.name`; a name whose repo-wide presence changed is searched
+  everywhere), and only files with a finding naming a changed name are
+  re-checked at the base. Verified against two full scans per commit:
+  exact on 30 consecutive django commits, 29 cpython commits, and 10
+  constructed renames, deletions, mock-target and in-file cases (69 samples,
+  32 introduced findings, 0 missed, 0 extra; tests pin seven cases).
+  Changes to files checkers read from disk (`pyproject.toml`,
+  `package.json`, `setup.*`, `.gitignore`, `tsconfig`, `requirements`)
+  fall back to the old rule, announced on stderr in every format.
+- **`--changed` latency** on real history (each commit replayed as
+  uncommitted work, fresh process, interpreter start included,
+  `bench/changed.py`): cpython p50 10.3 s -> 1.9 s, p95 13.0 s -> 3.4 s;
+  django p50 8.2 s -> 1.2 s, p95 14.9 s -> 3.3 s. Over the same 30 django
+  commits the old rule reported 47 findings, none introduced by the commit;
+  the new one reports 0.
+
+### Added
+- **Persistent index cache** in the git directory (`.git/grounded/`): each
+  file's index contribution is stored by (mtime, size) and replayed, so a
+  scan re-indexes only what changed (cpython index build 2.25 s -> 0.14 s
+  load + merge). Entries within 2 s of the cache write are never trusted
+  (the "racily clean" rule git applies to its own index), and any load
+  problem is an empty cache. The rebuilt index equals a fresh build in every
+  attribute (tested, with mutation checks). Opt out with
+  `--no-index-cache` or `GROUNDED_NO_INDEX_CACHE=1`.
+- `bench/changed.py`: `--changed` latency on real history (p50/p95/max,
+  mode per sample).
+
+### Fixed
+- **`--cache` reported `clean` over a real lie.** A file's cached result was
+  replayed whenever that file's own mtime and size were unchanged, but its
+  findings depend on the rest of the tree: after `b.py` renamed the function
+  `a.py` imports, `scan --cache` still printed `clean`. Results now replay
+  only while the whole tree (indexed files, the files checkers read from
+  disk, config) is unchanged.
+- **`--changed` below the git top level** matched findings against
+  top-level paths (`pkg/app/a.py` vs `app/a.py`); only the rename-fallout
+  rule hid it. Diffs are now scan-root-relative (`--relative`).
+- Untracked paths with non-ASCII names were read with git's quoting on
+  (`ls-files -z` now).
+
+### Performance
+- Full scans, same output byte for byte: grpc-go 5.4 -> 4.0 s, django
+  13.3 -> 11.1 s, cpython 42.0 -> 37.9 s, prettier 5.4 -> 3.3 s; with a
+  warm index cache 3.0, 8.4, 32.1 and 2.5 s.
+- `--changed` asks git 4 times instead of 13 (one worktree-vs-base diff
+  gives hunks and identifiers, numbered by worktree lines).
+- `collect_tsconfigs` walks with `os.scandir` (django 0.40 -> 0.13 s).
+- Tree walk with `os.scandir` (entry types come with the directory read):
+  cpython 0.12 -> 0.05 s, prettier 0.53 -> 0.17 s, identical file lists.
+- Checker pools are sized by bytes to check, not file count: each worker
+  first receives a pickled index (about 2.6 s for 8 workers on cpython),
+  so 40 files ran 7x slower in parallel than serially.
+- The unknown-suppression warning scanned every line of every file with a
+  regex (2.2M calls on cpython); one substring test per file now gates it.
+
 ### Fixed (wide round: 55 repositories)
 - **Lazy modules read as thousands of missing names.** A module that
   replaces itself (`sys.modules[__name__] = _LazyModule(...)`, the

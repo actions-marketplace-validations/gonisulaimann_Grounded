@@ -148,7 +148,7 @@ grounded scan [PATH] [--format terminal|json|sarif|markdown|html] [--output FILE
                [--fail-on lie|drift|smell|never]
                [--enable CHECKER,...] [--disable CHECKER,...]
                [--baseline FILE] [--show-baselined]
-               [--changed [BASE]] [--cache [FILE]] [--jobs N]
+               [--changed [BASE]] [--cache [FILE]] [--no-index-cache] [--jobs N]
                [--config FILE] [--no-color] [--quiet]
 grounded baseline [PATH] [--output FILE]  # record findings for delta gating
 grounded fix [PATH] [--dry-run]  # rewrite unambiguous stale refs
@@ -225,21 +225,33 @@ grounded scan . --changed                # uncommitted work vs HEAD
 grounded scan . --changed origin/main    # branch vs base (CI)
 ```
 
-Untracked files are fully reported. Findings off the diff still report
-when their claim names a diff-touched symbol (rename fallout on
-untouched lines). Outside a git repo, or with an
-unresolvable base, `--changed` exits `2` with the git error instead of
-silently scanning everything.
+Untracked files are fully reported. Off the diff, `--changed` reports
+what the change *introduced*: a finding a full scan of your tree has and
+a full scan of the base does not (rename a function, and every file
+still importing the old name shows up). Older findings that merely
+share a word with the diff stay hidden. It gets there without two full
+scans: the base index reuses every unchanged file, and only files that
+can reach a changed name are checked. When the change edits a file
+checkers read from disk (`pyproject.toml`, `package.json`,
+`.gitignore`, `tsconfig.json`), it falls back to a broader, noisier
+rule and says so on stderr. Outside a git repo, or with an unresolvable
+base, `--changed` exits `2` with the git error instead of silently
+scanning everything.
 
-Repeat scans go faster with `--cache` (per-file results keyed by
-mtime and size, opt-in, never required):
+The repo index is cached in the git directory (`.git/grounded/`) and
+reused for every file whose size and mtime are unchanged, so a repeat
+scan re-indexes only what you edited. It needs no configuration; opt
+out with `--no-index-cache` or `GROUNDED_NO_INDEX_CACHE=1`.
+
+`--cache` additionally replays whole per-file results, but only while
+nothing else in the tree changed (any edit anywhere can change another
+file's findings), so it helps repeated scans of an unchanged tree, such
+as CI retries:
 
 ```console
 grounded scan . --cache                # writes .grounded-cache.json
 ```
 
-A repeat full-tree scan reuses unchanged files; the index still rebuilds
-from disk, so expect roughly a 2x speedup on large trees, not magic.
 Corrupt or mismatched caches fall back to a full scan silently.
 
 ## Rules
