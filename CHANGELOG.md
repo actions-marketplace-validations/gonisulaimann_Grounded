@@ -36,6 +36,11 @@ All notable changes to `grounded` are documented here. Format follows
   resolve; number-drift compares the keyword's own value (including
   `==` comparisons); `require()` quoted inside strings is not an import;
   fences of a different character inside a declared fence are nesting.
+- **Python 3.10 refused real projects.** Without `tomllib`, the subset
+  reader parsed the whole `pyproject.toml` and exited 2 on other tools'
+  syntax (`[[tool.mypy.overrides]]`) or any multi-line array, which is
+  nearly every Python repo. It now reads only the `[tool.grounded*]`
+  tables and supports multi-line arrays.
 - **C includes were invisible.** The include pattern lacked
   `re.MULTILINE`, so only an include on a file's first line was seen.
 - **Subdirectory scans manufactured lies.** A comment in `src/` naming a

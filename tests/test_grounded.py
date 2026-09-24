@@ -3603,6 +3603,52 @@ class TestTomlCompat(unittest.TestCase):
             self.assertEqual(cfg.path_aliases, {"~/": ["src/"]})
 
 
+class TestTomlCompatRealPyproject(unittest.TestCase):
+    """Python 3.10 (no tomllib) must read `[tool.grounded]` out of a real
+    pyproject.toml whatever other tools put there. Measured: CI's 3.10
+    dogfood exited 2 on this repo's own multi-line `keywords = [...]`."""
+
+    PYPROJECT = (
+        '[project]\nname = "x"\nkeywords = [\n  "a",  # note\n  "b",\n]\n'
+        'description = """Multi-line\n[not.a.header]\n"""\n'
+        '[[tool.mypy.overrides]]\nmodule = "x.*"\nignore_errors = true\n'
+        '[tool.black]\nline-length = 88\ntarget-version = ["py310",\n "py311"]\n'
+        '[tool.grounded]\nfail_on = "drift"\ndisable = [\n  "fragile-anchor",\n]\n'
+        '[tool.grounded.path_aliases]\n"@/" = ["src/"]\n'
+        '[tool.ruff]\nselect = ["E"]\n'
+    )
+
+    def test_compat_reads_grounded_section_only(self):
+        from unittest import mock
+        import grounded.config as cfg
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text(self.PYPROJECT, encoding="utf-8")
+            with mock.patch.object(cfg, "tomllib", None):
+                c = cfg.Config.load(root)
+            self.assertEqual(c.fail_on, "drift")
+            self.assertNotIn("fragile-anchor", c.enabled)
+            self.assertEqual(c.path_aliases, {"@/": ["src/"]})
+
+    def test_multiline_arrays_and_tables(self):
+        from grounded.toml_compat import loads
+        self.assertEqual(loads('a = [\n "x", # c\n "y",\n]\n[t]\nb = { k = ["1",\n "2"] }\n'),
+                         {"a": ["x", "y"], "t": {"b": {"k": ["1", "2"]}}})
+        with self.assertRaises(ValueError):
+            loads('a = [\n "x",\n')
+
+    def test_grounded_section_errors_still_fail(self):
+        from unittest import mock
+        import grounded.config as cfg
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "pyproject.toml").write_text(
+                '[tool.black]\nx = 1979-05-27\n[tool.grounded]\nfail_on = @@\n', encoding="utf-8")
+            with mock.patch.object(cfg, "tomllib", None):
+                with self.assertRaises(cfg.ConfigError):
+                    cfg.Config.load(root)
+
+
 class TestImpact(unittest.TestCase):
     def _tree(self, root: Path) -> None:
         (root / "pkg").mkdir(parents=True)
