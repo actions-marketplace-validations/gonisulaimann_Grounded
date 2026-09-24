@@ -5,6 +5,23 @@ All notable changes to `grounded` are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **`grounded hook claude-code`**: a Claude Code PostToolUse adapter. It
+  reads the edit event on stdin, checks lines changed since `HEAD` plus
+  rename fallout in other files, and exits `2` with the findings on
+  stderr: the exit code Claude Code feeds back to the model. Its own
+  failures exit `1` (human-only) and never wedge the agent loop.
+- **`--format markdown`**: a GitHub-flavored findings table. The Action
+  writes it to the job summary (`summary: 'true'`, default).
+
+### Fixed
+- **The Claude Code hook never reached the agent.** `init-agent --claude`
+  installed `grounded scan . --changed --quiet`, which exits `1` on
+  findings; Claude Code shows exit-1 stderr to the human only, and
+  `--quiet` printed just counts. It now installs `grounded hook
+  claude-code` (matcher `Edit|Write|MultiEdit`) and upgrades the legacy
+  command in place.
+
 ### Changed
 - **Directory scans index the whole project.** `grounded scan src` (and
   `baseline`, `fix`, `impact` on a subdirectory) now build the index from

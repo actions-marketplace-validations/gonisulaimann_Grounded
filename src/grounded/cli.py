@@ -19,7 +19,7 @@ from .delta import (
     write_baseline,
 )
 from .models import SEVERITY_RANK, CheckerError
-from .reporters import format_terminal, to_html, to_json, to_sarif
+from .reporters import format_terminal, to_html, to_json, to_markdown, to_sarif
 from .scanner import (
     apply_suppressions,
     collect_files,
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="directories or files to scan (default: .); several file "
                         "arguments scope reporting to those files (used by "
                         "pass_filenames hooks)")
-    s.add_argument("--format", choices=["terminal", "json", "sarif", "html"], default="terminal")
+    s.add_argument("--format", choices=["terminal", "json", "sarif", "markdown", "html"], default="terminal")
     s.add_argument("--output", "-o", default=None, help="write report to file instead of stdout")
     s.add_argument("--fail-on", choices=["lie", "drift", "smell", "never"], default=None,
                    help="minimum severity that fails the run (default: from config, else 'lie')")
@@ -96,6 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="install the grounded agent skill to .claude/skills/grounded (this project only)")
     ag.add_argument("--pre-commit", action="store_true",
                     help="write .pre-commit-config.yaml with the grounded hook")
+
+    hk = sub.add_parser("hook", help="agent hook adapters (read the agent's event on stdin)")
+    hk.add_argument("agent", choices=["claude-code"],
+                    help="claude-code: PostToolUse hook; exits 2 with findings on stderr "
+                         "so the agent sees and fixes them")
+    hk.add_argument("--fail-on", choices=["lie", "drift", "smell"], default="lie",
+                    help="minimum severity fed back to the agent (default: lie)")
 
     ls = sub.add_parser("lsp", help="serve grounded over stdio as an LSP server for editors")
 
@@ -269,6 +276,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         out = to_json(findings)
     elif fmt == "sarif":
         out = to_sarif(findings, root=str(root))
+    elif fmt == "markdown":
+        out = to_markdown(findings, n_files, n_checker_errors=len(checker_errors))
     elif fmt == "html":
         out = to_html(findings, n_files, root=str(root))
     else:
@@ -372,10 +381,15 @@ def cmd_fix(args: argparse.Namespace) -> int:
     return 0
 
 
+_CLAUDE_HOOK_CMD = "grounded hook claude-code"
 _CLAUDE_HOOK = {
-    "matcher": "Edit|Write",
-    "hooks": [{"type": "command", "command": "grounded scan . --changed --quiet"}],
+    "matcher": "Edit|Write|MultiEdit",
+    "hooks": [{"type": "command", "command": _CLAUDE_HOOK_CMD}],
 }
+# Commands earlier versions installed. They exited 1 on findings, which
+# Claude Code shows to the human but never to the model; init-agent
+# upgrades them in place.
+_CLAUDE_LEGACY_CMDS = frozenset({"grounded scan . --changed --quiet"})
 
 _CURSOR_RULE = """---
 description: Verify code references with grounded before building on edited code
@@ -438,17 +452,23 @@ def _init_claude(root: Path, force: bool, dry_run: bool) -> str:
     post = hooks.setdefault("PostToolUse", [])
     if not isinstance(post, list):
         return f"refusing to touch non-list PostToolUse in: {target}"
+    upgraded = False
     for entry in post:
         try:
             for h in entry.get("hooks", []):
-                if h.get("command") == _CLAUDE_HOOK["hooks"][0]["command"]:
+                if h.get("command") == _CLAUDE_HOOK_CMD:
                     return f"hook already present in {target}"
+                if h.get("command") in _CLAUDE_LEGACY_CMDS:
+                    h["command"] = _CLAUDE_HOOK_CMD
+                    entry["matcher"] = _CLAUDE_HOOK["matcher"]
+                    upgraded = True
         except AttributeError:
             continue
-    post.append(dict(_CLAUDE_HOOK))
+    if not upgraded:
+        post.append(json.loads(json.dumps(_CLAUDE_HOOK)))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return f"wrote {target}"
+    return f"{'upgraded hook in' if upgraded else 'wrote'} {target}"
 
 
 def _init_cursor(root: Path, force: bool, dry_run: bool) -> str:
@@ -626,6 +646,12 @@ def main(argv: list[str] | None = None) -> int:
         return serve_mcp(Path(args.root).resolve())
     if args.cmd == "init-agent":
         return cmd_init_agent(args)
+    if args.cmd == "hook":
+        from .hooks import claude_code
+        code, message = claude_code(sys.stdin.read(), fail_on=args.fail_on)
+        if message:
+            print(message, file=sys.stderr)
+        return code
     if args.cmd == "lsp":
         from .lsp import serve as serve_lsp
         return serve_lsp()
