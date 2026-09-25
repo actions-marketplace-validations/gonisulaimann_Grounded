@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+*.spec
 node_modules/
 *.vsix
 .venv/
@@ -12,3 +13,4 @@ SESSION_EXPORT*
 GROUNDED_SESSION_EXPORT*
 SESSION_EXPORT*
 ATTACK.md
+.precision-repos/

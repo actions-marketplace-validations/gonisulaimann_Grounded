@@ -17,7 +17,10 @@ from .models import Comment, FileFacts, FuncInfo
 
 # ---------------------------------------------------------------- Python
 
-def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> FuncInfo:
+def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef) -> FuncInfo:
+    """Signature and docstring only: no subtree walk. Return/raise facts fed
+    the v1 docstring-contract checkers (removed in v2); walking every
+    function body for them was the single largest scan cost."""
     args: list[str] = []
     a = node.args
     for arg in list(a.posonlyargs) + list(a.args):
@@ -37,33 +40,6 @@ def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> 
         and isinstance(node.body[0].value.value, str)
     ):
         doc_lineno = node.body[0].lineno
-    has_value_return = False
-    has_return = False
-    raises: list[str] = []
-    for child in ast.walk(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            if child is not node:
-                continue
-        if isinstance(child, ast.Return):
-            has_return = True
-            if child.value is not None and not (
-                isinstance(child.value, ast.Constant) and child.value.value is None
-            ):
-                has_value_return = True
-        if isinstance(child, ast.Yield | ast.YieldFrom) if hasattr(ast, "YieldFrom") else isinstance(child, ast.Yield):
-            has_value_return = True
-        if isinstance(child, ast.Raise):
-            exc = child.exc
-            name = _exc_name(exc)
-            if name:
-                raises.append(name)
-    # dedupe preserving order
-    seen: set[str] = set()
-    uniq: list[str] = []
-    for r in raises:
-        if r not in seen:
-            seen.add(r)
-            uniq.append(r)
     end = getattr(node, "end_lineno", None) or node.lineno
     return FuncInfo(
         name=node.name,
@@ -72,24 +48,7 @@ def _py_func_info(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> 
         args=args,
         docstring=doc,
         docstring_lineno=doc_lineno,
-        has_value_return=has_value_return,
-        has_bare_return_only=(has_return and not has_value_return),
-        raises=uniq,
     )
-
-
-def _exc_name(exc: ast.expr | None) -> str | None:
-    if exc is None:
-        return "Exception(reraise)"
-    if isinstance(exc, ast.Name):
-        return exc.id
-    if isinstance(exc, ast.Attribute):
-        return exc.attr
-    if isinstance(exc, ast.Call):
-        return _exc_name(exc.func)
-    if isinstance(exc, ast.Subscript):
-        return _exc_name(exc.value)
-    return None
 
 
 def _py_comments_tolerant(text: str) -> list[Comment]:
@@ -162,29 +121,81 @@ def parse_python(path: Path, rel: str, text: str) -> FileFacts:
         # comments are still checkable. Diagnostics degrade, never vanish.
         facts.comments = _py_comments_tolerant(text)
         return facts
-    facts.imports = _py_imports(tree)
-    facts.from_imports = _py_from_imports(tree)
-    # is_method detection: need parent tracking
+    # One walk: parent links, function defs, and import statements. Every
+    # helper below used to rebuild the parent map with its own full walk.
     parents: dict[int, ast.AST] = {}
+    funcs: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    imports: list[ast.Import | ast.ImportFrom] = []
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parents[id(child)] = node
-    for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            info = _py_func_info(node, text)
-            parent = parents.get(id(node))
-            info.is_method = isinstance(parent, ast.ClassDef)
-            facts.functions.append(info)
+            funcs.append(node)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            imports.append(node)
+    facts.imports = _py_imports(tree, imports)
+    facts.from_imports = _py_from_imports(tree, parents, imports)
+    facts.guarded_lines = _guarded_line_set(tree, parents, imports)
+    for node in funcs:
+        info = _py_func_info(node)
+        info.is_method = isinstance(parents.get(id(node)), ast.ClassDef)
+        facts.functions.append(info)
     facts.comments = _py_comments(text)
     return facts
 
 
-def _py_imports(tree: ast.AST) -> dict[str, str]:
+def _is_guarded(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    """Inside try/except, a TYPE_CHECKING conditional, or a version/platform
+    conditional: compatibility imports that may legitimately fail."""
+    seen: set[int] = set()
+    cur: ast.AST | None = node
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        parent = parents.get(id(cur))
+        if isinstance(parent, (ast.Try, ast.TryStar if hasattr(ast, "TryStar") else ast.Try)):
+            return True
+        if isinstance(parent, ast.If):
+            try:
+                test_src = ast.unparse(parent.test)
+            except Exception:
+                test_src = ""
+            if ("TYPE_CHECKING" in test_src or "version_info" in test_src
+                    or "sys.version" in test_src or "platform" in test_src
+                    or "os.name" in test_src):
+                return True
+        cur = parent
+    return False
+
+
+def _parent_map(tree: ast.AST) -> dict[int, ast.AST]:
+    parents: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    return parents
+
+
+def _import_nodes(tree: ast.AST) -> list[ast.Import | ast.ImportFrom]:
+    return [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+
+
+def _guarded_line_set(tree: ast.AST, parents: dict[int, ast.AST] | None = None,
+                      imports: list[ast.Import | ast.ImportFrom] | None = None) -> set[int]:
+    """Linenos of Import/ImportFrom statements under a guarded context."""
+    if parents is None:
+        parents = _parent_map(tree)
+    if imports is None:
+        imports = _import_nodes(tree)
+    return {node.lineno for node in imports if _is_guarded(node, parents)}
+
+
+def _py_imports(tree: ast.AST,
+                imports: list[ast.Import | ast.ImportFrom] | None = None) -> dict[str, str]:
     """alias -> top-level module ('' for relative imports). Conservative:
     any binding form counts, at any depth (precision-first: an imported name
     resolves outside snapshot analysis)."""
     out: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in (imports if imports is not None else _import_nodes(tree)):
         if isinstance(node, ast.Import):
             for a in node.names:
                 top = (a.name or "").split(".")[0]
@@ -201,7 +212,9 @@ def _py_imports(tree: ast.AST) -> dict[str, str]:
     return out
 
 
-def _py_from_imports(tree: ast.AST) -> list[tuple[str | None, int, list[tuple[str, str | None]], bool, int]]:
+def _py_from_imports(tree: ast.AST, parents: dict[int, ast.AST] | None = None,
+                     imports: list[ast.Import | ast.ImportFrom] | None = None,
+                     ) -> list[tuple[str | None, int, list[tuple[str, str | None]], bool, int]]:
     """Structured from-imports: (module, level, [(name, asname)], guarded, lineno).
 
     Guarded means nested in try/except, a TYPE_CHECKING conditional, or a
@@ -209,35 +222,12 @@ def _py_from_imports(tree: ast.AST) -> list[tuple[str | None, int, list[tuple[st
     legitimately fail are never flagged.
     """
     out: list[tuple[str | None, int, list[tuple[str, str | None]], bool, int]] = []
-
-    def guarded(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
-        seen: set[int] = set()
-        cur: ast.AST | None = node
-        while cur is not None and id(cur) not in seen:
-            seen.add(id(cur))
-            parent = parents.get(id(cur))
-            if isinstance(parent, (ast.Try, ast.TryStar if hasattr(ast, "TryStar") else ast.Try)):
-                return True
-            if isinstance(parent, ast.If):
-                try:
-                    test_src = ast.unparse(parent.test)
-                except Exception:
-                    test_src = ""
-                if ("TYPE_CHECKING" in test_src or "version_info" in test_src
-                        or "sys.version" in test_src or "platform" in test_src
-                        or "os.name" in test_src):
-                    return True
-            cur = parent
-        return False
-
-    parents: dict[int, ast.AST] = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[id(child)] = node
-    for node in ast.walk(tree):
+    if parents is None:
+        parents = _parent_map(tree)
+    for node in (imports if imports is not None else _import_nodes(tree)):
         if isinstance(node, ast.ImportFrom):
             names = [(a.name, a.asname) for a in node.names]
-            out.append((node.module, node.level or 0, names, guarded(node, parents), node.lineno))
+            out.append((node.module, node.level or 0, names, _is_guarded(node, parents), node.lineno))
     return out
 
 
@@ -329,7 +319,27 @@ _JS_IMPORT_FROM = re.compile(
     r"^\s*import\s+(?:type\s+)?(.*?)\s+from\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
 _JS_IMPORT_SIDE = re.compile(r"^\s*import\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
 _JS_REQUIRE = re.compile(
-    r"(?:const|let|var)\s+(?:(\w+)|[{]([^}]*)[}])\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)")
+    r"(?:const|let|var)\s+(?:(\w+)|[{]([^}]*)[}])\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)"
+    r"((?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*)")
+_JS_REQUIRE_PROP = re.compile(r"\.\s*([A-Za-z_$][A-Za-z0-9_$]*)")
+
+
+def _inside_quotes(line: str, pos: int) -> bool:
+    """Whether pos sits inside a '...' or "..." literal on this line."""
+    quote: str | None = None
+    i = 0
+    while i < pos:
+        ch = line[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+        i += 1
+    return quote is not None
 
 
 def _js_import_entries(text: str) -> list[tuple[str, str, str | None, list[tuple[str, str]], int]]:
@@ -390,9 +400,20 @@ def _js_import_entries(text: str) -> list[tuple[str, str, str | None, list[tuple
             out.append((m2.group(1), "sideeffect", None, [], idx))
             continue
         m3 = _JS_REQUIRE.search(line)
+        if m3 and _inside_quotes(line, m3.start()):
+            # `src: 'const x = require("./lib/x")'`: code quoted in a string
+            # (bundler patch tables, codegen templates), not a require.
+            # Seen: vite's rolldown.config.ts replacement map.
+            m3 = None
         if m3:
-            default, named, spec = m3.group(1), m3.group(2), m3.group(3)
+            default, named, spec, tail = m3.group(1), m3.group(2), m3.group(3), m3.group(4)
             rnamed: list[tuple[str, str]] = []
+            props = _JS_REQUIRE_PROP.findall(tail or "")
+            if props and default:
+                # `var Y = require('m').P[.Q]`: Y is the named export P,
+                # not a default import (seen: express lib/*.js).
+                rnamed.append((props[0], default))
+                default = None
             if named:
                 for part in named.split(","):
                     bits = [b.strip() for b in part.strip().split(":")]
@@ -633,6 +654,12 @@ def parse_markdown(path: Path, rel: str, text: str) -> FileFacts:
     return FileFacts(path=rel, language="markdown", lines=text.splitlines())
 
 
+def parse_config(path: Path, rel: str, text: str) -> FileFacts:
+    # Manifest files for stale-entrypoint: raw lines only, every other
+    # checker iterates comments/functions and stays silent.
+    return FileFacts(path=rel, language="config", lines=text.splitlines())
+
+
 def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
     suffix = path.suffix.lower()
     if suffix == ".py":
@@ -643,8 +670,14 @@ def parse_file(path: Path, rel: str, text: str) -> FileFacts | None:
         return parse_go(path, rel, text)
     if suffix in {".c", ".h"}:
         return parse_c(path, rel, text)
-    if suffix in {".md", ".markdown"}:
+    if suffix in {".md", ".markdown", ".mdc"}:
         return parse_markdown(path, rel, text)
+    if suffix == ".rst" or (suffix == ".txt" and re.search(r"(^|/)docs?/", rel)):
+        # reStructuredText: lines only (stale-cli-flag reads `$ ` prompts
+        # and ``literal`` spans); no other checker reads rst.
+        return FileFacts(path=rel, language="rst", lines=text.splitlines())
+    if suffix == ".toml" or (suffix == ".json" and path.name == "package.json"):
+        return parse_config(path, rel, text)
     return None
 
 
@@ -662,7 +695,10 @@ _C_FUNC_EXCLUDE = {
 _C_TYPE = re.compile(
     r"^\s*(?:typedef\s+)?(?:struct|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)")
 _C_DEFINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)")
-_C_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
+# Multiline: _c_imports scans the whole text. Without re.M the `^` anchor
+# matched only an include on the file's first line, so C files reported
+# (almost) no includes at all.
+_C_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
 # Function-pointer members (`int (*cb)(...)`, RedisModule API struct).
 _C_FPTR = re.compile(r"\(\*([A-Za-z_][A-Za-z0-9_]*)\)\s*\(")
 # Type keywords that the function pattern can mistake for a name

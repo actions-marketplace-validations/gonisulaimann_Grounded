@@ -2,24 +2,31 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from . import __version__
 from .checkers import CHECKER_DESCRIPTIONS, CHECKERS, DEFAULT_ENABLED, REMOVED_CHECKERS
-from .config import Config
+from .config import Config, ConfigError
 from .delta import (
     DEFAULT_BASELINE_NAME,
     GitError,
-    changed_lines,
-    filter_changed,
     load_baseline,
     split_baselined,
     write_baseline,
 )
-from .models import SEVERITY_RANK
-from .reporters import format_terminal, to_html, to_json, to_sarif
-from .scanner import apply_suppressions, collect_files, scan_root, warn_unknown_suppressions
+from .models import SEVERITY_RANK, CheckerError
+from .reporters import format_terminal, to_html, to_json, to_markdown, to_sarif
+from .scanner import (
+    apply_suppressions,
+    collect_files,
+    in_scope,
+    project_root_for,
+    resolve_scan_scope,
+    scan_root,
+    warn_unknown_suppressions,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,8 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("scan", help="scan a directory for dangling references")
-    s.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
-    s.add_argument("--format", choices=["terminal", "json", "sarif", "html"], default="terminal")
+    s.add_argument("paths", nargs="*", default=None,
+                   help="directories or files to scan (default: .); several file "
+                        "arguments scope reporting to those files (used by "
+                        "pass_filenames hooks)")
+    s.add_argument("--format", choices=["terminal", "json", "sarif", "markdown", "html"], default="terminal")
     s.add_argument("--output", "-o", default=None, help="write report to file instead of stdout")
     s.add_argument("--fail-on", choices=["lie", "drift", "smell", "never"], default=None,
                    help="minimum severity that fails the run (default: from config, else 'lie')")
@@ -51,7 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--jobs", type=int, default=None, metavar="N",
                    help="parallel workers (default: auto by file count)")
     s.add_argument("--cache", nargs="?", const=".grounded-cache.json", default=None, metavar="FILE",
-                   help="reuse per-file results keyed by mtime+size (default file: .grounded-cache.json)")
+                   help="replay per-file results while the whole tree is unchanged "
+                        "(default file: .grounded-cache.json)")
+    s.add_argument("--no-index-cache", action="store_true",
+                   help="rebuild the repo index from scratch instead of reusing unchanged files' "
+                        "entries from the git dir (also: GROUNDED_NO_INDEX_CACHE=1)")
 
     sub.add_parser("init", help="write a starter grounded.toml in the current directory").add_argument(
         "--force", action="store_true", help="overwrite existing grounded.toml")
@@ -82,10 +96,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="install the grounded agent skill to ~/.claude/skills/grounded (all projects)")
     ag.add_argument("--skill-project", action="store_true",
                     help="install the grounded agent skill to .claude/skills/grounded (this project only)")
+    ag.add_argument("--pre-commit", action="store_true",
+                    help="write .pre-commit-config.yaml with the grounded hook")
+
+    hk = sub.add_parser("hook", help="agent hook adapters (read the agent's event on stdin)")
+    hk.add_argument("agent", choices=["claude-code"],
+                    help="claude-code: PostToolUse hook; exits 2 with findings on stderr "
+                         "so the agent sees and fixes them")
+    hk.add_argument("--fail-on", choices=["lie", "drift", "smell"], default="lie",
+                    help="minimum severity fed back to the agent (default: lie)")
 
     ls = sub.add_parser("lsp", help="serve grounded over stdio as an LSP server for editors")
 
-    im = sub.add_parser("impact", help="show everything touching a symbol (definers, importers, comment claims)")
+    im = sub.add_parser("impact", help="show everything touching a symbol (definers, importers, claims across comments, docs, mocks, entry points)")
     im.add_argument("symbol", help="symbol name, e.g. gettext_lazy")
     im.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
     im.add_argument("--format", choices=["terminal", "json"], default="terminal")
@@ -103,61 +126,146 @@ def build_parser() -> argparse.ArgumentParser:
 def _resolve_enable_disable(config: Config, enable: str | None, disable: str | None) -> Config:
     if enable:
         want = {x.strip() for x in enable.split(",") if x.strip()}
-        config.enabled = {w for w in want if w in CHECKERS} or set(config.enabled)
+        unknown = sorted(w for w in want if w not in CHECKERS)
+        if unknown:
+            # A typo'd id must fail, not silently run a different set:
+            # `--enable stale-symobl` running the full default suite is
+            # the same green-masking class as silent config defaults.
+            raise ConfigError(
+                f"unknown checker id(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(sorted(CHECKERS))}")
+        config.enabled = set(want)
     if disable:
         drop = {x.strip() for x in disable.split(",") if x.strip()}
+        unknown = sorted(d for d in drop if d not in CHECKERS)
+        if unknown:
+            raise ConfigError(
+                f"unknown checker id(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(sorted(CHECKERS))}")
         config.enabled -= drop
     if not config.enabled:
         config.enabled = set(DEFAULT_ENABLED)
     return config
 
 
+def _load_config(root: Path, explicit: str | None) -> Config:
+    try:
+        return Config.load(root, explicit=explicit)
+    except ConfigError as exc:
+        print(f"grounded: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _report_checker_errors(errors: list[CheckerError]) -> None:
+    """Report checkers that raised, grouped by cause.
+
+    stderr keeps the stdout payload (JSON/SARIF/HTML) byte-identical, the way
+    unknown-suppression warnings already behave. Grouping matters: one broken
+    checker on 10k files is one mistake, not 10k lines of noise.
+    """
+    if not errors:
+        return
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for e in errors:
+        grouped.setdefault((e.checker, e.message), []).append(e.path)
+    for (checker_id, message), paths in sorted(grouped.items()):
+        where = paths[0] if len(paths) == 1 else f"{paths[0]} (+{len(paths) - 1} more)"
+        print(f"grounded: checker error: {checker_id} raised {message} at {where}",
+              file=sys.stderr)
+    print(f"grounded: {len(errors)} checker error(s): this scan is incomplete, not clean. "
+          f"Fix the checker, or disable it explicitly with --disable <id>.", file=sys.stderr)
+
+
+def _report_key(resolved: Path, root: Path) -> str:
+    """Findings report repo-relative POSIX paths (scanner.py builds them the
+    same way); files outside the scan root fall back to their bare name."""
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError:
+        return resolved.name
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
-    given = Path(args.path)
+    paths = [Path(p) for p in (getattr(args, "paths", None) or ["."])]
+    given = paths[0]
     root = given.resolve()
     if not root.exists():
-        print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
+        print(f"grounded: path does not exist: {given}", file=sys.stderr)
         return 2
-    # A file argument scopes REPORTING to that file; the index is still
-    # built from the whole tree so cross-file references keep resolving.
-    only: str | None = None
-    if root.is_file():
-        try:
-            only = root.relative_to(root.parent.resolve()).as_posix()
-        except ValueError:
-            only = root.name
-        root = root.parent
-    config = Config.load(root, explicit=args.config)
+    # A file argument scopes REPORTING to those files; the index is built
+    # from the files' project (nearest marker ancestor), not the parent
+    # directory: a parent-only snapshot manufactures absence claims about
+    # files it never looked at (see scanner.project_root_for). Several
+    # file arguments (pre-commit batches the filenames a `pass_filenames`
+    # hook receives) each scope reporting; the FIRST one anchors the
+    # project root and the rest must live under it.
+    only_set: set[str] | None = None
+    prefix: str | None = None
+    if root.is_dir():
+        # A directory argument scopes reporting the same way: the index is
+        # the whole project, so `scan src` and `scan .` agree on every file.
+        root, prefix = resolve_scan_scope(root)
+    else:
+        root = project_root_for(root.parent)
+        only_set = {_report_key(p.resolve(), root) for p in paths}
+        for p in paths[1:]:
+            rp = p.resolve()
+            if not rp.exists():
+                print(f"grounded: path does not exist: {p}", file=sys.stderr)
+                return 2
+            if rp != root and root not in rp.parents:
+                print(f"grounded: all paths must share a directory tree "
+                      f"({paths[0]} and {p} do not)", file=sys.stderr)
+                return 2
+    config = _load_config(root, explicit=args.config)
     if args.fail_on:
         config.fail_on = args.fail_on
-    _resolve_enable_disable(config, args.enable, args.disable)
+    try:
+        _resolve_enable_disable(config, args.enable, args.disable)
+    except ConfigError as exc:
+        print(f"grounded: {exc}", file=sys.stderr)
+        return 2
 
     cache_path = Path(args.cache) if args.cache else None
     if cache_path is not None and not cache_path.is_absolute():
         cache_path = root / cache_path
-    findings, facts, index = scan_root(root, config, jobs=args.jobs, cache_path=cache_path)
+    checker_errors: list[CheckerError] = []
+    plan = None
+    if args.changed is not None:
+        from .changed import ChangedPlan
+        try:
+            plan = ChangedPlan.from_git(root, args.changed)
+        except GitError as exc:
+            print(f"grounded: --changed unavailable: {exc}", file=sys.stderr)
+            return 2
+    findings, facts, index = scan_root(root, config, jobs=args.jobs, cache_path=cache_path,
+                                       checker_errors=checker_errors, changed=plan,
+                                       index_cache=_index_cache_on(args))
     n_files = len(facts)
-    for wpath, wline, wids in warn_unknown_suppressions(facts):
+    n_unparsed = len(index.parse_failed)
+    _report_checker_errors(checker_errors)
+    for wpath, wline, wids in warn_unknown_suppressions(
+            [f for f in facts if in_scope(f.path, prefix)]):
         print(f"grounded: warning: unknown checker id(s) in suppression at "
               f"{wpath}:{wline}: {', '.join(wids)} (known: {', '.join(sorted(CHECKERS))})",
               file=sys.stderr)
-    if only is not None:
-        findings = [f for f in findings if f.path == only]
+    if only_set is not None:
+        findings = [f for f in findings if f.path in only_set]
+    if prefix is not None:
+        findings = [f for f in findings if in_scope(f.path, prefix)]
+        n_files = sum(1 for f in facts if in_scope(f.path, prefix))
 
     suppressed_note = ""
     facts_by_path = {f.path: f for f in facts}
     findings, n_suppressed = apply_suppressions(findings, facts_by_path)
     if n_suppressed:
         suppressed_note = f" ({n_suppressed} suppressed by grounded-disable)"
-    if args.changed is not None:
-        try:
-            hunks, untracked = changed_lines(root, args.changed)
-        except GitError as exc:
-            print(f"grounded: --changed unavailable: {exc}", file=sys.stderr)
-            return 2
-        before = len(findings)
-        findings = filter_changed(findings, hunks, untracked)
-        suppressed_note = f" ({before - len(findings)} outside changed lines hidden)"
+    if plan is not None and plan.mode == "precise":
+        suppressed_note += (f" (--changed: {plan.checked} file(s) checked against the base; "
+                            f"findings older than the change are not shown)")
+    elif plan is not None:
+        suppressed_note += (f" (--changed: broad mode because {plan.reason}; "
+                            f"shows findings naming any identifier the diff touches)")
     if args.baseline:
         try:
             fps = load_baseline(Path(args.baseline))
@@ -175,6 +283,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         out = to_json(findings)
     elif fmt == "sarif":
         out = to_sarif(findings, root=str(root))
+    elif fmt == "markdown":
+        out = to_markdown(findings, n_files, n_checker_errors=len(checker_errors))
     elif fmt == "html":
         out = to_html(findings, n_files, root=str(root))
     else:
@@ -183,11 +293,21 @@ def cmd_scan(args: argparse.Namespace) -> int:
             counts = {"lie": 0, "drift": 0, "smell": 0}
             for f in findings:
                 counts[f.severity] += 1
-            out = f"grounded: {len(findings)} finding(s), {counts['lie']} lie(s), {counts['drift']} drift(s), {counts['smell']} smell(s) in {n_files} file(s)."
+            note = f", {n_unparsed} file(s) unparsed" if n_unparsed else ""
+            errs = f", {len(checker_errors)} checker error(s)" if checker_errors else ""
+            out = (f"grounded: {len(findings)} finding(s), {counts['lie']} lie(s), "
+                   f"{counts['drift']} drift(s), {counts['smell']} smell(s) in {n_files} file(s)"
+                   f"{note}{errs}.")
         else:
-            out = format_terminal(findings, n_files, root=str(root), use_color=use_color)
+            out = format_terminal(findings, n_files, root=str(root), use_color=use_color,
+                                  n_unparsed=n_unparsed,
+                                  n_checker_errors=len(checker_errors))
     if suppressed_note and fmt in ("terminal",):
         out += f"\ngrounded:{suppressed_note}."
+    elif plan is not None and plan.mode != "precise":
+        # Machine formats keep stdout parseable, but a consumer (an agent
+        # hook) must still learn that this report is the broad superset.
+        print(f"grounded: --changed broad mode because {plan.reason}.", file=sys.stderr)
     if args.output:
         Path(args.output).write_text(out, encoding="utf-8")
     else:
@@ -195,6 +315,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
     # exit code
     if config.fail_on == "never":
         return 0
+    if checker_errors:
+        # Distinct from 1 on purpose: a finding is a verdict about the repo;
+        # a checker error means there is no verdict at all, so a pipeline can
+        # tell "this repo has problems" from "this scan is not trustworthy".
+        return 3
     threshold = SEVERITY_RANK.get(config.fail_on, 3)
     for f in findings:
         if SEVERITY_RANK.get(f.severity, 0) >= threshold:
@@ -207,11 +332,24 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
-    if root.is_file():
-        root = root.parent
-    config = Config.load(root, explicit=args.config)
-    _resolve_enable_disable(config, args.enable, args.disable)
-    findings, facts, index = scan_root(root, config)
+    root, prefix = resolve_scan_scope(root)
+    config = _load_config(root, explicit=args.config)
+    try:
+        _resolve_enable_disable(config, args.enable, args.disable)
+    except ConfigError as exc:
+        print(f"grounded: {exc}", file=sys.stderr)
+        return 2
+    checker_errors: list[CheckerError] = []
+    findings, facts, index = scan_root(root, config, checker_errors=checker_errors,
+                                       index_cache=_index_cache_on(args))
+    findings = [f for f in findings if in_scope(f.path, prefix)]
+    if checker_errors:
+        # A baseline is a persisted scan result: writing one from an
+        # incomplete scan bakes permanent blind spots into every later gate.
+        _report_checker_errors(checker_errors)
+        print("grounded: refusing to write a baseline from an incomplete scan.",
+              file=sys.stderr)
+        return 3
     findings, _ = apply_suppressions(findings, {f.path: f for f in facts})
     target = Path(args.output) if args.output else (root / DEFAULT_BASELINE_NAME)
     stats = write_baseline(target, findings)
@@ -224,6 +362,12 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _index_cache_on(args: argparse.Namespace) -> bool:
+    if getattr(args, "no_index_cache", False):
+        return False
+    return os.environ.get("GROUNDED_NO_INDEX_CACHE", "") in ("", "0")
+
+
 def cmd_fix(args: argparse.Namespace) -> int:
     from .fix import apply_fixes, apply_symbol_fixes, file_fix_candidates, symbol_fix_candidates
     given = Path(args.path)
@@ -231,21 +375,14 @@ def cmd_fix(args: argparse.Namespace) -> int:
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
-    only: str | None = None
-    if root.is_file():
-        try:
-            only = root.relative_to(root.parent.resolve()).as_posix()
-        except ValueError:
-            only = root.name
-        root = root.parent
-    config = Config.load(root, explicit=args.config)
-    findings, facts, index = scan_root(root, config)
+    root, only = resolve_scan_scope(root)
+    config = _load_config(root, explicit=args.config)
+    findings, facts, index = scan_root(root, config, index_cache=_index_cache_on(args))
     facts_by_path = {f.path: f for f in facts}
     findings, _ = apply_suppressions(findings, facts_by_path)
-    if only is not None:
-        # Never rewrite files the user did not name.
-        findings = [f for f in findings if f.path == only]
-    fixes = file_fix_candidates(findings, root)
+    # Never rewrite files outside the path the user named.
+    findings = [f for f in findings if in_scope(f.path, only)]
+    fixes = file_fix_candidates(findings, root, config=config)
     sym_fixes = symbol_fix_candidates(findings, root, index)
     if not fixes and not sym_fixes:
         print("grounded fix: nothing unambiguous to rewrite.")
@@ -262,10 +399,15 @@ def cmd_fix(args: argparse.Namespace) -> int:
     return 0
 
 
+_CLAUDE_HOOK_CMD = "grounded hook claude-code"
 _CLAUDE_HOOK = {
-    "matcher": "Edit|Write",
-    "hooks": [{"type": "command", "command": "grounded scan . --changed --quiet"}],
+    "matcher": "Edit|Write|MultiEdit",
+    "hooks": [{"type": "command", "command": _CLAUDE_HOOK_CMD}],
 }
+# Commands earlier versions installed. They exited 1 on findings, which
+# Claude Code shows to the human but never to the model; init-agent
+# upgrades them in place.
+_CLAUDE_LEGACY_CMDS = frozenset({"grounded scan . --changed --quiet"})
 
 _CURSOR_RULE = """---
 description: Verify code references with grounded before building on edited code
@@ -282,6 +424,31 @@ _AIDER_CONF = """# Aider: lint edited files with grounded (verified contract: fi
 # in, non-zero exit on findings).
 lint-cmd: "sh -c 'for f; do grounded scan \"$f\" --quiet || exit 1; done' sh"
 """
+
+
+def _precommit_conf() -> str:
+    return (
+        "# Grounded: fail commits carrying new dangling references.\n"
+        "# Keep the rev current with: pre-commit autoupdate\n"
+        "repos:\n"
+        "  - repo: https://github.com/gonisulaimann/Grounded\n"
+        f"    rev: v{__version__}\n"
+        "    hooks:\n"
+        "      - id: grounded\n"
+        "      - id: grounded-fences\n"
+    )
+
+
+def _init_precommit(root: Path, force: bool, dry_run: bool) -> str:
+    # Same no-merge rule as Aider: without a YAML library, merging into
+    # an existing config risks corrupting it, so existing files win.
+    target = root / ".pre-commit-config.yaml"
+    if target.exists() and not force:
+        return f"exists, kept (use --force): {target}"
+    if dry_run:
+        return f"would write {target}"
+    target.write_text(_precommit_conf(), encoding="utf-8")
+    return f"wrote {target}"
 
 
 def _init_claude(root: Path, force: bool, dry_run: bool) -> str:
@@ -303,17 +470,23 @@ def _init_claude(root: Path, force: bool, dry_run: bool) -> str:
     post = hooks.setdefault("PostToolUse", [])
     if not isinstance(post, list):
         return f"refusing to touch non-list PostToolUse in: {target}"
+    upgraded = False
     for entry in post:
         try:
             for h in entry.get("hooks", []):
-                if h.get("command") == _CLAUDE_HOOK["hooks"][0]["command"]:
+                if h.get("command") == _CLAUDE_HOOK_CMD:
                     return f"hook already present in {target}"
+                if h.get("command") in _CLAUDE_LEGACY_CMDS:
+                    h["command"] = _CLAUDE_HOOK_CMD
+                    entry["matcher"] = _CLAUDE_HOOK["matcher"]
+                    upgraded = True
         except AttributeError:
             continue
-    post.append(dict(_CLAUDE_HOOK))
+    if not upgraded:
+        post.append(json.loads(json.dumps(_CLAUDE_HOOK)))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return f"wrote {target}"
+    return f"{'upgraded hook in' if upgraded else 'wrote'} {target}"
 
 
 def _init_cursor(root: Path, force: bool, dry_run: bool) -> str:
@@ -347,6 +520,10 @@ def _skill_source() -> Path | None:
     src = Path(__file__).resolve().parent / "skill"
     if (src / "SKILL.md").exists():
         return src
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        bundle = Path(sys._MEIPASS) / "grounded" / "skill"
+        if (bundle / "SKILL.md").exists():
+            return bundle
     return None
 
 
@@ -374,7 +551,8 @@ def _install_skill(dest: Path, force: bool, dry_run: bool) -> tuple[str, bool]:
 
 def cmd_init_agent(args: argparse.Namespace) -> int:
     root = Path.cwd()
-    want_all = not (args.claude or args.cursor or args.aider or args.skill or args.skill_project)
+    want_all = not (args.claude or args.cursor or args.aider or args.skill or args.skill_project
+                    or args.pre_commit)
     results = []
     ok = True
     if args.claude or want_all:
@@ -393,6 +571,8 @@ def cmd_init_agent(args: argparse.Namespace) -> int:
             root / ".claude" / "skills" / _SKILL_DIR_NAME, args.force, args.dry_run)
         results.append(msg)
         ok = ok and good
+    if args.pre_commit:
+        results.append(_init_precommit(root, args.force, args.dry_run))
     for line in results:
         print(f"grounded init-agent: {line}")
     return 0 if ok else 2
@@ -404,10 +584,10 @@ def cmd_impact(args: argparse.Namespace) -> int:
     if not root.exists():
         print(f"grounded: path does not exist: {args.path}", file=sys.stderr)
         return 2
-    if root.is_file():
-        root = root.parent
-    config = Config.load(root, explicit=args.config)
-    _, facts, index = scan_root(root, config)
+    root, _prefix = resolve_scan_scope(root)
+    config = _load_config(root, explicit=args.config)
+    _, facts, index = scan_root(root, config, include_claim_surfaces=True,
+                                index_cache=_index_cache_on(args))
     result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(args.symbol)
     if args.format == "json":
         import json as _json
@@ -462,8 +642,8 @@ def cmd_explain(args: argparse.Namespace) -> int:
 
 def cmd_list(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
-    config = Config.load(root, explicit=args.config)
-    for f in collect_files(root, config):
+    config = _load_config(root, explicit=args.config)
+    for f in collect_files(root, config)[0]:
         try:
             print(f.relative_to(root).as_posix())
         except ValueError:
@@ -485,6 +665,12 @@ def main(argv: list[str] | None = None) -> int:
         return serve_mcp(Path(args.root).resolve())
     if args.cmd == "init-agent":
         return cmd_init_agent(args)
+    if args.cmd == "hook":
+        from .hooks import claude_code
+        code, message = claude_code(sys.stdin.read(), fail_on=args.fail_on)
+        if message:
+            print(message, file=sys.stderr)
+        return code
     if args.cmd == "lsp":
         from .lsp import serve as serve_lsp
         return serve_lsp()

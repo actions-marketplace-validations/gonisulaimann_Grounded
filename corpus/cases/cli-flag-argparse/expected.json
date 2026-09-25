@@ -1,0 +1,4 @@
+{"enable": ["stale-cli-flag"], "expect": [
+  {"checker": "stale-cli-flag", "path": "README.md", "line": 6, "contains": "--outptu"},
+  {"checker": "stale-cli-flag", "path": "README.md", "line": 11, "contains": "--colour"}
+]}

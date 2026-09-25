@@ -1,0 +1,1 @@
+{"enable": ["stale-contract-ref"], "expect": [{"checker": "stale-contract-ref", "path": "pkg/core.py", "line": 3, "contains": "8080"}, {"checker": "stale-contract-ref", "path": "pkg/core.py", "line": 6, "contains": "_state_lock"}]}

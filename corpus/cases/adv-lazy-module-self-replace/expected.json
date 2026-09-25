@@ -1,0 +1,1 @@
+{"enable": null, "expect": [{"checker": "stale-import", "path": "use.py", "line": 2, "contains": "GhostHelper"}]}

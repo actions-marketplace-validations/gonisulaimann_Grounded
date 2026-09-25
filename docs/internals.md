@@ -14,13 +14,20 @@ collect_files → read texts once → RepoIndex → parse + check per file
 * **Read once**: file texts feed both index construction and workers.
 * **Index** (`repo_index.py`): per-language symbol tables, per-file
   symbol/import/star/export maps, path sets, tsconfig alias zones.
-  Rebuildable per file (`_index_one`/`forget_file`) for the LSP server.
+  Files that fail to parse are marked opaque (`parse_failed`) with
+  heuristically recovered top-level bindings: absence can never be
+  claimed from them. Rebuildable per file (`_index_one`/`forget_file`)
+  for the LSP server.
 * **Parse** (`parsers.py`): Python via stdlib `ast` + `tokenize`;
   JavaScript/TypeScript, Go, and C via constrained line scanners plus
   import extraction. Broken Python buffers degrade to comment-only
   facts instead of failing.
-* **Check** (`checkers.py`): five checkers, each a pure function of
-  file facts plus the index. A checker never crashes a scan.
+* **Check** (`checkers/`, one module per rule family: `symbols`,
+  `imports`, `files`, `comments`, `docs`, `contracts`, `ghost`,
+  `entrypoints`, `mocks`, `phantom`, `cli_ref`, shared vocabulary in
+  `_shared`; `stale-cli-flag` lives in `cli_flags.py`): each checker a pure
+  function of file facts plus the index (8 default, 6 opt-in), registered
+  in `checkers/__init__.py`. A checker never crashes a scan.
 * **Report** (`reporters.py`): terminal, JSON, SARIF 2.1.0, self-contained
   HTML. Sorted deterministically by path, line, checker.
 

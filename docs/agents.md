@@ -7,6 +7,7 @@ grounded init-agent                  # Claude hook + Cursor rule + Aider config
 grounded init-agent --cursor         # just .cursor/rules/grounded.mdc
 grounded init-agent --skill          # install skill to ~/.claude/skills/grounded
 grounded init-agent --skill-project  # install skill to .claude/skills/grounded
+grounded init-agent --pre-commit     # write .pre-commit-config.yaml
 ```
 
 `init-agent` is idempotent, refuses invalid JSON instead of merging
@@ -21,13 +22,20 @@ blindly, and never rewrites an existing Aider config.
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Edit|Write",
-        "hooks": [{ "type": "command", "command": "grounded scan . --changed --quiet" }]
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "grounded hook claude-code" }]
       }
     ]
   }
 }
 ```
+
+`grounded hook claude-code` reads the edit event from stdin, checks the
+changed lines (plus rename fallout in other files), and exits `2` with the
+findings on stderr, which is the exit code Claude Code feeds back to the
+model. Earlier versions installed `grounded scan . --changed --quiet`,
+whose exit `1` only reached the human; re-run `grounded init-agent
+--claude` to upgrade it in place.
 
 ## Cursor
 
@@ -58,8 +66,10 @@ aider --lint-cmd "sh -c 'for f; do grounded scan \"$f\" --quiet || exit 1; done'
 
 `grounded mcp` serves stdio JSON-RPC for coding agents. Three tools:
 `check_path` (scan a path under the server root; paths cannot escape it),
-`explain_checker`, and `blast_radius` (definers, importers, and comment
-claims for a symbol: ask before renaming).
+`explain_checker`, and `blast_radius` (definers, importers, and claims
+across comments, docs, mocks, and entry points: ask before renaming).
+Both scan tools honor the
+`grounded.toml` in the scanned root (same results as the CLI).
 
 ```json
 {

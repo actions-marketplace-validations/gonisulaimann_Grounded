@@ -1,0 +1,1 @@
+{"enable": ["stale-entrypoint"], "expect": [{"checker": "stale-entrypoint", "path": "pyproject.toml", "line": 5, "contains": "pkg.gone"}, {"checker": "stale-entrypoint", "path": "js/package.json", "line": 1, "contains": "missing.js"}]}

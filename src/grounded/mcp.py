@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import __version__
 from .checkers import CHECKER_DESCRIPTIONS, CHECKERS, REMOVED_CHECKERS
+from .models import CheckerError
 
 SUPPORTED_VERSIONS = ("2025-03-26", "2025-06-18", "2024-11-05")
 SERVER_NAME = "grounded"
@@ -107,18 +108,18 @@ class McpServer:
         if method == "notifications/initialized":
             self.initialized = True
             return None
-        if method == "ping":
-            return _ok(req_id, {})
         if method in ("notifications/cancelled",):
             return None
-        if not self.initialized and req_id is not None:
+        if req_id is None:
+            return None  # notification: never a response, per JSON-RPC
+        if not self.initialized:
             return _error(req_id, -32002, "server not initialized")
+        if method == "ping":
+            return _ok(req_id, {})
         if method == "tools/list":
             return _ok(req_id, {"tools": _tool_defs()})
         if method == "tools/call":
             return self._call(req_id, params)
-        if req_id is None:
-            return None  # unknown notification: ignore
         return _error(req_id, -32601, f"method not found: {method}")
 
     def _initialize(self, req_id, params: dict) -> dict:
@@ -149,28 +150,62 @@ class McpServer:
 
     def _check_path(self, req_id, args: dict):
         from .config import Config
-        from .scanner import apply_suppressions, scan_root
+        from .scanner import apply_suppressions, project_root_for, scan_root
         try:
             target = self._resolve(str(args.get("path", ".")))
         except ValueError as exc:
             return _error(req_id, -32602, str(exc))
         if not target.exists():
             return _error(req_id, -32602, f"path does not exist: {args.get('path')}")
-        root = target if target.is_dir() else target.parent
+        # Index the target's project (capped at the server root), never
+        # just the parent directory: a parent-only snapshot manufactures
+        # absence claims about files it never looked at. Report only
+        # findings under the requested target.
+        base = target if target.is_dir() else target.parent
+        root = project_root_for(base, stop=self.root)
+        try:
+            want = target.relative_to(root).as_posix()
+        except ValueError:
+            want = target.name
         fail_on = str(args.get("fail_on", "lie"))
         if fail_on not in ("lie", "drift", "smell", "never"):
             return _error(req_id, -32602, f"bad fail_on: {fail_on}")
-        findings, facts, _index = scan_root(root, Config())
+        checker_errors: list[CheckerError] = []
+        findings, facts, _index = scan_root(root, Config.load(root),
+                                           checker_errors=checker_errors)
+        if target.is_file():
+            findings = [f for f in findings
+                        if f.path == want or f.path.startswith(want + "/")]
+        elif want not in (".", ""):
+            findings = [f for f in findings
+                        if f.path == want or f.path.startswith(want + "/")]
+        # else: directory target is the indexed root itself: keep everything.
         facts_by_path = {f.path: f for f in facts}
         findings, n_suppressed = apply_suppressions(findings, facts_by_path)
         from .models import SEVERITY_RANK
-        threshold = SEVERITY_RANK.get(fail_on, 3)
+        # "never" is report-only: no severity may count as failing.
+        threshold = SEVERITY_RANK.get(fail_on, 3) if fail_on != "never" else 4
         failed = [f for f in findings if SEVERITY_RANK.get(f.severity, 0) >= threshold]
+        # An agent acting on `failed: false` must not be reading the result of
+        # a checker that died: report the failures explicitly and let them
+        # force a failure, so "no findings" is never mistaken for "verified".
+        incomplete = bool(checker_errors) and fail_on != "never"
+        # Paths are relative to the indexed project root, which may sit
+        # below the server root (nested package): re-anchor them to the
+        # server root so the caller can always locate the file.
+        try:
+            prefix = root.relative_to(self.root).as_posix()
+        except ValueError:
+            prefix = ""
+        def _resp_path(p: str) -> str:
+            return f"{prefix}/{p}" if prefix and prefix != "." else p
         return _ok(req_id, {
             "content": [{
                 "type": "text",
                 "text": json.dumps({
-                    "failed": bool(failed),
+                    "failed": bool(failed) or incomplete,
+                    "incomplete": bool(checker_errors),
+                    "checker_errors": [e.to_dict() for e in checker_errors],
                     "summary": {
                         "files": len(facts),
                         "findings": len(findings),
@@ -178,8 +213,10 @@ class McpServer:
                         "drift": sum(1 for f in findings if f.severity == "drift"),
                         "smell": sum(1 for f in findings if f.severity == "smell"),
                         "suppressed": n_suppressed,
+                        "checker_errors": len(checker_errors),
                     },
-                    "findings": [dict(f.to_dict(), fix_hint=f.fix) for f in findings],
+                    "findings": [dict(f.to_dict(), fix_hint=f.fix,
+                                       path=_resp_path(f.path)) for f in findings],
                 }),
             }],
             "isError": False,
@@ -188,7 +225,7 @@ class McpServer:
     def _blast_radius(self, req_id, args: dict):
         from .config import Config
         from .graph import ClaimGraph
-        from .scanner import scan_root
+        from .scanner import project_root_for, scan_root
         try:
             target = self._resolve(str(args.get("path", ".")))
         except ValueError as exc:
@@ -198,9 +235,19 @@ class McpServer:
         symbol = str(args.get("symbol", "")).strip()
         if not symbol:
             return _error(req_id, -32602, "symbol is required")
-        root = target if target.is_dir() else target.parent
-        _, facts, index = scan_root(root, Config())
+        # Recall direction: the whole project must be visible, or definers
+        # and importers elsewhere are silently missed.
+        base = target if target.is_dir() else target.parent
+        root = project_root_for(base, stop=self.root)
+        _, facts, index = scan_root(root, Config.load(root), include_claim_surfaces=True)
         result = ClaimGraph(index, {f.path: f for f in facts}).blast_radius(symbol)
+        try:
+            prefix = root.relative_to(self.root).as_posix()
+        except ValueError:
+            prefix = ""
+        if prefix and prefix != ".":
+            for key in ("defined_in", "imported_by", "claimed_by"):
+                result[key] = [f"{prefix}/{p}" for p in result[key]]
         return _ok(req_id, {
             "content": [{"type": "text", "text": json.dumps(result)}],
             "isError": False,

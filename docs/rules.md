@@ -7,28 +7,184 @@
 | `stale-file-ref` | lie (error) | A comment claims a path inside the repo tree that does not exist. References to other projects, frameworks, template namespaces, and placeholder paths are ignored. |
 | `number-drift` | drift (warning) | A comment states a magic number (timeout, port, limit, threshold) that disagrees with adjacent code. |
 | `fragile-anchor` | smell (note) | `line 42` anchors, `see above` / `see below` without a symbol, or untracked markers (`HACK`, `XXX`, `FIXME`, `workaround`) with no ticket or expiry condition. |
-| `stale-doc-ref` | lie (error), **experimental, opt-in only** | A fenced code example (explicit `python`/`js`/`ts`/`go`/`c` tag) calls a symbol bound nowhere in the example and defined nowhere in the repo. |
-
+| `stale-entrypoint` | lie (error) | A `pyproject.toml` `[project.scripts]` target or `package.json` `bin`/`main` path pointing at nothing in the repo. Graduated 2026-09-22. |
+| `stale-mock-ref` | lie (error) | A `@patch`/`patch.object` string naming a symbol absent from the in-repo module. Graduated 2026-09-22. |
+| `phantom-package` | drift (warning), **experimental, opt-in only** | An absolute import declared in no manifest (`pyproject.toml`, `requirements*.txt`, `package.json`). |
+| `stale-cli-ref` | lie (error), **experimental, opt-in only** | A documented `grounded` invocation with an unknown subcommand or flag (verified against the live parser). |
+| `stale-cli-flag` | lie (error), **experimental, opt-in only** | Docs (Markdown, reST, Sphinx `.txt`) invoke one of this repo's own programs (`[project.scripts]`, `console_scripts`, package.json `bin`, Go `cmd/<name>`) with a long flag that no argparse/click/pytest `addoption`/Go `flag`/cobra/commander definition in the repo declares. |
+| `unclosed-fence` | lie (error) | A Markdown fence that never closes, or one the renderer swallows because an earlier block is still open: the content after it renders as code, and the doc checkers' fence state inverts from there on. Graduated 2026-09-22 — promoted alongside the shared CommonMark fence walk, with the differential fuzz pinning the walk. |
 ## Experimental checkers
 
-`stale-doc-ref` is registered but excluded from every default set: run
-it with `--enable stale-doc-ref` (or `enable = ["stale-doc-ref"]`). A
-checker graduates to default-on by measured precision, not by age.
+Opt-in checkers are registered but excluded from every default set: run
+them with `--enable <id>` (or `enable = [...]`). A checker graduates
+to default-on by measured precision, not by age. Silence is the point:
+a clean scan means the repo earned it (smoke detectors don't invent
+fires), so a new trigger class stays opt-in until its false-positive
+rate is measured near zero.
 
-Checked, skipped, and why: only fenced blocks with a supported language
-tag are read. Bare fences, `console`/`bash` transcripts, data formats,
-comment lines inside examples, decorator roots (framework surface), and
-any block containing `...` or placeholder names (`foo`, `my_*`,
-`<key>`) are skipped. Doc examples are illustrative by default; only a
-call with no local binding and no repo-wide definition is reported.
+Silence alone is not evidence, though — a smoke detector with a dead
+battery also never reports a fire, and a checker that *raises* returns
+no findings either. "Silent on N repos" therefore only counts as
+precision evidence when the scan can show the checker actually ran,
+which is what a checker-error count of `0` means (see
+[Exit codes](#severities-and-exit-codes)). Each graduation below is
+recorded with that count.
 
-Measurement so far (2026-09-21, v0.12.x codebase as corpus): 60 files
-scanned, 9 checkable blocks, **0 findings, 0 false positives** — every
-silence individually justified (comment-only blocks, imported names,
-bound locals). Recall beyond fixtures is unmeasured: the corpus
-contains no known-stale doc example. The bar for default-on is a second
-corpus with planted staleness plus a real-world repo showing no new
-false-positive class.
+`stale-doc-ref`: only fenced blocks with a supported language tag are
+read. Bare fences, `console`/`bash` transcripts, data formats, comment
+lines inside examples, decorator roots (framework surface), and any
+block containing `...` or placeholder names (`foo`, `my_*`, `<key>`)
+are skipped. In JavaScript blocks, platform and Node roots (`Promise`,
+`document`, `fs`, `this`), DOM event constructors (`CustomEvent`,
+`Event`), JS keywords used as calls (`catch (e)`), continuation chains
+(`.then`/`.catch` lines), template-literal contents, ESM/arrow/function
+bindings, method-shorthand definitions, the documented package's own
+name, manifest-declared externals (unioned up the tree, kebab/camel
+agnostic), and self-dir requires (`require('..')`) all stay silent;
+bindings accumulate across blocks in file order (tutorial narrative).
+Known residue: reader-supplied narrative helpers (`handleError`,
+`getToken`) with no definition anywhere — statically indistinguishable
+from real staleness. Measured on axios docs: 580 → 40 findings (×5
+i18n duplication ≈ 8 unique families, all narrative residue, zero true
+positives found).
+
+`stale-cli-flag`: generalizes `stale-cli-ref` to any repository, statically.
+Only invocations at command position of the repo's own programs are judged
+(`conda install gh --channel x` is conda's), only long flags, and only when
+the flag inventory can be complete: a repo using typer, fire, docopt, yargs,
+minimist or meow, or a click command with `ignore_unknown_options` /
+`allow_extra_args`, reports nothing. argparse prefix abbreviations (unique
+or ambiguous), `--no-<flag>` negations, flags spelled as string literals in
+code (`if "--commands" in args`), options defined by an example on the same
+page (`parser.addoption("--runslow")` then `pytest --runslow`), unknown
+subcommands (extensions like `gh aw`), changelogs and release notes, and
+illustrative prose ("as in `pytest --log-output ...`") all stay silent.
+Measured 2026-09-24 on 30 repositories with CLIs (flask, black, pytest,
+django, scrapy, celery, sphinx, pip, tox, flake8, coverage, docker/cli,
+cli/cli, goreleaser, terraform, ...): 2 false positives (a UX-research
+page proposing a flag pip never shipped; flake8's `--max-complexity`,
+registered by the external mccabe plugin), 0 true positives in the
+current trees. Recall, by renaming a documented flag in code and leaving
+the docs: every non-changelog invocation caught in pytest (9), flake8 (2),
+tox (1) and pip-tools (1).
+
+`stale-contract-ref`: only narrow frames report — deprecation sentences
+with a replacement name, `must hold`/`guarded by`-style lock claims on
+lock-like names (`_lock`, `mutex`, …), and same-file comments stating a
+default for an env var read with a different default in code. Known
+limitation: an external successor (`use requests instead`) reads as a
+missing symbol; ticket-link the comment to silence it. ALL-CAPS names
+in a bare "use X instead" frame are treated as SQL/platform builtins,
+not deprecation targets (explicit `DEPRECATED:` notices are still
+checked). Bare prose never reports.
+
+`ghost-export`: methods, dunders, `__init__` modules, `__all__` members,
+JS exports / `module.exports`, Go-exported (capitalized) names, and
+`main`/`init` are never candidates. Aliased imports (`import x as y`)
+and module-attribute use (`from pkg import mod` + `mod.name()`) count
+as importers — but only with the module import present, so same-named
+locals don't qualify. Framework-discovered entry points are exempt:
+`test_*` names in test files (pytest, go test). Known limitation:
+barrel re-exports (`export * from`), aliased-module attribute use
+(`import pkg as p` + `p.mod.name()`), template tags loaded by string
+(Django `{% load %}`), and browser-global scripts (loaded by `<script>`
+tags, never imported) are not traced. C is excluded (no static info).
+
+`stale-entrypoint`: only `pyproject.toml` scripts and `package.json`
+`bin`/`main` are read. Malformed files stay silent. Build-output dirs
+(`dist/`, `build/`, …) stay silent — absent pre-publish is normal, not
+a lie. External (`bare-package`) targets stay silent. Graduated
+2026-09-22 after silent runs on 5 real repos plus fixtures.
+
+`stale-mock-ref`: decorator, call, and `with` forms of
+`patch`/`mocker.patch`/`mock.patch` plus `patch.object` (bare names
+resolve through imports with alias resolution; string targets verify
+progressively; method/meta/instance attributes stay silent by design).
+`create=True` opts out; external module paths stay silent. Graduated
+2026-09-22 after a django stress run (134 apparent lies classified:
+cross-module chains, aliases, proxies, builtins — all fixed or
+documented as gaps) plus CPython clean.
+
+`phantom-package`: union of every manifest flavor (project deps, all
+optional/PEP 735/Poetry groups, build-system requires,
+`requirements*.txt` with includes, all `package.json` dep flavors),
+nearest manifests walking up for monorepos, plus a curated
+import→distribution map (`yaml`→`pyyaml`, `PIL`→`pillow`, …). Imports
+under `try/except`, `TYPE_CHECKING`, or version/platform conditionals
+are compat shims that may legitimately fail and never report.
+Manifests are found by walking up to the nearest project dir, so
+subscans work; with no manifest anywhere the checker stays silent. stdlib,
+in-repo modules, `@types/`-covered host modules, and Node builtins
+stay silent. Known limits: root manifests only for requirements files;
+an `@types/X` declaration hides a missing runtime `X` (deliberate,
+favors silence); this is hygiene drift, never supply-chain verdict.
+
+`stale-cli-ref`: fenced console blocks, `$` lines, and backticked spans
+starting with `grounded` get full checking (unknown subcommands
+included); prose mentions are checked only when the next word is
+already a known subcommand or flag ("the grounded skill teaches" never
+reports). Synopsis meta-syntax, `cmd:`-style program output, and
+positionals never report. The spec is introspected from argparse, so
+checker and CLI cannot drift apart.
+
+`unclosed-fence`: fences are judged by CommonMark, not by counting
+fences, because the two disagree exactly where it matters. A blocking
+fence is closed only by a run of the *same character*, **at least as
+long**, with **no info string** — so a ` ```console ` arriving while a
+block is open cannot open one, it is content. Two shapes are reported:
+a fence that never closes (everything after it renders as code to the
+end of the file), and an info-carrying fence swallowed by an open block.
+Silence is deliberate in two places: a *declared* nesting scaffold (an
+enclosing fence that is longer **and** carries its own info string, like
+` ````markdown ` around ` ```python `, which is how svelte's docs show
+Svelte inside HTML on purpose), and a bare fence inside a block (the
+illustrated closer of a nested example). Known residue: a *bare* fence
+inside a block is never reported, so a longer fence used by mistake
+where a scaffold of the same shape is legitimate is missed — measured on
+OmniRoute's `docs/guides/USAGE_QUOTA_GUIDE.md`, where a 4-backtick `ts`
+fence swallows 33 lines including a heading; the correct reading there
+is a typo, and the same shape is a legitimate scaffold elsewhere.
+Measured 2026-09-22 over **11,564 Markdown files** in eight real repos
+(svelte, vuejs/docs, rust-lang/book, markdown-it, flask, requests,
+OmniRoute, this repo): **0 false positives**, and the only findings were
+the corpus fixtures plus one real document — OmniRoute's
+`docs/frameworks/OPEN_SSE_ARCHITECTURE.md`, where a stray bare
+` ```` ` fence made the renderer produce a 76-line code block holding
+`## Services (117 modules)`, `### Common Patterns` and the surrounding
+prose, confirmed against GitHub's own renderer.
+
+Measurement lives in [`corpus/`](https://github.com/gonisulaimann/Grounded/tree/main/corpus):
+planted-staleness fixtures with exact expected findings, run in CI with
+zero tolerance (a missing finding and an extra finding both fail). Current
+numbers (2026-09-21):
+
+* `stale-doc-ref`: 60 files, 9 checkable blocks, **0 findings, 0 false
+  positives** — every silence individually justified. Recall beyond
+  fixtures unmeasured.
+* `stale-contract-ref`: violation fixtures fire; a valid-claims corpus
+  (matching env default, existing replacement, present lock) is silent.
+  This repo contains no trigger instances, so the measurement is thin —
+  the bar for default-on is a real-world repo with deprecation traffic.
+* `ghost-export`: 4 findings — 3 true positives on deliberately-stale
+  demo fixtures plus **1 real dead helper** (`path_to_uri` in `lsp.py`,
+  single reference repo-wide), **0 false positives** after the aliased-
+  import fix. Default scans are byte-identical (Markdown is collected
+  only when `stale-doc-ref` runs).
+* New checkers ride the same track: 45 corpus cases hold every checker
+  at 1.00 precision (`corpus/run.py`, CI-enforced — all 13 checkers
+  have a firing fixture), and `stale-entrypoint`, `stale-mock-ref`, and
+  `phantom-package` are silent on this repo's real code (the only
+  finding is a planted corpus fixture).
+* Isolation precision is not repo recall, and the two need separate
+  evidence: the corpus plants rot in the smallest tree that shows the
+  behavior, while `bench/recall.py` replays each firing case inside a
+  copy of a real repository, where definitions, manifests and
+  generated directories are the context that can silence it. Measured
+  2026-09-22 over Grounded, flask, requests and svelte (3,927 files):
+  **89 planted expectations, 0 misses, 0 checker errors**. 4 cases
+  were not plantable — a fixture may not overwrite a host's own
+  `pyproject.toml`, which would change what the host *is* — and are
+  excluded from the number rather than counted as failures.
 
 ## How a rule decides
 
@@ -49,6 +205,22 @@ report as drift, mappings into `node_modules` stay silent.
 Exit code `2` means a usage or environment error (bad path, unreadable
 baseline or config, unresolvable git base). A typo can never mask drift
 with a green build.
+
+Exit code `3` means the scan is **incomplete**: an enabled checker
+raised on at least one file. A crashed checker returns no findings,
+which is indistinguishable from a checker that found nothing, so the
+summary refuses to say `clean` on its behalf. The failures are named on
+stderr, grouped by cause (`checker error: <id> raised <Exception>: … at
+<path>`, with a `(+N more)` count for repeats), so one broken checker
+over a 10k-file tree is one line, not 10k. The stdout payload stays
+byte-identical (`json` is still a bare list), and `baseline` refuses to
+write a file from an incomplete scan — a blind spot is never persisted
+into every later gate.
+
+Two explicit ways to proceed when a checker is genuinely broken:
+`--disable <id>` records which one you are accepting as broken, and
+`fail_on = "never"` keeps the run report-only (exit `0`, errors still
+printed). Neither one hides the error.
 
 ## Suppressions
 
@@ -92,5 +264,53 @@ JavaScript/TypeScript. Commented-out code is covered by
   names, imports, same-file identifiers).
 * Rename suggestions use string similarity only; `grounded fix` applies a
   symbol rename only with exactly one similar, same-directory candidate.
+* Files that fail to parse (version-skewed grammar, truncated buffers)
+  are marked opaque: no checker claims a symbol is absent from them, and
+  top-level bindings are recovered heuristically. The scan summary
+  reports the unparsed count; a nonzero count means some absence verdicts
+  were withheld, never that findings were invented.
+* Negated claims ("there is no call to X") and illustrative paths
+  ("e.g. ...") assert absence or give examples: flagging them would
+  contradict true statements, so they stay silent.
+* Go/C same-package calls need no import: cross-file use within one
+  directory suppresses ghost findings. Mutually exclusive `//go:build`
+  variants are never flagged. Cross-directory C use and framework
+  name-dispatch (template tags, browser globals, signal receivers)
+  remain out of scope.
+* In doc examples, toolchain calls (`fmt.Printf`, `Promise.reject`),
+  JS control keywords used as calls (`catch (e)`), and `this`-rooted
+  calls stay silent. Names bound inside the example (definitions,
+  imports, destructured fixture parameters such as `async ({ page }) =>`)
+  and blocks carrying doc-tooling directives (`// @noErrors`,
+  `/// file:`, `---cut---`) are treated as illustrative. Documentation
+  highlight markers (`+++`/`---`) are stripped before identifiers are
+  extracted, so an annotated example parses like the code it shows.
+  A block whose immediately preceding prose line is an illustrative
+  marker ("Here's an example:") is illustrative too — tutorial helpers
+  (`do_step(step)`) are user-supplied, not repo claims. The marker set
+  is English: translated docs keep their residue (measured: rich's
+  17 translated READMEs).
+* Metasyntactic call names (`foo()`, `bar()`, `blah()`) in comments are
+  placeholders, never references — same silence class as the `Xxx`
+  convention. The Python builtin set is complete for functions and
+  constants (`locals()`, `format()`, …); the exception hierarchy stays
+  checkable because libraries shadow it (`requests.ConnectionError`).
+* History notes ("we used to use `X()`") and ticket-anchored comment
+  blocks (a ticket or URL anywhere in the contiguous block) are
+  discussion, not live claims — unless the block tracks unfinished
+  work (`TODO`/`FIXME`/…), which keeps full checking.
+* `tsconfig` path prefixes match TypeScript semantics: a bare pattern
+  (`preact`) matches only the exact module, so sibling packages
+  (`preact-router`) are never hijacked. Directory imports resolve
+  through the target's `package.json` entry point; build-output mains
+  (`dist/`) are unjudgeable, in-tree mains verify bindings.
+* **A partial scan never claims absence for what it did not index.** A
+  relative import that resolves *above* the scan root (a monorepo's
+  sibling package when scanning `src/lib`, say) stays silent, exactly
+  like a target under a scan-ignored directory. Sub-tree and single-file
+  scans are first-class agent workflows and must not manufacture lies
+  about files outside their snapshot. Practical consequence: scanning a
+  subdirectory can only ever report fewer findings than scanning its
+  enclosing root, never more.
 * `grounded fix` rewrites stale file paths only on unambiguous
   same-basename matches in comments (never docstrings, never ties).

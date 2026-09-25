@@ -1,5 +1,5 @@
 site_name: Grounded
-site_description: The 0.6ms Reference & Import Integrity Firewall for AI Coding Agents.
+site_description: The deterministic reference & import integrity firewall for code and AI coding agents.
 site_author: Goni Sulaiman
 site_url: https://grounded-lint.readthedocs.io/
 
@@ -52,4 +52,5 @@ nav:
   - Agent Skill: agent-skill.md
   - Architecture: internals.md
   - Benchmarks: benchmarks.md
+  - Roadmap: roadmap.md
   - FAQ: faq.md

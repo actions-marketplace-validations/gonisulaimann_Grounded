@@ -1,0 +1,1 @@
+{"enable": ["phantom-package"], "expect": [{"checker": "phantom-package", "path": "pkg/a.py", "line": 2, "contains": "yaml"}]}

@@ -1,0 +1,1 @@
+{"compilerOptions": {"paths": {"svelte": ["./src/index.d.ts"]}}}

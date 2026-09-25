@@ -2,7 +2,7 @@
 
 > Gekürzte Übersetzung. Die [englische README](https://github.com/gonisulaimann/Grounded#readme) ist maßgeblich.
 
-**Grounded** findet baumelnde Referenzen in Code-Kommentaren: Funktionen, die nicht mehr existieren, fehlende Dateien, defekte Imports. Deterministisch, offline, keine Abhängigkeiten. Unterstützt Python, JavaScript/TypeScript, Go und C.
+**Grounded** ist eine Integritäts-Firewall für Referenzen: Sie findet Kommentare, Doc-Beispiele, Imports und Config-Strings, die dem Repository widersprechen — Funktionen, die nicht mehr existieren, fehlende Dateien, defekte Imports, nicht mehr gültige Beispiele. Deterministisch, offline, keine Abhängigkeiten. Unterstützt Python, JavaScript/TypeScript, Go und C.
 
 ## Installation
 
@@ -32,6 +32,12 @@ grounded impact meine_funktion .   # alles zu einem Symbol: Definitionen, Import
 | `stale-file-ref` | lie | Kommentar verweist auf nicht existierenden Pfad im Repo |
 | `number-drift` | drift | Zahl im Kommentar widerspricht dem umgebenden Code |
 | `fragile-anchor` | smell | fragile Zeilenanker und Workaround-Marker ohne Ticket |
+| `stale-entrypoint` | lie | `pyproject`-Script- bzw. `package.json`-bin/main-Ziel existiert im Repo nicht |
+| `stale-mock-ref` | lie | `@patch`-String nennt ein Symbol, das es im Modul nicht gibt |
+| `unclosed-fence` | lie | Markdown-Fence, den der Renderer nicht schließt — danach wird Prosa als Code gerendert |
+
+Acht dieser 13 Prüfungen laufen standardmäßig; fünf weitere sind opt-in
+(`--enable <id>`).
 
 ## Links
 

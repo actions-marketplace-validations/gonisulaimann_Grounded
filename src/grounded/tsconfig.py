@@ -52,6 +52,16 @@ def strip_jsonc(text: str) -> str:
 
 def load_tsconfig(path: Path) -> dict:
     """Parsed compilerOptions with extends resolved (child wins)."""
+    return _load_tsconfig(path, frozenset())
+
+
+def _load_tsconfig(path: Path, seen: frozenset) -> dict:
+    try:
+        key = path.resolve()
+    except OSError:
+        return {}
+    if key in seen:
+        return {}  # cyclic extends: stop, never RecursionError a scan
     try:
         data = json.loads(strip_jsonc(path.read_text(encoding="utf-8", errors="ignore")))
     except (OSError, ValueError):
@@ -65,7 +75,7 @@ def load_tsconfig(path: Path) -> dict:
         if not parent.suffix:
             parent = parent.with_suffix(".json")
         if parent.exists():
-            base = load_tsconfig(parent)
+            base = _load_tsconfig(parent, seen | {key})
     merged = dict(base)
     child_opts = data.get("compilerOptions")
     if isinstance(child_opts, dict):
@@ -73,6 +83,62 @@ def load_tsconfig(path: Path) -> dict:
         merged_opts.update(child_opts)
         merged["compilerOptions"] = merged_opts
     return merged
+
+
+def _exclude_entries(path: Path) -> list:
+    """Raw `exclude` list with the TS inheritance rule: a child tsconfig's
+    exclude fully replaces the inherited one (child-wins per key)."""
+    return _exclude_entries_seen(path, frozenset())
+
+
+def _exclude_entries_seen(path: Path, seen: frozenset) -> list:
+    try:
+        key = path.resolve()
+    except OSError:
+        return []
+    if key in seen:
+        return []
+    try:
+        data = json.loads(strip_jsonc(path.read_text(encoding="utf-8", errors="ignore")))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    if "exclude" in data:
+        raw = data.get("exclude")
+        return raw if isinstance(raw, list) else []
+    extends = data.get("extends")
+    if isinstance(extends, str):
+        parent = path.parent / extends
+        if not parent.suffix:
+            parent = parent.with_suffix(".json")
+        if parent.exists():
+            return _exclude_entries_seen(parent, seen | {key})
+    return []
+
+
+def excluded_rel(cfg_dir_rel: str, path: Path) -> list[str]:
+    """`exclude` entries as repo-root-relative paths/dir prefixes.
+
+    Wildcard entries are skipped (fail-open: fewer exclusions can only
+    restore checking, never silence a checked file). Directory entries
+    (trailing "/") come back as bare prefixes; callers append "/" for
+    startswith matching.
+    """
+    import posixpath
+
+    out: list[str] = []
+    for e in _exclude_entries(path):
+        if not isinstance(e, str) or "*" in e or "?" in e:
+            continue
+        e = e.replace("\\\\", "/")
+        if e.startswith("./"):
+            e = e[2:]
+        if not e:
+            continue
+        joined = posixpath.join(cfg_dir_rel, e) if cfg_dir_rel else e
+        out.append(posixpath.normpath(joined).rstrip("/"))
+    return out
 
 
 def alias_map(opts: dict) -> list[tuple[str, list[str]]]:

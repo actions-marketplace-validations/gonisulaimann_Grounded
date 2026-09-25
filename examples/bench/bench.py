@@ -62,7 +62,7 @@ def main() -> int:
 
         def in_process() -> float:
             t0 = time.perf_counter()
-            files = collect_files(root, Config())
+            files, _decls = collect_files(root, Config())
             idx = RepoIndex(root, files)
             from grounded import checkers
             for f in files:

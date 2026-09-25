@@ -1,0 +1,5 @@
+[project]
+name = "demo"
+[project.scripts]
+demo = "pkg.cli:main"
+old = "pkg.gone:run"

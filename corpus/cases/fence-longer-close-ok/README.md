@@ -1,0 +1,5 @@
+# Guide
+
+```console
+grounded scan .
+````

@@ -1,0 +1,1 @@
+{"enable": ["stale-import"], "expect": [{"checker": "stale-import", "path": "src/pkg/views.py", "line": 1, "contains": "gone_thing"}]}

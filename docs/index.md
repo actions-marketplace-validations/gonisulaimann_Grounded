@@ -24,6 +24,11 @@ never two:
   generated files, framework namespaces). Silence is a deliberate verdict,
   not a gap: a verifier that guesses teaches developers to ignore it.
 
+A clean scan is the product, not the absence of it. Grounded is a smoke
+detector: silent on a clean house, loud the second a lie enters during
+active development. New trigger classes ship opt-in and graduate by
+measured precision (see [Rules](rules.md)), never by inventing faults.
+
 Deterministic, offline, zero dependencies. Python, JavaScript/TypeScript,
 Go, and C.
 

@@ -32,6 +32,23 @@ class Finding:
 
 
 @dataclass
+class CheckerError:
+    """A checker that raised instead of returning findings for one file.
+
+    A crash yields no findings, which is indistinguishable from a clean tree
+    in every summary line. Recording it is what lets a scan refuse to report
+    `clean` without every enabled checker having actually run.
+    """
+
+    checker: str
+    path: str
+    message: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class FileFacts:
     path: str  # relative posix path
     language: str  # "python" | "javascript"
@@ -48,6 +65,9 @@ class FileFacts:
     # conditional (compat imports that may legitimately fail are never
     # flagged).
     from_imports: list[Any] = field(default_factory=list)
+    # Linenos of Import/ImportFrom under try/except, TYPE_CHECKING, or
+    # version/platform conditionals (see parsers._is_guarded).
+    guarded_lines: set = field(default_factory=set)
     # Structured JS/TS imports: [(specifier, kind, default or None,
     # [named], lineno)]. Kinds: named, namespace (`* as ns`), sideeffect,
     # require. Side-effect-only and non-relative specifiers resolve to

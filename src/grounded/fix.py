@@ -21,13 +21,40 @@ from .repo_index import RepoIndex
 
 
 def file_fix_candidates(findings: list[Finding], root: Path,
-                        texts: dict[str, list[str]] | None = None) -> list[tuple[Finding, str, int]]:
+                        texts: dict[str, list[str]] | None = None,
+                        config: "Config" | None = None) -> list[tuple[Finding, str, int]]:
     """Candidates for file rewrites. `texts` optionally overrides disk reads
     (unsaved editor buffers); keys are rel posix paths."""
+    from .config import Config
+    cfg = config or Config.load(root)
     by_base: dict[str, list[str]] = {}
-    for p in root.rglob("*"):
-        if p.is_file():
-            by_base.setdefault(p.name, []).append(p.relative_to(root).as_posix())
+    root_res = root.resolve()
+    stack = [root_res]
+    while stack:
+        cur = stack.pop()
+        try:
+            # Never follow a symlinked directory: inside the root it
+            # duplicates a tree walked under its own name (same tie
+            # poisoning as the scanner's OmniRoute case), and a cyclic
+            # link (`loop -> .`) would walk forever. Same guard as
+            # scanner.collect_files.
+            if cur.resolve() != cur:
+                continue
+            entries = sorted(cur.iterdir())
+        except OSError:
+            continue
+        for e in entries:
+            name = e.name
+            if e.is_dir():
+                if name in cfg.ignore_dirs or (name.startswith(".") and name in (".git", ".hg", ".svn")):
+                    continue
+                if name in {".git", "__pycache__", "node_modules", ".venv"}:
+                    continue
+                stack.append(e)
+            elif e.is_file():
+                if name in cfg.ignore_files:
+                    continue
+                by_base.setdefault(name, []).append(e.relative_to(root_res).as_posix())
     out: list[tuple[Finding, str, int]] = []
     seen: set[tuple[str, int, str]] = set()
     for f in findings:

@@ -1,16 +1,5 @@
 # Security Policy
 
-## Supported Versions
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.4.x   | :white_check_mark: |
-| < 0.4   | :x:                |
-
-`grounded` reads source files and runs no network calls, no subprocesses
-(except `git` for `--changed`, with fixed argument lists), and executes no
-scanned code. Findings are text matching only.
-
 ## Reporting a Vulnerability
 
 Please **do not open a public issue**. Use GitHub's private vulnerability

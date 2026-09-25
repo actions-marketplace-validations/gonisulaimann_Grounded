@@ -1,4 +1,4 @@
-"""Reporters: terminal, JSON, SARIF, self-contained HTML. Stdlib only."""
+"""Reporters: terminal, JSON, SARIF, Markdown, self-contained HTML. Stdlib only."""
 from __future__ import annotations
 
 import html
@@ -7,19 +7,38 @@ from datetime import datetime, timezone
 
 from .models import Finding
 
+
+def _tool_version() -> str:
+    try:
+        from . import __version__
+        return str(__version__)
+    except ImportError:  # pragma: no cover - never happens in practice
+        return "0.0.0"
+
 SEV_COLOR = {"lie": "\033[31m", "drift": "\033[33m", "smell": "\033[36m"}
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
 
 
-def format_terminal(findings: list[Finding], n_files: int, root: str, use_color: bool = True) -> str:
+def format_terminal(findings: list[Finding], n_files: int, root: str, use_color: bool = True,
+                    n_unparsed: int = 0, n_checker_errors: int = 0) -> str:
     counts = {"lie": 0, "drift": 0, "smell": 0}
     for f in findings:
         counts[f.severity] = counts.get(f.severity, 0) + 1
+    unparsed_note = f", {n_unparsed} file(s) unparsed" if n_unparsed else ""
+    err_note = f", {n_checker_errors} checker error(s)" if n_checker_errors else ""
     lines: list[str] = []
     if not findings:
-        head = f"grounded: clean, {n_files} file(s) scanned, 0 findings."
+        if n_checker_errors:
+            # `clean` is a verdict about the repo. It is only true if every
+            # enabled checker actually ran — a crashed checker also returns
+            # zero findings, so saying `clean` here would assert something
+            # this run cannot know.
+            head = (f"grounded: 0 findings in {n_files} file(s){unparsed_note}, but "
+                    f"{n_checker_errors} checker error(s): INCOMPLETE, not clean.")
+            return head if not use_color else f"\033[31m{head}{RESET}"
+        head = f"grounded: clean, {n_files} file(s) scanned, 0 findings{unparsed_note}."
         return head if not use_color else f"\033[32m{head}{RESET}"
     for f in findings:
         color = SEV_COLOR.get(f.severity, "") if use_color else ""
@@ -35,7 +54,8 @@ def format_terminal(findings: list[Finding], n_files: int, root: str, use_color:
             lines.append(f"    {d}fix:{reset} {f.fix[:220]}")
     summary = (
         f"\ngrounded: {len(findings)} finding(s) in {n_files} file(s), "
-        f"{counts.get('lie',0)} lie(s), {counts.get('drift',0)} drift(s), {counts.get('smell',0)} smell(s)."
+        f"{counts.get('lie',0)} lie(s), {counts.get('drift',0)} drift(s), {counts.get('smell',0)} smell(s)"
+        f"{unparsed_note}{err_note}."
     )
     lines.append(summary if not use_color else f"{BOLD}{summary}{RESET}")
     return "\n".join(lines)
@@ -73,7 +93,7 @@ def to_sarif(findings: list[Finding], root: str = "") -> str:
         "runs": [{
             "tool": {"driver": {
                 "name": "grounded",
-                "version": "0.12.1",
+                "version": _tool_version(),
                 "informationUri": "https://github.com/gonisulaimann/Grounded",
                 "rules": list(rules_seen.values()),
             }},
@@ -81,6 +101,36 @@ def to_sarif(findings: list[Finding], root: str = "") -> str:
         }],
     }
     return json.dumps(sarif, indent=2)
+
+
+def _md_cell(text: str) -> str:
+    """Table-safe inline text: pipes and newlines would break the row, and
+    backticks inside a code span need a wider fence."""
+    text = (text or "").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    return text
+
+
+def to_markdown(findings: list[Finding], n_files: int, n_checker_errors: int = 0) -> str:
+    """GitHub-flavored Markdown summary (PR comments, job summaries)."""
+    counts = {"lie": 0, "drift": 0, "smell": 0}
+    for f in findings:
+        counts[f.severity] = counts.get(f.severity, 0) + 1
+    head = "### grounded"
+    if n_checker_errors:
+        return (f"{head}\n\n**Incomplete scan:** {n_checker_errors} checker error(s). "
+                f"No verdict is available; see the job log.\n")
+    if not findings:
+        return f"{head}\n\nNo findings in {n_files} file(s).\n"
+    summary = ", ".join(f"{counts[k]} {k}{'s' if counts[k] != 1 else ''}"
+                        for k in ("lie", "drift", "smell") if counts[k])
+    out = [head, "", f"{len(findings)} finding(s) in {n_files} file(s): {summary}.", "",
+           "| Severity | Location | Checker | Finding |", "|---|---|---|---|"]
+    for f in findings:
+        out.append(f"| {f.severity} | `{_md_cell(f.path)}:{f.line}` | `{f.checker}` | "
+                   f"{_md_cell(f.title)} |")
+    out.append("")
+    out.append("Suppress an intentional reference with `grounded-disable: <checker>` on its line.")
+    return "\n".join(out) + "\n"
 
 
 def to_html(findings: list[Finding], n_files: int, root: str = "") -> str:
@@ -111,7 +161,7 @@ def to_html(findings: list[Finding], n_files: int, root: str = "") -> str:
             )
         )
     body_rows = "\n".join(rows) if rows else "<tr><td colspan=\"5\" class=\"clean\">All beliefs check out. No findings.</td></tr>"
-    return """<!DOCTYPE html>
+    template = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>grounded report</title>
@@ -170,15 +220,21 @@ btns.forEach(b=>b.onclick=()=>{f=b.dataset.f;btns.forEach(x=>x.setAttribute('ari
 q.oninput=apply;
 function apply(){const s=q.value.toLowerCase();document.querySelectorAll('#rows tr').forEach(tr=>{
 const okF=(f==='all'||tr.dataset.sev===f);const okQ=!s||tr.textContent.toLowerCase().includes(s);
-tr.style.display=(okF&&okQ)?'':'none';});}
-</script></body></html>""".replace(
-        "__ROOT__", html.escape(root or ".")
-    ).replace("__NOW__", now).replace("__NFILES__", str(n_files)).replace(
-        "__LIE__", str(counts.get("lie", 0))
-    ).replace("__DRIFT__", str(counts.get("drift", 0))).replace(
-        "__SMELL__", str(counts.get("smell", 0))
-    ).replace(
-        "__TOTAL__", str(len(findings))
-    ).replace(
-        "__ROWS__", body_rows
-    )
+ tr.style.display=(okF&&okQ)?'':'none';});}
+</script></body></html>"""
+    # One-pass substitution: sequential .replace() calls corrupt any root
+    # containing a placeholder name (`--format html` on a repo literally
+    # named `__LIE__` printed 0 and injected the rows table into the path
+    # slot). Placeholders are matched against the template only.
+    import re as _re
+    slots = {
+        "__ROOT__": html.escape(root or "."),
+        "__NOW__": now,
+        "__NFILES__": str(n_files),
+        "__LIE__": str(counts.get("lie", 0)),
+        "__DRIFT__": str(counts.get("drift", 0)),
+        "__SMELL__": str(counts.get("smell", 0)),
+        "__TOTAL__": str(len(findings)),
+        "__ROWS__": body_rows,
+    }
+    return _re.sub(r"__[A-Z]+__", lambda m: slots.get(m.group(0), m.group(0)), template)

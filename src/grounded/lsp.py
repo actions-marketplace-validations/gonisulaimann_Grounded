@@ -32,12 +32,6 @@ def uri_to_path(uri: str) -> Path:
     return Path(uri)
 
 
-def path_to_uri(path: Path) -> str:
-    from urllib.parse import quote
-    from urllib.request import pathname2url
-    return "file://" + quote(pathname2url(str(path.resolve())))
-
-
 class LspServer:
     def __init__(self) -> None:
         self.root: Path | None = None
@@ -50,13 +44,21 @@ class LspServer:
 
     def _ensure_index(self, doc_uri: str):
         from .config import Config
-        from .scanner import collect_files
+        from .scanner import collect_files, project_root_for
         from .repo_index import RepoIndex
         path = uri_to_path(doc_uri)
-        root = self.root or (path.parent if path.suffix else Path.cwd())
+        if self.root is not None:
+            root = self.root
+        elif path.suffix:
+            # No workspace: index the file's project, not just its
+            # parent — a parent-only snapshot manufactures absence
+            # claims about files it never looked at.
+            root = project_root_for(path.parent)
+        else:
+            root = Path.cwd()
         if self.index is None or getattr(self, "_root", None) != root:
             try:
-                files = collect_files(root, Config.load(root))
+                files, _decls = collect_files(root, Config.load(root))
             except OSError:
                 files = []
             texts: dict[str, str] = {}
@@ -75,7 +77,12 @@ class LspServer:
         try:
             rel = path.resolve().relative_to(root.resolve()).as_posix()
         except ValueError:
-            rel = path.name
+            # Outside the workspace: key by absolute path under a
+            # namespace that can never collide with an in-root rel.
+            # path.name collided: opening /outside/foo.py overwrote the
+            # index entry for the workspace's own foo.py, deleting its
+            # symbols and replacing them with the outsider's.
+            rel = "@outside/" + path.resolve().as_posix().lstrip("/")
         return path, rel
 
     def _reindex_doc(self, uri: str, text: str | None) -> None:
@@ -183,7 +190,7 @@ class LspServer:
             if f.checker != code or f.line != line:
                 continue
             if f.checker == "stale-file-ref":
-                cands = file_fix_candidates([f], root, buffer)
+                cands = file_fix_candidates([f], root, buffer, config=self.config)
                 if len(cands) != 1:
                     continue
                 _, replacement, ln = cands[0]

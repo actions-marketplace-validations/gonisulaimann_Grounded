@@ -1,8 +1,9 @@
 {
   "name": "grounded",
   "displayName": "Grounded",
-  "description": "Reference and import integrity diagnostics for code comments (stale symbols, imports, file paths) via the grounded LSP server.",
-  "version": "0.12.1",
+  "description": "Reference integrity firewall for Cursor, Windsurf, and VS Code. Re-checks the edited file in about 0.6 ms and flags references that resolve nowhere.",
+  "version": "0.16.0",
+  "icon": "icon.png",
   "publisher": "gonisulaimann",
   "license": "MIT",
   "repository": {
